@@ -365,6 +365,39 @@ func createTestTarGz(t *testing.T, content []byte) []byte {
 	return buf
 }
 
+func createTestZip(t *testing.T, content []byte) []byte {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "test.zip")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	w, err := zw.Create("treehouse.exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	zw.Close()
+	f.Close()
+	buf, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buf
+}
+
+// createTestArchive creates a tar.gz on unix or zip on windows.
+func createTestArchive(t *testing.T, content []byte) []byte {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return createTestZip(t, content)
+	}
+	return createTestTarGz(t, content)
+}
+
 // fakeGitHubServer starts an httptest server that serves a GitHub-like
 // /releases/latest response, an asset download endpoint, and a checksums endpoint.
 func fakeGitHubServer(t *testing.T, latestTag string, archiveBytes []byte) *httptest.Server {
@@ -424,7 +457,7 @@ func TestCheckLatestE2E(t *testing.T) {
 		t.Setenv("USERPROFILE", tmp)
 	}
 
-	archive := createTestTarGz(t, []byte("new-binary-content"))
+	archive := createTestArchive(t, []byte("new-binary-content"))
 	srv := fakeGitHubServer(t, "v2.0.0", archive)
 
 	origURL := githubAPIURL
@@ -469,7 +502,7 @@ func TestCheckLatestNoUpdate(t *testing.T) {
 		t.Setenv("USERPROFILE", tmp)
 	}
 
-	archive := createTestTarGz(t, []byte("content"))
+	archive := createTestArchive(t, []byte("content"))
 	srv := fakeGitHubServer(t, "v1.0.0", archive)
 
 	origURL := githubAPIURL
@@ -488,12 +521,16 @@ func TestCheckLatestNoUpdate(t *testing.T) {
 
 func TestApplyE2E(t *testing.T) {
 	newContent := []byte("#!/bin/sh\necho updated\n")
-	archive := createTestTarGz(t, newContent)
+	archive := createTestArchive(t, newContent)
 	srv := fakeGitHubServer(t, "v2.0.0", archive)
 
 	// Create a fake "current binary" to be replaced
 	targetDir := t.TempDir()
-	targetPath := filepath.Join(targetDir, "treehouse")
+	binaryName := "treehouse"
+	if runtime.GOOS == "windows" {
+		binaryName = "treehouse.exe"
+	}
+	targetPath := filepath.Join(targetDir, binaryName)
 	if err := os.WriteFile(targetPath, []byte("old-binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
