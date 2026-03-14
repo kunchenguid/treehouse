@@ -1,24 +1,30 @@
-# Treehouse
+# treehouse
 
 [![CI](https://github.com/atinylittleshell/treehouse/actions/workflows/ci.yml/badge.svg)](https://github.com/atinylittleshell/treehouse/actions/workflows/ci.yml)
 [![Release](https://github.com/atinylittleshell/treehouse/actions/workflows/release.yml/badge.svg)](https://github.com/atinylittleshell/treehouse/actions/workflows/release.yml)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-blue)
 
-<h3 align="center">Never stop prompting.</h3>
+<h2 align="center">Never stop prompting.</h2>
 
-Run parallel AI coding agents on the same repo without conflicts.
-Treehouse maintains a pool of reusable, isolated worktrees so each of your agents gets its own environment instantly — no cloning, no conflicts, no coordination overhead.
+Run parallel coding agents on the same repo without conflicts.
+Treehouse helps you manage a pool of reusable, isolated worktrees so each of your agents gets its own environment instantly — no cloning, no conflicts, no coordination overhead.
+
+- **Instant isolation** — `treehouse` puts you into a clean worktree with zero hassel.
+- **Reusable worktrees** — worktrees are returned to the pool when you're done, with dependencies and build cache intact, ready for the next agent.
+- **Conflict-free** — automatic detection of in-use worktrees and your agents never step on each other's toes.
+
+## Quick Start
 
 ```sh
+$ cd myproject                 # start in your repo as usual
 $ treehouse                    # get a worktree and drop into a subshell
-✓ Entered worktree at ~/.treehouse/myproject-a1b2c3/1/myproject
-  (detached at origin/main). Type 'exit' to return.
+🌳 Entered worktree at ~/.treehouse/myproject-a1b2c3/1/myproject. Type 'exit' to return.
 
 # You're now in an isolated worktree.
 # Run your AI agent, make changes, do whatever you need.
 
 $ exit                         # auto-return when done
-Worktree returned to pool.
+🌳 Worktree returned to pool.
 ```
 
 ## Install
