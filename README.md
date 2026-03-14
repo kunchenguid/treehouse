@@ -52,8 +52,7 @@ go install github.com/atinylittleshell/treehouse@latest
 ```sh
 git clone https://github.com/atinylittleshell/treehouse.git
 cd treehouse
-make build
-./treehouse
+make install
 ```
 
 ## How It Works
