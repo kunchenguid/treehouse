@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          release-type: go
+
+  build-and-upload:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          ext=""
+          if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
+          go build -ldflags "-X main.version=v${VERSION}" -o "treehouse${ext}" .
+
+      - name: Archive
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          name="treehouse-v${VERSION}-${GOOS}-${GOARCH}"
+          if [ "$GOOS" = "windows" ]; then
+            zip "${name}.zip" treehouse.exe
+          else
+            tar czf "${name}.tar.gz" treehouse
+          fi
+
+      - name: Upload archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          name="treehouse-v${VERSION}-${GOOS}-${GOARCH}"
+          if [ "$GOOS" = "windows" ]; then
+            gh release upload "${TAG_NAME}" "${name}.zip"
+          else
+            gh release upload "${TAG_NAME}" "${name}.tar.gz"
+          fi
+
+      - name: Upload archive as artifact
+        uses: actions/upload-artifact@v4
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+        with:
+          name: archive-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: treehouse-v${{ needs.release-please.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}.*
+
+  checksums:
+    needs: [release-please, build-and-upload]
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: archive-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: sha256sum treehouse-v* > checksums.txt
+
+      - name: Upload checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release upload "${TAG_NAME}" checksums.txt
+        working-directory: ${{ github.workspace }}

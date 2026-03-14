@@ -1,0 +1,5 @@
+# Treehouse configuration
+# Place this file at <repo_root>/treehouse.toml or ~/.config/treehouse/config.toml
+
+# Maximum number of worktrees in the pool
+max_trees = 16
