@@ -581,12 +581,14 @@ func TestApplyE2E(t *testing.T) {
 		t.Errorf("replaced binary = %q, want %q", string(replaced), string(newContent))
 	}
 
-	info, err := os.Stat(targetPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode()&0o111 == 0 {
-		t.Error("expected executable permissions on replaced binary")
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(targetPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&0o111 == 0 {
+			t.Error("expected executable permissions on replaced binary")
+		}
 	}
 }
 
