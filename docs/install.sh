@@ -2,7 +2,14 @@
 set -e
 
 REPO="atinylittleshell/treehouse"
-INSTALL_DIR="/usr/local/bin"
+
+# Prefer ~/.local/bin if it exists and is in PATH (no sudo needed).
+# Fall back to /usr/local/bin otherwise.
+if echo "$PATH" | tr ':' '\n' | grep -qx "$HOME/.local/bin"; then
+  INSTALL_DIR="$HOME/.local/bin"
+else
+  INSTALL_DIR="/usr/local/bin"
+fi
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
@@ -36,9 +43,11 @@ curl -fsSL "$URL" -o "${TMPDIR}/${FILENAME}"
 tar xzf "${TMPDIR}/${FILENAME}" -C "$TMPDIR"
 
 if [ -w "$INSTALL_DIR" ]; then
+  mkdir -p "$INSTALL_DIR"
   mv "${TMPDIR}/treehouse" "${INSTALL_DIR}/treehouse"
 else
   echo "Installing to ${INSTALL_DIR} (requires sudo)..."
+  sudo mkdir -p "$INSTALL_DIR"
   sudo mv "${TMPDIR}/treehouse" "${INSTALL_DIR}/treehouse"
 fi
 
