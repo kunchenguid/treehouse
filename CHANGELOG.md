@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/atinylittleshell/treehouse/compare/v1.1.1...v1.1.2) (2026-03-15)
+
+
+### Bug Fixes
+
+* shorter version display ([9c51b35](https://github.com/atinylittleshell/treehouse/commit/9c51b35fdb34cc1230d14c6695cd32f04345cf9b))
+
 ## [1.1.1](https://github.com/atinylittleshell/treehouse/compare/v1.1.0...v1.1.1) (2026-03-15)
 
 
