@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.4](https://github.com/atinylittleshell/treehouse/compare/v1.1.3...v1.1.4) (2026-03-15)
+
+
+### Bug Fixes
+
+* app update permission error ([0559e99](https://github.com/atinylittleshell/treehouse/commit/0559e99680c8d1f0a99f969c9fdf5407e4027aa3))
+
 ## [1.1.3](https://github.com/atinylittleshell/treehouse/compare/v1.1.2...v1.1.3) (2026-03-15)
 
 
