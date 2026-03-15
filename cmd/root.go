@@ -13,6 +13,7 @@ var version = "dev"
 
 func SetVersion(v string) {
 	version = v
+	rootCmd.Version = v
 }
 
 var rootCmd = &cobra.Command{

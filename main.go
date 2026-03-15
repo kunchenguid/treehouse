@@ -2,12 +2,23 @@ package main
 
 import (
 	"os"
+	"runtime/debug"
 
 	"github.com/atinylittleshell/treehouse/cmd"
 	"github.com/atinylittleshell/treehouse/internal/updater"
 )
 
-var version = "dev"
+var version = ""
+
+func init() {
+	if version == "" {
+		if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+			version = info.Main.Version
+		} else {
+			version = "dev"
+		}
+	}
+}
 
 func main() {
 	// Handle --update-check before Cobra: the background child process
