@@ -80,6 +80,8 @@ Sleep 2s
 # Explain: treehouse
 Type "# manage worktrees without managing worktrees. "
 Sleep 1s
-Type "treehouse"
+Type "treehouse "
+Sleep 1s
+Type "🌳"
 Sleep 10s
 
