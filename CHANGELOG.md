@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.3](https://github.com/atinylittleshell/treehouse/compare/v1.1.2...v1.1.3) (2026-03-15)
+
+
+### Bug Fixes
+
+* recheck app update when cached version is stale ([21d93e2](https://github.com/atinylittleshell/treehouse/commit/21d93e2e36eb3948623e21a6e92c520bae476da9))
+
 ## [1.1.2](https://github.com/atinylittleshell/treehouse/compare/v1.1.1...v1.1.2) (2026-03-15)
 
 
