@@ -96,7 +96,7 @@ func TestCacheReadWriteStaleness(t *testing.T) {
 		t.Fatal("expected nil from ReadCache with no cache file")
 	}
 
-	if !IsCacheStale() {
+	if !IsCacheStale("v1.0.0") {
 		t.Fatal("expected stale with no cache file")
 	}
 
@@ -121,8 +121,8 @@ func TestCacheReadWriteStaleness(t *testing.T) {
 		t.Errorf("LatestVersion = %q, want %q", result.LatestVersion, "v2.0.0")
 	}
 
-	// Cache should not be stale
-	if IsCacheStale() {
+	// Cache should not be stale (current v1.0.0 < cached latest v2.0.0)
+	if IsCacheStale("v1.0.0") {
 		t.Error("expected fresh cache")
 	}
 
@@ -159,8 +159,38 @@ func TestCacheStaleAfterTTL(t *testing.T) {
 		t.Fatalf("writeCache: %v", err)
 	}
 
-	if !IsCacheStale() {
+	if !IsCacheStale("v0.9.0") {
 		t.Error("expected stale cache after TTL")
+	}
+}
+
+func TestCacheStaleWhenCurrentPastLatest(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", tmp)
+	}
+
+	// Cache says latest is v1.0.0, but user is now on v1.1.0
+	entry := CacheEntry{
+		CheckedAt:     time.Now(),
+		LatestVersion: "v1.0.0",
+	}
+	if err := writeCache(entry); err != nil {
+		t.Fatalf("writeCache: %v", err)
+	}
+
+	// Should be stale because current version >= cached latest
+	if !IsCacheStale("v1.1.0") {
+		t.Error("expected stale when current version is newer than cached latest")
+	}
+	if !IsCacheStale("v1.0.0") {
+		t.Error("expected stale when current version equals cached latest")
+	}
+
+	// Should NOT be stale when cached latest is ahead of current
+	if IsCacheStale("v0.9.0") {
+		t.Error("expected fresh when cached latest is newer than current")
 	}
 }
 
@@ -490,7 +520,7 @@ func TestCheckLatestE2E(t *testing.T) {
 	if cached.LatestVersion != "v2.0.0" {
 		t.Errorf("cached LatestVersion = %q, want %q", cached.LatestVersion, "v2.0.0")
 	}
-	if IsCacheStale() {
+	if IsCacheStale("v1.0.0") {
 		t.Error("cache should be fresh after CheckLatest")
 	}
 }

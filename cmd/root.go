@@ -46,7 +46,7 @@ so that multiple AI coding agents can work on the same repo in parallel.`,
 		}
 
 		// Spawn background check if cache is stale
-		if updater.IsCacheStale() {
+		if updater.IsCacheStale(version) {
 			_ = updater.SpawnBackgroundCheck(version)
 		}
 	},

@@ -135,8 +135,10 @@ func ReadCache(currentVersion string) *CheckResult {
 	}
 }
 
-// IsCacheStale returns true if the cache is >24h old or missing.
-func IsCacheStale() bool {
+// IsCacheStale returns true if the cache is >24h old, missing, or if the
+// cached latest version is not newer than the current version (which means
+// the user has updated past the cached latest and we should re-check).
+func IsCacheStale(currentVersion string) bool {
 	path := cachePath()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -148,7 +150,17 @@ func IsCacheStale() bool {
 		return true
 	}
 
-	return time.Since(entry.CheckedAt) > cacheTTL
+	if time.Since(entry.CheckedAt) > cacheTTL {
+		return true
+	}
+
+	// If the user has updated past the cached latest version, the cache
+	// is effectively stale and we should re-check for even newer versions.
+	if currentVersion != "" && CompareVersions(entry.LatestVersion, currentVersion) <= 0 {
+		return true
+	}
+
+	return false
 }
 
 // SpawnBackgroundCheck spawns a detached child process to check for updates.
