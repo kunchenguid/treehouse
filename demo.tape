@@ -8,7 +8,7 @@ Set FontSize 20
 Set Width 900
 Set Height 600
 Set Padding 20
-Set Theme "rose-pine-moon"
+Set Theme "Catppuccin Mocha"
 
 # Suppress update check
 Env TREEHOUSE_NO_UPDATE_CHECK "1"
@@ -29,7 +29,7 @@ Sleep 1s
 Type "# ready to start a new task? "
 Sleep 1s
 Type "just run treehouse"
-Sleep 3s
+Sleep 1s
 Ctrl+U
 Sleep 1s
 Type "treehouse"
@@ -45,13 +45,12 @@ Sleep 2s
 Type "# run your agent and get some work done..."
 Sleep 3s
 Ctrl+U
-Sleep 1s
 
 # Explain: parallel session
 Type "# need to do something in parallel? "
 Sleep 1s
 Type "just run treehouse"
-Sleep 3s
+Sleep 1s
 Ctrl+U
 Sleep 1s
 Type "treehouse"
@@ -67,7 +66,6 @@ Sleep 2s
 Type "# when you are done, just exit the subshell"
 Sleep 3s
 Ctrl+U
-Sleep 1s
 
 # Exit subshell (returns worktree to pool)
 Type "exit"
