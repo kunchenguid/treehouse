@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0](https://github.com/atinylittleshell/treehouse/compare/v1.0.2...v1.1.0) (2026-03-15)
+
+
+### Features
+
+* **status:** show current worktree status ([75b24a0](https://github.com/atinylittleshell/treehouse/commit/75b24a0b8a0fe2ea4ed88e8a28288c529403e951))
+* use latest default branch for worktree ([df3ee7b](https://github.com/atinylittleshell/treehouse/commit/df3ee7b364aab64e1d7099422815ebeb43dc6c58))
+
 ## [1.0.2](https://github.com/atinylittleshell/treehouse/compare/v1.0.1...v1.0.2) (2026-03-15)
 
 
