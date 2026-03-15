@@ -4,10 +4,10 @@ Require treehouse
 Require git
 
 Set Shell "bash"
-Set FontSize 16
-Set Width 750
-Set Height 400
-Set Padding 16
+Set FontSize 20
+Set Width 900
+Set Height 600
+Set Padding 20
 Set Theme "rose-pine-moon"
 
 # Suppress update check
@@ -36,9 +36,23 @@ Sleep 2s
 
 # Explain: run agent
 Type "# run your coding agent and get some work done..."
-Sleep 2s
+Sleep 3s
 Ctrl+U
 Sleep 1s
+
+# Explain: parallel session
+Type "# need to do something in parallel?"
+Sleep 3s
+Ctrl+U
+Sleep 1s
+Type "treehouse"
+Enter
+Sleep 2s
+
+# Check status
+Type "treehouse status"
+Enter
+Sleep 2s
 
 # Exit subshell (returns worktree to pool)
 Type "exit"
@@ -50,7 +64,7 @@ Type "treehouse status"
 Enter
 Sleep 2s
 
-# Explain: run agent
-Type "# warm worktree preserved for next agent to use"
-Sleep 5s
+# Explain: treehouse
+Type "# manage worktrees without managing worktrees. use treehouse"
+Sleep 10s
 
