@@ -1,4 +1,4 @@
-.PHONY: build test lint dist install clean demo
+.PHONY: build test fmt lint dist install clean demo
 
 VERSION ?= dev
 LDFLAGS := -X main.version=$(VERSION)
@@ -8,6 +8,9 @@ build:
 
 test:
 	go test ./...
+
+fmt:
+	gofmt -w .
 
 lint:
 	gofmt -l .
