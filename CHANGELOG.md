@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.5](https://github.com/kunchenguid/treehouse/compare/v1.1.4...v1.1.5) (2026-03-16)
+
+
+### Bug Fixes
+
+* update repository URLs ([b9d1fda](https://github.com/kunchenguid/treehouse/commit/b9d1fda8f919411002e8d5119e35693e7a97fbbe))
+
 ## [1.1.4](https://github.com/kunchenguid/treehouse/compare/v1.1.3...v1.1.4) (2026-03-15)
 
 
