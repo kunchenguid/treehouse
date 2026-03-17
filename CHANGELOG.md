@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/kunchenguid/treehouse/compare/v1.1.5...v1.2.0) (2026-03-17)
+
+
+### Features
+
+* **config:** add configurable root for pool directory ([#12](https://github.com/kunchenguid/treehouse/issues/12)) ([0bc1378](https://github.com/kunchenguid/treehouse/commit/0bc1378b758ac93bb4ca430a942e87a5c3b8f020))
+
 ## [1.1.5](https://github.com/kunchenguid/treehouse/compare/v1.1.4...v1.1.5) (2026-03-16)
 
 
