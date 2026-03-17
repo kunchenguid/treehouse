@@ -29,7 +29,12 @@ var returnCmd = &cobra.Command{
 			return fmt.Errorf("not in a git repository: %w", err)
 		}
 
-		poolDir, err := config.ResolvePoolDir(repoRoot)
+		cfg, err := config.Load(repoRoot)
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
+		}
+
+		poolDir, err := config.ResolvePoolDir(repoRoot, cfg.Root)
 		if err != nil {
 			return err
 		}
