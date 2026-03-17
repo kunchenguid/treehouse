@@ -7,6 +7,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 jobs:
   release-please:
@@ -94,6 +95,59 @@ jobs:
         with:
           name: archive-${{ matrix.goos }}-${{ matrix.goarch }}
           path: treehouse-v${{ needs.release-please.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}.*
+
+  notify-issues:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment on resolved issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          # Get the previous tag
+          prev_tag=$(gh api repos/${{ github.repository }}/releases \
+            --jq "[.[] | select(.tag_name != \"${TAG_NAME}\")] | first | .tag_name")
+
+          if [ -z "$prev_tag" ]; then
+            echo "No previous release found, skipping"
+            exit 0
+          fi
+
+          echo "Finding PRs between ${prev_tag} and ${TAG_NAME}"
+
+          # Get merge commits between previous and current release
+          commits=$(gh api repos/${{ github.repository }}/compare/${prev_tag}...${TAG_NAME} \
+            --paginate --jq '.commits[].sha')
+
+          # Collect unique issue numbers from closing references in PRs
+          declare -A seen_issues
+          for sha in $commits; do
+            # Find PRs associated with this commit
+            prs=$(gh api repos/${{ github.repository }}/commits/${sha}/pulls \
+              --jq '.[].number' 2>/dev/null || true)
+            for pr in $prs; do
+              # Get issues that this PR closes (via timeline events)
+              issues=$(gh api repos/${{ github.repository }}/issues/${pr}/timeline \
+                --paginate --jq '.[] | select(.event == "cross-referenced" or .event == "connected") | .source.issue.number // empty' 2>/dev/null || true)
+
+              # Also check the PR body for "Fixes #N" / "Closes #N" patterns
+              body_issues=$(gh api repos/${{ github.repository }}/pulls/${pr} \
+                --jq '.body' 2>/dev/null | grep -oiE '(fix(es|ed)?|close[sd]?|resolve[sd]?)\s+#[0-9]+' | grep -oE '[0-9]+' || true)
+
+              for issue in $issues $body_issues; do
+                if [ -z "${seen_issues[$issue]+x}" ]; then
+                  seen_issues[$issue]=1
+                  echo "Commenting on issue #${issue}"
+                  gh issue comment "$issue" \
+                    --repo ${{ github.repository }} \
+                    --body "This issue has been addressed in [v${VERSION}](https://github.com/${{ github.repository }}/releases/tag/${TAG_NAME}). :tada:"
+                fi
+              done
+            done
+          done
 
   checksums:
     needs: [release-please, build-and-upload]
