@@ -107,20 +107,23 @@ jobs:
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
           VERSION: ${{ needs.release-please.outputs.version }}
         run: |
-          # Get the previous tag
-          prev_tag=$(gh api repos/${{ github.repository }}/releases \
-            --jq "[.[] | select(.tag_name != \"${TAG_NAME}\")] | first | .tag_name")
+          # Get the previous release and its published date
+          prev_release=$(gh api repos/${{ github.repository }}/releases \
+            --jq "[.[] | select(.tag_name != \"${TAG_NAME}\")] | first")
+          prev_tag=$(echo "$prev_release" | jq -r '.tag_name')
+          prev_date=$(echo "$prev_release" | jq -r '.published_at')
 
-          if [ -z "$prev_tag" ]; then
+          if [ -z "$prev_tag" ] || [ "$prev_tag" = "null" ]; then
             echo "No previous release found, skipping"
             exit 0
           fi
 
           echo "Finding PRs between ${prev_tag} and ${TAG_NAME}"
 
-          # Get merge commits between previous and current release
-          commits=$(gh api repos/${{ github.repository }}/compare/${prev_tag}...${TAG_NAME} \
-            --paginate --jq '.commits[].sha')
+          # Get commits via commits API (supports real pagination, no 250-commit cap)
+          commits=$(gh api repos/${{ github.repository }}/commits \
+            --paginate -f sha="${TAG_NAME}" -f since="${prev_date}" \
+            --jq '.[].sha')
 
           # Collect unique issue numbers from closing references in PRs
           declare -A seen_issues
@@ -129,15 +132,20 @@ jobs:
             prs=$(gh api repos/${{ github.repository }}/commits/${sha}/pulls \
               --jq '.[].number' 2>/dev/null || true)
             for pr in $prs; do
-              # Get issues that this PR closes (via timeline events)
-              issues=$(gh api repos/${{ github.repository }}/issues/${pr}/timeline \
-                --paginate --jq '.[] | select(.event == "cross-referenced" or .event == "connected") | .source.issue.number // empty' 2>/dev/null || true)
+              # Get issues linked via cross-references
+              xref_issues=$(gh api repos/${{ github.repository }}/issues/${pr}/timeline \
+                --paginate --jq '.[] | select(.event == "cross-referenced") | .source.issue.number // empty' 2>/dev/null || true)
+
+              # Get issues linked via sidebar (connected events use .url, not .source)
+              connected_issues=$(gh api repos/${{ github.repository }}/issues/${pr}/timeline \
+                --paginate --jq '.[] | select(.event == "connected") | .url' 2>/dev/null \
+                | grep -oE '/issues/[0-9]+' | grep -oE '[0-9]+' || true)
 
               # Also check the PR body for "Fixes #N" / "Closes #N" patterns
               body_issues=$(gh api repos/${{ github.repository }}/pulls/${pr} \
                 --jq '.body' 2>/dev/null | grep -oiE '(fix(es|ed)?|close[sd]?|resolve[sd]?)\s+#[0-9]+' | grep -oE '[0-9]+' || true)
 
-              for issue in $issues $body_issues; do
+              for issue in $xref_issues $connected_issues $body_issues; do
                 if [ -z "${seen_issues[$issue]+x}" ]; then
                   seen_issues[$issue]=1
                   echo "Commenting on issue #${issue}"
