@@ -12,6 +12,10 @@ func FindRepoRoot() (string, error) {
 	return runGit("", "rev-parse", "--show-toplevel")
 }
 
+func FindRepoRootFrom(dir string) (string, error) {
+	return runGit(dir, "rev-parse", "--show-toplevel")
+}
+
 func GetDefaultBranch(repoRoot string) (string, error) {
 	// Resolve to the main repo if we're inside a worktree.
 	mainRoot := repoRoot

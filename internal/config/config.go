@@ -9,7 +9,8 @@ import (
 )
 
 type Config struct {
-	MaxTrees int `toml:"max_trees"`
+	MaxTrees int    `toml:"max_trees"`
+	Root     string `toml:"root"`
 }
 
 func DefaultConfig() Config {
@@ -41,12 +42,7 @@ func Load(repoRoot string) (Config, error) {
 	return cfg, nil
 }
 
-func ResolvePoolDir(repoRoot string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-
+func ResolvePoolDir(repoRoot string, root string) (string, error) {
 	remoteURL, err := git.GetRemoteURL(repoRoot)
 	if err != nil {
 		return "", err
@@ -54,6 +50,19 @@ func ResolvePoolDir(repoRoot string) (string, error) {
 
 	repoName := filepath.Base(repoRoot)
 	shortHash := git.ShortHash(remoteURL)
+	poolName := repoName + "-" + shortHash
 
-	return filepath.Join(home, ".treehouse", repoName+"-"+shortHash), nil
+	if root == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, ".treehouse", poolName), nil
+	}
+
+	expanded := os.ExpandEnv(root)
+	if !filepath.IsAbs(expanded) {
+		expanded = filepath.Join(repoRoot, expanded)
+	}
+	return filepath.Join(expanded, ".treehouse", poolName), nil
 }
