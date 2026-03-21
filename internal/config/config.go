@@ -43,13 +43,15 @@ func Load(repoRoot string) (Config, error) {
 }
 
 func ResolvePoolDir(repoRoot string, root string) (string, error) {
-	remoteURL, err := git.GetRemoteURL(repoRoot)
+	// Use remote URL for the hash when available; fall back to the
+	// absolute repo path for purely-local repositories.
+	hashInput, err := git.GetRemoteURL(repoRoot)
 	if err != nil {
-		return "", err
+		hashInput = repoRoot
 	}
 
 	repoName := filepath.Base(repoRoot)
-	shortHash := git.ShortHash(remoteURL)
+	shortHash := git.ShortHash(hashInput)
 	poolName := repoName + "-" + shortHash
 
 	if root == "" {
