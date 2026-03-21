@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/kunchenguid/treehouse/compare/v1.2.0...v1.2.1) (2026-03-21)
+
+
+### Bug Fixes
+
+* use remote URL for pool hash for local repos ([7b13a4d](https://github.com/kunchenguid/treehouse/commit/7b13a4dd52dbef7270cd1535575e1a0610d8d296))
+
 ## [1.2.0](https://github.com/kunchenguid/treehouse/compare/v1.1.5...v1.2.0) (2026-03-17)
 
 
