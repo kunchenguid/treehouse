@@ -3,7 +3,8 @@
 [![CI](https://github.com/kunchenguid/treehouse/actions/workflows/ci.yml/badge.svg)](https://github.com/kunchenguid/treehouse/actions/workflows/ci.yml)
 [![Release](https://github.com/kunchenguid/treehouse/actions/workflows/release.yml/badge.svg)](https://github.com/kunchenguid/treehouse/actions/workflows/release.yml)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-blue)
-[![X](https://img.shields.io/badge/X-@kunchenxyz-black?logo=x)](https://x.com/kunchenxyz)
+[![X](https://img.shields.io/badge/X-@kunchenguid-black?logo=x)](https://x.com/kunchenguid)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.gg/BW4aJuQhTf)
 
 <h3 align="center">Manage worktrees without managing worktrees.</h3>
 
