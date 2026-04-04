@@ -52,6 +52,21 @@ curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh
 irm https://kunchenguid.github.io/treehouse/install.ps1 | iex
 ```
 
+**Nix**
+
+```sh
+nix run github:kunchenguid/treehouse
+```
+
+Or add to your flake inputs:
+
+```nix
+treehouse = {
+  url = "github:kunchenguid/treehouse";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+```
+
 **Go**
 
 ```sh
