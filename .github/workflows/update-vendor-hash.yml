@@ -1,0 +1,52 @@
+name: update-vendor-hash
+
+on:
+  pull_request:
+    paths:
+      - go.sum
+      - flake.nix
+
+permissions:
+  contents: write
+
+jobs:
+  update-vendor-hash:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Update vendorHash if needed
+        run: |
+          # Try building — if vendorHash is correct, this succeeds and we're done
+          if nix build 2>/dev/null; then
+            echo "vendorHash is already correct"
+            exit 0
+          fi
+
+          # Extract correct hash from the error
+          correct_hash=$(nix build 2>&1 | grep "got:" | awk '{print $2}')
+          if [ -z "$correct_hash" ]; then
+            echo "Failed to extract correct hash"
+            nix build 2>&1
+            exit 1
+          fi
+
+          echo "Updating vendorHash to $correct_hash"
+          sed -i "s|vendorHash = \".*\";|vendorHash = \"$correct_hash\";|" flake.nix
+
+          # Verify it builds now
+          nix build
+
+      - name: Commit if changed
+        run: |
+          git diff --quiet flake.nix && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add flake.nix
+          git commit -m "chore: update nix vendorHash"
+          git push

@@ -6,6 +6,7 @@
   outputs =
     { nixpkgs, ... }:
     let
+      version = "1.2.1"; # x-release-please-version
       systems = [
         "aarch64-darwin"
         "x86_64-darwin"
@@ -23,9 +24,12 @@
         {
           default = pkgs.buildGoModule {
             pname = "treehouse";
-            version = "0.1.0";
+            inherit version;
             src = ./.;
             vendorHash = "sha256-fH93/19rZY/jduF4ZS0RLrqBWdCjz6XYnoN+3KPd4Lg=";
+            ldflags = [
+              "-X main.version=v${version}"
+            ];
             nativeCheckInputs = [ pkgs.git ];
           };
         }
