@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.0](https://github.com/kunchenguid/treehouse/compare/v1.2.1...v1.3.0) (2026-04-04)
+
+
+### Features
+
+* **nix:** add flake.nix and flake.lock ([#15](https://github.com/kunchenguid/treehouse/issues/15)) ([500d2f9](https://github.com/kunchenguid/treehouse/commit/500d2f9e26429d02e8378142556af8ad9be8cbd0))
+
+
+### Bug Fixes
+
+* update vendor hash handling in workflow ([fe692a5](https://github.com/kunchenguid/treehouse/commit/fe692a5fdce020a003581abece3d7eacf88dfb03))
+
 ## [1.2.1](https://github.com/kunchenguid/treehouse/compare/v1.2.0...v1.2.1) (2026-03-21)
 
 
