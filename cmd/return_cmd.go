@@ -17,7 +17,7 @@ var returnForce bool
 
 var returnCmd = &cobra.Command{
 	Use:   "return [path]",
-	Short: "Return a worktree to the pool",
+	Short: "Terminate lingering processes and return a worktree",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		wtPath, err := resolveWorktreePath(args)
 		if err != nil {
