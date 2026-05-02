@@ -11,8 +11,9 @@ import (
 )
 
 var (
-	treehouseBin string
-	exitShellBin string
+	treehouseBin      string
+	exitShellBin      string
+	dirtyMainShellBin string
 )
 
 func TestMain(m *testing.M) {
@@ -58,6 +59,45 @@ func TestMain(m *testing.M) {
 	buildShell.Stderr = os.Stderr
 	if err := buildShell.Run(); err != nil {
 		panic("failed to build exit-shell: " + err.Error())
+	}
+
+	dirtyMainShellBin = filepath.Join(buildDir, "dirty-main-shell")
+	if runtime.GOOS == "windows" {
+		dirtyMainShellBin += ".exe"
+	}
+	dirtyMainSrcDir := filepath.Join(buildDir, "dirty-main-shell-src")
+	if err := os.MkdirAll(dirtyMainSrcDir, 0o755); err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirtyMainSrcDir, "go.mod"), []byte("module dirty-main-shell\n\ngo 1.21\n"), 0o644); err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirtyMainSrcDir, "main.go"), []byte(`package main
+
+import (
+	"os"
+	"os/exec"
+)
+
+func main() {
+	cmd := exec.Command("git", "checkout", "main")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		os.Exit(1)
+	}
+	if err := os.WriteFile("README.md", []byte("dirty\n"), 0o644); err != nil {
+		os.Exit(1)
+	}
+}
+`), 0o644); err != nil {
+		panic(err)
+	}
+	buildDirtyMainShell := exec.Command("go", "build", "-o", dirtyMainShellBin, ".")
+	buildDirtyMainShell.Dir = dirtyMainSrcDir
+	buildDirtyMainShell.Stderr = os.Stderr
+	if err := buildDirtyMainShell.Run(); err != nil {
+		panic("failed to build dirty-main-shell: " + err.Error())
 	}
 
 	code := m.Run()
@@ -179,6 +219,16 @@ func gitCmd(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func gitCmdResult(t *testing.T, dir string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
 }
 
 // extractWorktreePath parses the worktree path from "treehouse get" stderr.
@@ -339,6 +389,66 @@ func TestReturnFromInsideWorktreeDoesNotTerminateCaller(t *testing.T) {
 	}
 	if strings.Contains(returnErr, "Terminated lingering processes") && strings.Contains(returnErr, "treehouse") {
 		t.Fatalf("return should not terminate its own process chain: %s", returnErr)
+	}
+}
+
+func TestGetDetachesWorktreeWhenLeavingDirty(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	gitCmd(t, repoDir, "checkout", "-b", "feature")
+
+	env := []string{"SHELL=" + dirtyMainShellBin}
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get failed (code %d): %s", code, getErr)
+	}
+	wtPath := extractWorktreePath(getErr, homeDir)
+	if wtPath == "" {
+		t.Fatal("could not extract worktree path")
+	}
+	if !strings.Contains(getErr, "Worktree left dirty") {
+		t.Fatalf("expected get to leave dirty worktree for this regression, got: %s", getErr)
+	}
+
+	if branch, err := gitCmdResult(t, wtPath, "symbolic-ref", "--short", "-q", "HEAD"); err == nil {
+		t.Fatalf("expected worktree HEAD to be detached, got branch %q", branch)
+	}
+	if out, err := gitCmdResult(t, repoDir, "checkout", "main"); err != nil {
+		t.Fatalf("expected main repo to checkout main after dirty worktree exit, got: %v\n%s", err, out)
+	}
+}
+
+func TestReturnForceCleansAndDetachesCheckedOutBranch(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	gitCmd(t, repoDir, "checkout", "-b", "feature")
+
+	env := []string{"SHELL=" + exitShellBin}
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get failed (code %d): %s", code, getErr)
+	}
+	wtPath := extractWorktreePath(getErr, homeDir)
+	if wtPath == "" {
+		t.Fatal("could not extract worktree path")
+	}
+
+	gitCmd(t, wtPath, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, returnErr, code := runTreehouse(t, repoDir, homeDir, nil, "return", "--force", wtPath)
+	if code != 0 {
+		t.Fatalf("return --force failed (code %d): %s", code, returnErr)
+	}
+
+	if branch, err := gitCmdResult(t, wtPath, "symbolic-ref", "--short", "-q", "HEAD"); err == nil {
+		t.Fatalf("expected returned worktree HEAD to be detached, got branch %q", branch)
+	}
+	if status := gitCmd(t, wtPath, "status", "--porcelain"); status != "" {
+		t.Fatalf("expected return --force to clean tracked changes, got status:\n%s", status)
+	}
+	if out, err := gitCmdResult(t, repoDir, "checkout", "main"); err != nil {
+		t.Fatalf("expected main repo to checkout main after return --force, got: %v\n%s", err, out)
 	}
 }
 

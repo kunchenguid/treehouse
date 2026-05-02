@@ -60,6 +60,10 @@ func getRunE(cmd *cobra.Command, args []string) error {
 	_, err = shell.Spawn(wtPath, env)
 
 	// Subshell exited — handle return
+	if err := git.DetachWorktree(wtPath); err != nil {
+		fmt.Fprintf(os.Stderr, "🌳 Warning: failed to detach worktree HEAD: %v\n", err)
+	}
+
 	dirty, _ := git.IsDirty(wtPath)
 	if dirty {
 		fmt.Fprintf(os.Stderr, "🌳 Worktree has uncommitted changes.\n")
