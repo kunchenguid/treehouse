@@ -71,7 +71,7 @@ var returnCmd = &cobra.Command{
 }
 
 func init() {
-	returnCmd.Flags().BoolVar(&returnForce, "force", false, "Skip dirty check prompt")
+	returnCmd.Flags().BoolVar(&returnForce, "force", false, "Clean, reset, and return without prompting")
 	rootCmd.AddCommand(returnCmd)
 }
 
