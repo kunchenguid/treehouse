@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2](https://github.com/kunchenguid/treehouse/compare/v1.3.1...v1.3.2) (2026-05-02)
+
+
+### Bug Fixes
+
+* **cmd:** detach worktrees before pool reuse ([#19](https://github.com/kunchenguid/treehouse/issues/19)) ([0d849a3](https://github.com/kunchenguid/treehouse/commit/0d849a3b82a8647f507b1e2f186dc041c930fe35))
+
 ## [1.3.1](https://github.com/kunchenguid/treehouse/compare/v1.3.0...v1.3.1) (2026-04-16)
 
 
