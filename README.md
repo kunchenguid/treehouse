@@ -148,7 +148,7 @@ Treehouse manages a **pool of git worktrees** per repository, stored under `~/.t
 
 | Command   | Flag      | Description                       |
 | --------- | --------- | --------------------------------- |
-| `return`  | `--force` | Skip dirty-check prompt           |
+| `return`  | `--force` | Clean, reset, and return without prompting |
 | `destroy` | `--force` | Force destroy even if in-use      |
 | `destroy` | `--all`   | Destroy all worktrees in the pool |
 

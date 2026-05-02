@@ -53,6 +53,10 @@ var returnCmd = &cobra.Command{
 					return nil
 				}
 			}
+
+			if err := git.DetachWorktree(wtPath); err != nil {
+				return fmt.Errorf("failed to detach worktree HEAD: %w", err)
+			}
 		}
 
 		killLingeringProcesses(wtPath)
@@ -67,7 +71,7 @@ var returnCmd = &cobra.Command{
 }
 
 func init() {
-	returnCmd.Flags().BoolVar(&returnForce, "force", false, "Skip dirty check prompt")
+	returnCmd.Flags().BoolVar(&returnForce, "force", false, "Clean, reset, and return without prompting")
 	rootCmd.AddCommand(returnCmd)
 }
 

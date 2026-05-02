@@ -136,10 +136,18 @@ func ResetWorktree(worktreePath, branch string) error {
 		repoRoot = worktreePath
 	}
 	ref := branchRef(repoRoot, branch)
-	if _, err := runGit(worktreePath, "checkout", "--detach", ref); err != nil {
+	if _, err := runGit(worktreePath, "checkout", "--detach", "--force", ref); err != nil {
+		return err
+	}
+	if _, err := runGit(worktreePath, "reset", "--hard", ref); err != nil {
 		return err
 	}
 	_, err = runGit(worktreePath, "clean", "-fd")
+	return err
+}
+
+func DetachWorktree(worktreePath string) error {
+	_, err := runGit(worktreePath, "checkout", "--detach")
 	return err
 }
 
