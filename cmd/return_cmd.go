@@ -44,10 +44,6 @@ var returnCmd = &cobra.Command{
 			return fmt.Errorf("worktree %s is not managed by treehouse", wtPath)
 		}
 
-		if err := git.DetachWorktree(wtPath); err != nil {
-			return fmt.Errorf("failed to detach worktree HEAD: %w", err)
-		}
-
 		if !returnForce {
 			dirty, _ := git.IsDirty(wtPath)
 			if dirty {
@@ -56,6 +52,10 @@ var returnCmd = &cobra.Command{
 					fmt.Fprintln(os.Stderr, "🌳 Aborted.")
 					return nil
 				}
+			}
+
+			if err := git.DetachWorktree(wtPath); err != nil {
+				return fmt.Errorf("failed to detach worktree HEAD: %w", err)
 			}
 		}
 

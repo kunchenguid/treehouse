@@ -452,6 +452,52 @@ func TestReturnForceCleansAndDetachesCheckedOutBranch(t *testing.T) {
 	}
 }
 
+func TestReturnForceCleansConflictedWorktree(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	gitCmd(t, repoDir, "checkout", "-b", "feature")
+
+	env := []string{"SHELL=" + exitShellBin}
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get failed (code %d): %s", code, getErr)
+	}
+	wtPath := extractWorktreePath(getErr, homeDir)
+	if wtPath == "" {
+		t.Fatal("could not extract worktree path")
+	}
+
+	gitCmd(t, repoDir, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("main change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repoDir, "commit", "-am", "change main")
+	gitCmd(t, repoDir, "push", "origin", "main")
+
+	gitCmd(t, wtPath, "checkout", "-b", "conflict")
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("worktree change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, wtPath, "commit", "-am", "change worktree")
+	if out, err := gitCmdResult(t, wtPath, "merge", "origin/main"); err == nil {
+		t.Fatalf("expected merge conflict, got success:\n%s", out)
+	}
+
+	_, returnErr, code := runTreehouse(t, repoDir, homeDir, nil, "return", "--force", wtPath)
+	if code != 0 {
+		t.Fatalf("return --force failed (code %d): %s", code, returnErr)
+	}
+
+	if branch, err := gitCmdResult(t, wtPath, "symbolic-ref", "--short", "-q", "HEAD"); err == nil {
+		t.Fatalf("expected returned worktree HEAD to be detached, got branch %q", branch)
+	}
+	if status := gitCmd(t, wtPath, "status", "--porcelain"); status != "" {
+		t.Fatalf("expected return --force to clean conflicted worktree, got status:\n%s", status)
+	}
+	if out, err := gitCmdResult(t, repoDir, "checkout", "main"); err != nil {
+		t.Fatalf("expected main repo to checkout main after return --force, got: %v\n%s", err, out)
+	}
+}
+
 func TestDestroySpecific(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	env := []string{"SHELL=" + exitShellBin}
