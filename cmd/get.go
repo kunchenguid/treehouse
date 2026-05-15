@@ -47,7 +47,7 @@ func getRunE(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: failed to update .gitignore: %v\n", err)
 	}
 
-	wtPath, err := pool.Acquire(repoRoot, poolDir, cfg.MaxTrees)
+	wtPath, err := pool.Acquire(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate)
 	if err != nil {
 		return err
 	}

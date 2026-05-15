@@ -165,7 +165,25 @@ Create a config file with `treehouse init`, or add one manually:
 max_trees = 16
 ```
 
-The repo-level config takes precedence. If no config is found, the default pool size is 16.
+The repo-level config takes precedence.
+If no config is found, the default pool size is 16.
+
+### Hooks
+
+You can run commands automatically at worktree lifecycle points by adding a `[hooks]` section:
+
+```toml
+[hooks]
+post_create = ["./scripts/setup-venv.sh"]
+pre_destroy = ["./scripts/teardown.sh"]
+```
+
+- `post_create` runs after a worktree is provisioned or reset and right before `treehouse get` hands it to you.
+- `pre_destroy` runs before a worktree is removed by `treehouse destroy` (and `treehouse destroy --all`).
+
+Commands in each list run sequentially in the worktree directory, via the OS shell (`/bin/sh -c` on Linux/macOS, `%COMSPEC% /c` on Windows).
+If a command exits non-zero, treehouse logs the command, exit code, and stderr, then continues with the remaining commands.
+A failing hook does not fail the overall `get` or `destroy` operation.
 
 ## Development
 

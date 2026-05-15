@@ -11,6 +11,12 @@ import (
 type Config struct {
 	MaxTrees int    `toml:"max_trees"`
 	Root     string `toml:"root"`
+	Hooks    Hooks  `toml:"hooks,omitempty"`
+}
+
+type Hooks struct {
+	PostCreate []string `toml:"post_create,omitempty"`
+	PreDestroy []string `toml:"pre_destroy,omitempty"`
 }
 
 func DefaultConfig() Config {

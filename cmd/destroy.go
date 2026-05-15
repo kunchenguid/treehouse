@@ -45,7 +45,7 @@ var destroyCmd = &cobra.Command{
 					return nil
 				}
 			}
-			if err := pool.DestroyAll(repoRoot, poolDir, destroyForce); err != nil {
+			if err := pool.DestroyAll(repoRoot, poolDir, destroyForce, cfg.Hooks.PreDestroy); err != nil {
 				return err
 			}
 			fmt.Fprintln(os.Stderr, "🌳 All worktrees destroyed.")
@@ -69,7 +69,7 @@ var destroyCmd = &cobra.Command{
 			}
 		}
 
-		if err := pool.Destroy(repoRoot, poolDir, wtPath, destroyForce); err != nil {
+		if err := pool.Destroy(repoRoot, poolDir, wtPath, destroyForce, cfg.Hooks.PreDestroy); err != nil {
 			return err
 		}
 		fmt.Fprintln(os.Stderr, "🌳 Worktree destroyed.")

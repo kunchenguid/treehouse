@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/treehouse/internal/git"
+	"github.com/kunchenguid/treehouse/internal/hooks"
 	"github.com/kunchenguid/treehouse/internal/process"
 )
 
@@ -25,7 +26,7 @@ type WorktreeStatus struct {
 	Processes []process.ProcessInfo
 }
 
-func Acquire(repoRoot, poolDir string, poolSize int) (string, error) {
+func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (string, error) {
 	branch, err := git.GetDefaultBranch(repoRoot)
 	if err != nil {
 		return "", err
@@ -63,7 +64,11 @@ func Acquire(repoRoot, poolDir string, poolSize int) (string, error) {
 				continue
 			}
 			acquired = wt.Path
-			return WriteState(poolDir, state)
+			if err := WriteState(poolDir, state); err != nil {
+				return err
+			}
+			hooks.Run(postCreate, acquired, os.Stdout, os.Stderr)
+			return nil
 		}
 
 		// No available worktree — create new if pool allows
@@ -90,7 +95,11 @@ func Acquire(repoRoot, poolDir string, poolSize int) (string, error) {
 		})
 
 		acquired = wtPath
-		return WriteState(poolDir, state)
+		if err := WriteState(poolDir, state); err != nil {
+			return err
+		}
+		hooks.Run(postCreate, acquired, os.Stdout, os.Stderr)
+		return nil
 	})
 
 	return acquired, err
@@ -151,7 +160,7 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 	return result, err
 }
 
-func Destroy(repoRoot, poolDir, worktreePath string, force bool) error {
+func Destroy(repoRoot, poolDir, worktreePath string, force bool, preDestroy []string) error {
 	return WithStateLock(poolDir, func() error {
 		state, err := ReadState(poolDir)
 		if err != nil {
@@ -176,6 +185,8 @@ func Destroy(repoRoot, poolDir, worktreePath string, force bool) error {
 			}
 		}
 
+		hooks.Run(preDestroy, worktreePath, os.Stdout, os.Stderr)
+
 		_ = git.RemoveWorktree(repoRoot, worktreePath)
 		// also clean up the parent numbered directory
 		os.RemoveAll(filepath.Dir(worktreePath))
@@ -185,7 +196,7 @@ func Destroy(repoRoot, poolDir, worktreePath string, force bool) error {
 	})
 }
 
-func DestroyAll(repoRoot, poolDir string, force bool) error {
+func DestroyAll(repoRoot, poolDir string, force bool, preDestroy []string) error {
 	return WithStateLock(poolDir, func() error {
 		state, err := ReadState(poolDir)
 		if err != nil {
@@ -202,6 +213,7 @@ func DestroyAll(repoRoot, poolDir string, force bool) error {
 		}
 
 		for _, wt := range state.Worktrees {
+			hooks.Run(preDestroy, wt.Path, os.Stdout, os.Stderr)
 			_ = git.RemoveWorktree(repoRoot, wt.Path)
 			os.RemoveAll(filepath.Dir(wt.Path))
 		}

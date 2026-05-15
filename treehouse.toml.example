@@ -3,3 +3,9 @@
 
 # Maximum number of worktrees in the pool
 max_trees = 16
+
+# Lifecycle hooks. Each list runs sequentially in the worktree directory,
+# via the OS shell. Failures are logged and do not fail the operation.
+# [hooks]
+# post_create = ["./scripts/setup-venv.sh"]
+# pre_destroy = ["./scripts/teardown.sh"]
