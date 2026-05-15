@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func setupRepo(t *testing.T) (repoDir, poolDir string) {
@@ -86,6 +87,51 @@ func TestAcquire_HookFailureDoesNotFailAcquire(t *testing.T) {
 	// The second hook must still have run despite the first failing.
 	if _, err := os.Stat(filepath.Join(wtPath, "second-ran.txt")); err != nil {
 		t.Fatalf("expected second hook to run despite first failing: %v", err)
+	}
+}
+
+func TestAcquire_RunsPostCreateHookAfterReleasingStateLock(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	sentinel := filepath.Join(t.TempDir(), "lock-probe.txt")
+	hook := quoteForShell(os.Args[0]) + " -test.run=TestHookLockProbe -- " + quoteForShell(poolDir) + " " + quoteForShell(sentinel)
+
+	if _, err := Acquire(repoDir, poolDir, 4, []string{hook}); err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+
+	data, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatalf("expected lock probe output: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "unlocked" {
+		t.Fatalf("expected hook to run after state lock release, got %q", got)
+	}
+}
+
+func TestHookLockProbe(t *testing.T) {
+	if len(os.Args) < 3 || os.Args[len(os.Args)-3] != "--" {
+		return
+	}
+
+	poolDir := os.Args[len(os.Args)-2]
+	sentinel := os.Args[len(os.Args)-1]
+	done := make(chan error, 1)
+	go func() {
+		done <- WithStateLock(poolDir, func() error {
+			return os.WriteFile(sentinel, []byte("unlocked\n"), 0o644)
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		if err := os.WriteFile(sentinel, []byte("locked\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Fatal("state lock was still held while hook ran")
 	}
 }
 
