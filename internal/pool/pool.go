@@ -141,6 +141,9 @@ func Release(poolDir, worktreePath string) error {
 		}
 		for i := range state.Worktrees {
 			if state.Worktrees[i].Path == worktreePath {
+				if state.Worktrees[i].Destroying {
+					return fmt.Errorf("worktree %s is being destroyed", worktreePath)
+				}
 				state.Worktrees[i].OwnerPID = 0
 				state.Worktrees[i].OwnerStartedAt = 0
 				break

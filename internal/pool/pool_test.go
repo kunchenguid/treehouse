@@ -483,6 +483,47 @@ func TestDestroyAll_NonForceRejectsLiveDestroyingWorktree(t *testing.T) {
 	}
 }
 
+func TestRelease_RejectsDestroyingWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	state.Worktrees[0].Destroying = true
+	if err := reserveOwner(&state.Worktrees[0]); err != nil {
+		t.Fatalf("reserveOwner failed: %v", err)
+	}
+	reserved := state.Worktrees[0]
+	if err := WriteState(poolDir, state); err != nil {
+		t.Fatalf("WriteState failed: %v", err)
+	}
+
+	err = Release(poolDir, wtPath)
+	if err == nil {
+		t.Fatal("expected Release to reject destroying worktree")
+	}
+	if !strings.Contains(err.Error(), "is being destroyed") {
+		t.Fatalf("expected destroying error, got %v", err)
+	}
+
+	state, err = ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if len(state.Worktrees) != 1 || state.Worktrees[0] != reserved {
+		t.Fatalf("expected destroy reservation to remain unchanged, got %#v", state.Worktrees)
+	}
+}
+
 func TestAcquireDuringHookProbe(t *testing.T) {
 	if len(os.Args) < 5 {
 		return
