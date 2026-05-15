@@ -130,7 +130,7 @@ Treehouse manages a **pool of git worktrees** per repository, stored under `~/.t
 
 - **Detached HEAD** — worktrees use detached HEAD mode, reset to whichever of the local or remote default branch is further ahead, avoiding branch name conflicts entirely.
 - **No daemon** — all operations are inline CLI commands. No background processes, no state to get corrupted.
-- **In-use detection** — treehouse scans running processes to determine which worktrees are in-use. Usage state is never persisted, so it's always accurate.
+- **In-use detection** — treehouse scans running processes and short-lived owner reservations to determine which worktrees are in-use. Reservations are persisted only while `get` and `destroy` lifecycle work is running.
 
 ## CLI Reference
 

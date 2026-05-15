@@ -35,8 +35,8 @@ make test
 
 - No daemon — all operations are inline CLI commands
 - Detached HEAD worktrees reset to whichever of local or origin default branch is further ahead (prefers origin on divergence)
-- In-use detection is runtime-only (process scanning), never persisted
-- State file only tracks pool membership, not usage status
+- In-use detection uses process scanning plus short-lived persisted owner reservations for lifecycle operations
+- State file tracks pool membership and temporary owner/destroy reservations, not long-term usage status
 - Git operations shell out to `git` (go-git has incomplete worktree support)
 - Self-healing: stale state entries are auto-removed
 
@@ -53,8 +53,15 @@ This project targets Linux, macOS, and Windows. All new code **must** work on Wi
 
 ## Config
 
-Place `treehouse.toml` in repo root or `~/.config/treehouse/config.toml`:
+Place repo-safe settings in repo root `treehouse.toml` or user-level `~/.config/treehouse/config.toml`:
 
 ```toml
 max_trees = 16
+
+# User-level config only:
+[hooks]
+post_create = ["./scripts/setup-venv.sh"]
+pre_destroy = ["./scripts/teardown.sh"]
 ```
+
+Hooks are ignored in repo-level config for safety.
