@@ -94,11 +94,11 @@ func TestRun_RunsInGivenDir(t *testing.T) {
 	}
 }
 
-func TestWindowsShellArgsPassHookCommandAsSingleArgument(t *testing.T) {
+func TestWindowsShellArgsPassQuotedHookCommandWithoutQuoteStripping(t *testing.T) {
 	command := `echo hi > "C:\Temp\ran.txt"`
 
 	got := windowsShellArgs(command)
-	want := []string{"/d", "/s", "/c", command}
+	want := []string{"/d", "/c", command}
 
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("windows shell args mismatch\nwant: %#v\n got: %#v", want, got)
