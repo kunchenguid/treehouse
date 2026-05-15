@@ -163,6 +163,86 @@ func TestDestroy_RunsPreDestroyHook(t *testing.T) {
 	}
 }
 
+func TestDestroy_DoesNotAllowHookAcquireToReusePendingDestroyWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+
+	sentinel := filepath.Join(t.TempDir(), "acquired.txt")
+	hook := quoteForShell(os.Args[0]) + " -test.run=TestAcquireDuringHookProbe -- " + quoteForShell(repoDir) + " " + quoteForShell(poolDir) + " " + quoteForShell(sentinel)
+
+	if err := Destroy(repoDir, poolDir, wtPath, true, []string{hook}); err != nil {
+		t.Fatalf("Destroy failed: %v", err)
+	}
+
+	acquiredData, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatalf("expected hook acquire output: %v", err)
+	}
+	acquired := strings.TrimSpace(string(acquiredData))
+	if acquired == wtPath {
+		t.Fatalf("hook acquire reused pending destroy worktree %s", wtPath)
+	}
+	if _, err := os.Stat(acquired); err != nil {
+		t.Fatalf("expected hook-acquired worktree to remain on disk: %v", err)
+	}
+}
+
+func TestDestroyAll_PreservesWorktreeAcquiredByHook(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	if _, err := Acquire(repoDir, poolDir, 4, nil); err != nil {
+		t.Fatalf("first Acquire failed: %v", err)
+	}
+	if _, err := Acquire(repoDir, poolDir, 4, nil); err != nil {
+		t.Fatalf("second Acquire failed: %v", err)
+	}
+
+	sentinel := filepath.Join(t.TempDir(), "acquired.txt")
+	hook := quoteForShell(os.Args[0]) + " -test.run=TestAcquireDuringHookProbe -- " + quoteForShell(repoDir) + " " + quoteForShell(poolDir) + " " + quoteForShell(sentinel)
+
+	if err := DestroyAll(repoDir, poolDir, true, []string{hook}); err != nil {
+		t.Fatalf("DestroyAll failed: %v", err)
+	}
+
+	acquiredData, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatalf("expected hook acquire output: %v", err)
+	}
+	acquired := strings.TrimSpace(string(acquiredData))
+	if _, err := os.Stat(acquired); err != nil {
+		t.Fatalf("expected hook-acquired worktree to remain on disk: %v", err)
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if len(state.Worktrees) != 1 || state.Worktrees[0].Path != acquired {
+		t.Fatalf("expected state to preserve hook-acquired worktree %s, got %#v", acquired, state.Worktrees)
+	}
+}
+
+func TestAcquireDuringHookProbe(t *testing.T) {
+	if len(os.Args) < 5 || os.Args[len(os.Args)-4] != "--" {
+		return
+	}
+
+	repoDir := os.Args[len(os.Args)-3]
+	poolDir := os.Args[len(os.Args)-2]
+	sentinel := os.Args[len(os.Args)-1]
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sentinel, []byte(wtPath+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // quoteForShell wraps a path so it survives splitting by /bin/sh or cmd.exe.
 // Tests only use temp-dir paths which don't contain quotes, so simple quoting
 // is sufficient.

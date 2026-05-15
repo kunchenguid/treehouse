@@ -52,6 +52,9 @@ func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (strin
 
 		// Try to find an available worktree (clean and not in-use)
 		for _, wt := range state.Worktrees {
+			if wt.Destroying {
+				continue
+			}
 			inUse, _ := process.IsWorktreeInUse(wt.Path)
 			if inUse {
 				continue
@@ -141,6 +144,9 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 		cwd, _ := os.Getwd()
 
 		for _, wt := range state.Worktrees {
+			if wt.Destroying {
+				continue
+			}
 			ws := WorktreeStatus{
 				Name:   wt.Name,
 				Path:   wt.Path,
@@ -192,7 +198,8 @@ func Destroy(repoRoot, poolDir, worktreePath string, force bool, preDestroy []st
 			}
 		}
 
-		return nil
+		state.Worktrees[idx].Destroying = true
+		return WriteState(poolDir, state)
 	}); err != nil {
 		return err
 	}
@@ -235,6 +242,9 @@ func DestroyAll(repoRoot, poolDir string, force bool, preDestroy []string) error
 
 		if !force {
 			for _, wt := range state.Worktrees {
+				if wt.Destroying {
+					continue
+				}
 				inUse, _ := process.IsWorktreeInUse(wt.Path)
 				if inUse {
 					return fmt.Errorf("worktree %s is in use by an agent. Use --force to override", wt.Path)
@@ -243,7 +253,10 @@ func DestroyAll(repoRoot, poolDir string, force bool, preDestroy []string) error
 		}
 
 		worktrees = append([]WorktreeEntry(nil), state.Worktrees...)
-		return nil
+		for i := range state.Worktrees {
+			state.Worktrees[i].Destroying = true
+		}
+		return WriteState(poolDir, state)
 	}); err != nil {
 		return err
 	}
@@ -258,11 +271,20 @@ func DestroyAll(repoRoot, poolDir string, force bool, preDestroy []string) error
 			return err
 		}
 
+		remove := make(map[string]struct{}, len(worktrees))
 		for _, wt := range worktrees {
+			remove[wt.Path] = struct{}{}
 			_ = git.RemoveWorktree(repoRoot, wt.Path)
 			os.RemoveAll(filepath.Dir(wt.Path))
 		}
-		state.Worktrees = nil
+
+		kept := state.Worktrees[:0]
+		for _, wt := range state.Worktrees {
+			if _, ok := remove[wt.Path]; !ok {
+				kept = append(kept, wt)
+			}
+		}
+		state.Worktrees = kept
 		return WriteState(poolDir, state)
 	})
 }
