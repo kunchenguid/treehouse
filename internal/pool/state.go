@@ -8,11 +8,12 @@ import (
 )
 
 type WorktreeEntry struct {
-	Name       string    `json:"name"`
-	Path       string    `json:"path"`
-	CreatedAt  time.Time `json:"created_at"`
-	Destroying bool      `json:"destroying,omitempty"`
-	OwnerPID   int32     `json:"owner_pid,omitempty"`
+	Name           string    `json:"name"`
+	Path           string    `json:"path"`
+	CreatedAt      time.Time `json:"created_at"`
+	Destroying     bool      `json:"destroying,omitempty"`
+	OwnerPID       int32     `json:"owner_pid,omitempty"`
+	OwnerStartedAt int64     `json:"owner_started_at,omitempty"`
 }
 
 type State struct {

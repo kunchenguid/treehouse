@@ -167,6 +167,45 @@ func TestList_RecoversDestroyingWorktreeWhenOwnerIsGone(t *testing.T) {
 	}
 }
 
+func TestList_RecoversDestroyingWorktreeWhenOwnerIdentityDoesNotMatch(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	state.Worktrees[0].Destroying = true
+	state.Worktrees[0].OwnerPID = int32(os.Getpid())
+	state.Worktrees[0].OwnerStartedAt = 1
+	if err := WriteState(poolDir, state); err != nil {
+		t.Fatalf("WriteState failed: %v", err)
+	}
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 || statuses[0].Path != wtPath {
+		t.Fatalf("expected stale destroying worktree to be visible, got %#v", statuses)
+	}
+
+	state, err = ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if state.Worktrees[0].Destroying || state.Worktrees[0].OwnerPID != 0 || state.Worktrees[0].OwnerStartedAt != 0 {
+		t.Fatalf("expected stale owner reservation to be cleared, got %#v", state.Worktrees[0])
+	}
+}
+
 func TestList_ShowsReservedWorktreeAsInUse(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
@@ -358,7 +397,9 @@ func TestDestroyAll_NonForceRejectsLiveDestroyingWorktree(t *testing.T) {
 		t.Fatalf("ReadState failed: %v", err)
 	}
 	state.Worktrees[0].Destroying = true
-	state.Worktrees[0].OwnerPID = int32(os.Getpid())
+	if err := reserveOwner(&state.Worktrees[0]); err != nil {
+		t.Fatalf("reserveOwner failed: %v", err)
+	}
 	if err := WriteState(poolDir, state); err != nil {
 		t.Fatalf("WriteState failed: %v", err)
 	}
