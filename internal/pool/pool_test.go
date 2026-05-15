@@ -129,6 +129,32 @@ func TestAcquire_DoesNotReuseWorktreeReservedByPostCreateHook(t *testing.T) {
 	}
 }
 
+func TestRelease_DoesNotDependOnCurrentWorkingDirectory(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+
+	originalCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalCwd); err != nil {
+			t.Fatalf("restore cwd failed: %v", err)
+		}
+	})
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("Chdir failed: %v", err)
+	}
+
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+}
+
 func TestList_RecoversDestroyingWorktreeWhenOwnerIsGone(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 

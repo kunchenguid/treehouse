@@ -123,7 +123,7 @@ func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (strin
 }
 
 func Release(poolDir, worktreePath string) error {
-	repoRoot, err := git.FindRepoRoot()
+	repoRoot, err := git.FindRepoRootFrom(worktreePath)
 	if err != nil {
 		return err
 	}
