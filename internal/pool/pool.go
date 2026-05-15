@@ -131,6 +131,20 @@ func Release(poolDir, worktreePath string) error {
 	if err != nil {
 		return err
 	}
+	if err := WithStateLock(poolDir, func() error {
+		state, err := ReadState(poolDir)
+		if err != nil {
+			return err
+		}
+		for _, wt := range state.Worktrees {
+			if wt.Path == worktreePath && wt.Destroying {
+				return fmt.Errorf("worktree %s is being destroyed", worktreePath)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
 	if err := git.ResetWorktree(worktreePath, branch); err != nil {
 		return err
 	}

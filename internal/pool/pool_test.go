@@ -506,6 +506,10 @@ func TestRelease_RejectsDestroyingWorktree(t *testing.T) {
 	if err := WriteState(poolDir, state); err != nil {
 		t.Fatalf("WriteState failed: %v", err)
 	}
+	dirtyPath := filepath.Join(wtPath, "pre-destroy-work.txt")
+	if err := os.WriteFile(dirtyPath, []byte("keep me"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 
 	err = Release(poolDir, wtPath)
 	if err == nil {
@@ -521,6 +525,9 @@ func TestRelease_RejectsDestroyingWorktree(t *testing.T) {
 	}
 	if len(state.Worktrees) != 1 || state.Worktrees[0] != reserved {
 		t.Fatalf("expected destroy reservation to remain unchanged, got %#v", state.Worktrees)
+	}
+	if _, err := os.Stat(dirtyPath); err != nil {
+		t.Fatalf("expected Release to leave destroying worktree untouched: %v", err)
 	}
 }
 
