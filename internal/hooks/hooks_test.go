@@ -94,13 +94,14 @@ func TestRun_RunsInGivenDir(t *testing.T) {
 	}
 }
 
-func TestWindowsShellArgsPassQuotedHookCommandWithoutQuoteStripping(t *testing.T) {
+func TestWindowsShellCommandLineWrapsQuotedHookCommandForCmd(t *testing.T) {
+	shell := `C:\Windows\System32\cmd.exe`
 	command := `echo hi > "C:\Temp\ran.txt"`
 
-	got := windowsShellArgs(command)
-	want := []string{"/d", "/c", command}
+	got := windowsShellCommandLine(shell, command)
+	want := `"C:\Windows\System32\cmd.exe" /d /s /c "echo hi > "C:\Temp\ran.txt""`
 
-	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("windows shell args mismatch\nwant: %#v\n got: %#v", want, got)
+	if got != want {
+		t.Fatalf("windows shell command line mismatch\nwant: %q\n got: %q", want, got)
 	}
 }

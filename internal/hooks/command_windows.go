@@ -5,6 +5,7 @@ package hooks
 import (
 	"os"
 	"os/exec"
+	"syscall"
 )
 
 func newHookCommand(command string) *exec.Cmd {
@@ -13,5 +14,7 @@ func newHookCommand(command string) *exec.Cmd {
 		shell = "cmd.exe"
 	}
 
-	return exec.Command(shell, windowsShellArgs(command)...)
+	cmd := exec.Command(shell)
+	cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: windowsShellCommandLine(shell, command)}
+	return cmd
 }

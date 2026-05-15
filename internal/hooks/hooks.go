@@ -10,7 +10,7 @@ import (
 )
 
 // Run executes each command in commands sequentially in workDir. Each command
-// is passed to the OS shell (/bin/sh -c on Unix, %COMSPEC% /d /c on Windows).
+// is passed to the OS shell (/bin/sh -c on Unix, %COMSPEC% /d /s /c on Windows).
 // Stdout and stderr from the commands are streamed to the given writers.
 // Failures are logged to stderr and do not stop subsequent commands.
 func Run(commands []string, workDir string, stdout, stderr io.Writer) {
@@ -34,6 +34,6 @@ func runOne(command, workDir string, stdout, stderr io.Writer) {
 	}
 }
 
-func windowsShellArgs(command string) []string {
-	return []string{"/d", "/c", command}
+func windowsShellCommandLine(shell, command string) string {
+	return `"` + shell + `" /d /s /c "` + command + `"`
 }
