@@ -6,13 +6,11 @@ package hooks
 import (
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"runtime"
 )
 
 // Run executes each command in commands sequentially in workDir. Each command
-// is passed to the OS shell (/bin/sh -c on Unix, %COMSPEC% /c on Windows).
+// is passed to the OS shell (/bin/sh -c on Unix, %COMSPEC% /d /s /c on Windows).
 // Stdout and stderr from the commands are streamed to the given writers.
 // Failures are logged to stderr and do not stop subsequent commands.
 func Run(commands []string, workDir string, stdout, stderr io.Writer) {
@@ -22,9 +20,7 @@ func Run(commands []string, workDir string, stdout, stderr io.Writer) {
 }
 
 func runOne(command, workDir string, stdout, stderr io.Writer) {
-	shell, flag := shellAndFlag()
-
-	cmd := exec.Command(shell, flag, command)
+	cmd := newHookCommand(command)
 	cmd.Dir = workDir
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -38,13 +34,6 @@ func runOne(command, workDir string, stdout, stderr io.Writer) {
 	}
 }
 
-func shellAndFlag() (string, string) {
-	if runtime.GOOS == "windows" {
-		shell := os.Getenv("COMSPEC")
-		if shell == "" {
-			shell = "cmd.exe"
-		}
-		return shell, "/c"
-	}
-	return "/bin/sh", "-c"
+func windowsShellArgs(command string) []string {
+	return []string{"/d", "/s", "/c", command}
 }
