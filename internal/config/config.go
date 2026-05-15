@@ -28,20 +28,28 @@ func DefaultConfig() Config {
 func Load(repoRoot string) (Config, error) {
 	cfg := DefaultConfig()
 
-	paths := []string{
-		filepath.Join(repoRoot, "treehouse.toml"),
+	repoPath := filepath.Join(repoRoot, "treehouse.toml")
+	hasRepoConfig := false
+	if _, err := os.Stat(repoPath); err == nil {
+		hasRepoConfig = true
+		if _, err := toml.DecodeFile(repoPath, &cfg); err != nil {
+			return cfg, err
+		}
+		cfg.Hooks = Hooks{}
 	}
 
 	if home, err := os.UserHomeDir(); err == nil {
-		paths = append(paths, filepath.Join(home, ".config", "treehouse", "config.toml"))
-	}
-
-	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			if _, err := toml.DecodeFile(p, &cfg); err != nil {
+		userPath := filepath.Join(home, ".config", "treehouse", "config.toml")
+		if _, err := os.Stat(userPath); err == nil {
+			userCfg := DefaultConfig()
+			if _, err := toml.DecodeFile(userPath, &userCfg); err != nil {
 				return cfg, err
 			}
-			return cfg, nil
+			if !hasRepoConfig {
+				cfg = userCfg
+			} else {
+				cfg.Hooks = userCfg.Hooks
+			}
 		}
 	}
 
