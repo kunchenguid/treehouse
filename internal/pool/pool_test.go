@@ -267,6 +267,26 @@ func TestDestroy_DoesNotAllowHookAcquireToReusePendingDestroyWorktree(t *testing
 	}
 }
 
+func TestDestroy_NonForceRejectsReservedWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+
+	err = Destroy(repoDir, poolDir, wtPath, false, nil)
+	if err == nil {
+		t.Fatal("expected non-force Destroy to reject reserved worktree")
+	}
+	if !strings.Contains(err.Error(), "is in use") {
+		t.Fatalf("expected in-use error, got %v", err)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected reserved worktree to remain on disk: %v", err)
+	}
+}
+
 func TestDestroyAll_PreservesWorktreeAcquiredByHook(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
@@ -299,6 +319,26 @@ func TestDestroyAll_PreservesWorktreeAcquiredByHook(t *testing.T) {
 	}
 	if len(state.Worktrees) != 1 || state.Worktrees[0].Path != acquired {
 		t.Fatalf("expected state to preserve hook-acquired worktree %s, got %#v", acquired, state.Worktrees)
+	}
+}
+
+func TestDestroyAll_NonForceRejectsReservedWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+
+	err = DestroyAll(repoDir, poolDir, false, nil)
+	if err == nil {
+		t.Fatal("expected non-force DestroyAll to reject reserved worktree")
+	}
+	if !strings.Contains(err.Error(), "is in use") {
+		t.Fatalf("expected in-use error, got %v", err)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected reserved worktree to remain on disk: %v", err)
 	}
 }
 

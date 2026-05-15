@@ -211,7 +211,7 @@ func Destroy(repoRoot, poolDir, worktreePath string, force bool, preDestroy []st
 		}
 
 		if !force {
-			inUse, _ := process.IsWorktreeInUse(worktreePath)
+			inUse, _ := worktreeInUse(state.Worktrees[idx])
 			if inUse {
 				return fmt.Errorf("worktree %s is in use by an agent. Use --force to override", worktreePath)
 			}
@@ -265,7 +265,7 @@ func DestroyAll(repoRoot, poolDir string, force bool, preDestroy []string) error
 				if wt.Destroying {
 					continue
 				}
-				inUse, _ := process.IsWorktreeInUse(wt.Path)
+				inUse, _ := worktreeInUse(wt)
 				if inUse {
 					return fmt.Errorf("worktree %s is in use by an agent. Use --force to override", wt.Path)
 				}
@@ -340,6 +340,13 @@ func healState(state State) State {
 
 func ownerAlive(wt WorktreeEntry) bool {
 	return wt.OwnerPID != 0 && process.Exists(wt.OwnerPID)
+}
+
+func worktreeInUse(wt WorktreeEntry) (bool, error) {
+	if ownerAlive(wt) {
+		return true, nil
+	}
+	return process.IsWorktreeInUse(wt.Path)
 }
 
 func cwdInWorktree(cwd, worktreePath string) bool {
