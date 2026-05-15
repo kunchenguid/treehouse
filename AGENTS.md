@@ -9,6 +9,7 @@ Treehouse is a Go CLI tool that manages a pool of git worktrees for parallel AI 
 - `main.go` — entry point, calls `cmd.Execute()`
 - `cmd/` — CLI commands (cobra): `get`, `return`, `status`, `destroy`
 - `internal/config/` — config file loading (`treehouse.toml`)
+- `internal/hooks/` — user-configured lifecycle hook command execution
 - `internal/pool/` — pool manager (acquire, release, list, destroy) + state file
 - `internal/git/` — git operations (shells out to `git` binary)
 - `internal/process/` — in-use detection and lingering process termination for worktrees
