@@ -154,7 +154,7 @@ Treehouse manages a **pool of git worktrees** per repository, stored under `~/.t
 
 ## Configuration
 
-Create a config file with `treehouse init`, or add one manually:
+Create a repo config file with `treehouse init`, or add one manually:
 
 **Repo-level:** `treehouse.toml` in the repository root
 
@@ -165,12 +165,13 @@ Create a config file with `treehouse init`, or add one manually:
 max_trees = 16
 ```
 
-The repo-level config takes precedence.
+The repo-level config takes precedence for repo-safe settings.
 If no config is found, the default pool size is 16.
 
 ### Hooks
 
-You can run commands automatically at worktree lifecycle points by adding a `[hooks]` section:
+You can run commands automatically at worktree lifecycle points by adding a `[hooks]` section to the user-level config at `~/.config/treehouse/config.toml`.
+Hooks in repo-level `treehouse.toml` are ignored for safety.
 
 ```toml
 [hooks]
