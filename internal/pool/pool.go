@@ -262,9 +262,6 @@ func DestroyAll(repoRoot, poolDir string, force bool, preDestroy []string) error
 
 		if !force {
 			for _, wt := range state.Worktrees {
-				if wt.Destroying {
-					continue
-				}
 				inUse, _ := worktreeInUse(wt)
 				if inUse {
 					return fmt.Errorf("worktree %s is in use by an agent. Use --force to override", wt.Path)

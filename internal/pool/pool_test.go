@@ -342,6 +342,46 @@ func TestDestroyAll_NonForceRejectsReservedWorktree(t *testing.T) {
 	}
 }
 
+func TestDestroyAll_NonForceRejectsLiveDestroyingWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	state.Worktrees[0].Destroying = true
+	state.Worktrees[0].OwnerPID = int32(os.Getpid())
+	if err := WriteState(poolDir, state); err != nil {
+		t.Fatalf("WriteState failed: %v", err)
+	}
+
+	err = DestroyAll(repoDir, poolDir, false, nil)
+	if err == nil {
+		t.Fatal("expected non-force DestroyAll to reject live destroying worktree")
+	}
+	if !strings.Contains(err.Error(), "is in use") {
+		t.Fatalf("expected in-use error, got %v", err)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected live destroying worktree to remain on disk: %v", err)
+	}
+	state, err = ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if len(state.Worktrees) != 1 || state.Worktrees[0].Path != wtPath || state.Worktrees[0].OwnerPID != int32(os.Getpid()) {
+		t.Fatalf("expected live destroy reservation to remain unchanged, got %#v", state.Worktrees)
+	}
+}
+
 func TestAcquireDuringHookProbe(t *testing.T) {
 	if len(os.Args) < 5 {
 		return
