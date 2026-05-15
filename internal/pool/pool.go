@@ -199,6 +199,7 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 }
 
 func Destroy(repoRoot, poolDir, worktreePath string, force bool, preDestroy []string) error {
+	var reserved WorktreeEntry
 	if err := WithStateLock(poolDir, func() error {
 		state, err := ReadState(poolDir)
 		if err != nil {
@@ -227,6 +228,7 @@ func Destroy(repoRoot, poolDir, worktreePath string, force bool, preDestroy []st
 		if err := reserveOwner(&state.Worktrees[idx]); err != nil {
 			return err
 		}
+		reserved = state.Worktrees[idx]
 		return WriteState(poolDir, state)
 	}); err != nil {
 		return err
@@ -248,7 +250,10 @@ func Destroy(repoRoot, poolDir, worktreePath string, force bool, preDestroy []st
 			}
 		}
 		if idx == -1 {
-			return fmt.Errorf("worktree %s is not managed by treehouse", worktreePath)
+			return nil
+		}
+		if !sameDestroyReservation(state.Worktrees[idx], reserved) {
+			return nil
 		}
 
 		_ = git.RemoveWorktree(repoRoot, worktreePath)
@@ -277,13 +282,13 @@ func DestroyAll(repoRoot, poolDir string, force bool, preDestroy []string) error
 			}
 		}
 
-		worktrees = append([]WorktreeEntry(nil), state.Worktrees...)
 		for i := range state.Worktrees {
 			state.Worktrees[i].Destroying = true
 			if err := reserveOwner(&state.Worktrees[i]); err != nil {
 				return err
 			}
 		}
+		worktrees = append([]WorktreeEntry(nil), state.Worktrees...)
 		return WriteState(poolDir, state)
 	}); err != nil {
 		return err
@@ -301,6 +306,16 @@ func DestroyAll(repoRoot, poolDir string, force bool, preDestroy []string) error
 
 		remove := make(map[string]struct{}, len(worktrees))
 		for _, wt := range worktrees {
+			idx := -1
+			for i := range state.Worktrees {
+				if state.Worktrees[i].Path == wt.Path {
+					idx = i
+					break
+				}
+			}
+			if idx == -1 || !sameDestroyReservation(state.Worktrees[idx], wt) {
+				continue
+			}
 			remove[wt.Path] = struct{}{}
 			_ = git.RemoveWorktree(repoRoot, wt.Path)
 			os.RemoveAll(filepath.Dir(wt.Path))
@@ -370,6 +385,13 @@ func worktreeInUse(wt WorktreeEntry) (bool, error) {
 		return true, nil
 	}
 	return process.IsWorktreeInUse(wt.Path)
+}
+
+func sameDestroyReservation(current, reserved WorktreeEntry) bool {
+	return current.Path == reserved.Path &&
+		current.Destroying &&
+		current.OwnerPID == reserved.OwnerPID &&
+		current.OwnerStartedAt == reserved.OwnerStartedAt
 }
 
 func cwdInWorktree(cwd, worktreePath string) bool {

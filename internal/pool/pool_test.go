@@ -326,6 +326,36 @@ func TestDestroy_NonForceRejectsReservedWorktree(t *testing.T) {
 	}
 }
 
+func TestDestroy_PreservesSupersededReservationAfterHook(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	sentinel := filepath.Join(wtPath, "superseded.txt")
+	hook := quoteForShell(os.Args[0]) + " -test.run=TestSupersedeDestroyReservationProbe -- " + quoteForShell(poolDir) + " " + quoteForShell(wtPath) + " " + quoteForShell(sentinel)
+
+	if err := Destroy(repoDir, poolDir, wtPath, true, []string{hook}); err != nil {
+		t.Fatalf("Destroy failed: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("expected superseded worktree to remain on disk: %v", err)
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if len(state.Worktrees) != 1 || state.Worktrees[0].Path != wtPath || state.Worktrees[0].Destroying {
+		t.Fatalf("expected superseded state entry to remain available, got %#v", state.Worktrees)
+	}
+}
+
 func TestDestroyAll_PreservesWorktreeAcquiredByHook(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
@@ -358,6 +388,36 @@ func TestDestroyAll_PreservesWorktreeAcquiredByHook(t *testing.T) {
 	}
 	if len(state.Worktrees) != 1 || state.Worktrees[0].Path != acquired {
 		t.Fatalf("expected state to preserve hook-acquired worktree %s, got %#v", acquired, state.Worktrees)
+	}
+}
+
+func TestDestroyAll_PreservesSupersededReservationAfterHook(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	sentinel := filepath.Join(wtPath, "superseded.txt")
+	hook := quoteForShell(os.Args[0]) + " -test.run=TestSupersedeDestroyReservationProbe -- " + quoteForShell(poolDir) + " " + quoteForShell(wtPath) + " " + quoteForShell(sentinel)
+
+	if err := DestroyAll(repoDir, poolDir, true, []string{hook}); err != nil {
+		t.Fatalf("DestroyAll failed: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("expected superseded worktree to remain on disk: %v", err)
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if len(state.Worktrees) != 1 || state.Worktrees[0].Path != wtPath || state.Worktrees[0].Destroying {
+		t.Fatalf("expected superseded state entry to remain available, got %#v", state.Worktrees)
 	}
 }
 
@@ -451,6 +511,43 @@ func TestAcquireDuringHookProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(sentinel, []byte(wtPath+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSupersedeDestroyReservationProbe(t *testing.T) {
+	if len(os.Args) < 5 {
+		return
+	}
+	argStart := -1
+	for i := len(os.Args) - 1; i >= 0; i-- {
+		if os.Args[i] == "--" {
+			argStart = i
+			break
+		}
+	}
+	if argStart == -1 || len(os.Args)-argStart < 4 {
+		return
+	}
+
+	poolDir := os.Args[argStart+1]
+	wtPath := os.Args[argStart+2]
+	sentinel := os.Args[argStart+3]
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range state.Worktrees {
+		if state.Worktrees[i].Path == wtPath {
+			state.Worktrees[i].Destroying = false
+			state.Worktrees[i].OwnerPID = 0
+			state.Worktrees[i].OwnerStartedAt = 0
+		}
+	}
+	if err := os.WriteFile(sentinel, []byte("superseded\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteState(poolDir, state); err != nil {
 		t.Fatal(err)
 	}
 }
