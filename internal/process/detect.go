@@ -25,6 +25,11 @@ func IsWorktreeInUse(worktreePath string) (bool, error) {
 	return len(procs) > 0, nil
 }
 
+func Exists(pid int32) bool {
+	exists, err := process.PidExists(pid)
+	return err == nil && exists
+}
+
 func FindProcessesInWorktree(worktreePath string) ([]ProcessInfo, error) {
 	procs, err := process.Processes()
 	if err != nil {

@@ -108,6 +108,82 @@ func TestAcquire_RunsPostCreateHookAfterReleasingStateLock(t *testing.T) {
 	}
 }
 
+func TestAcquire_DoesNotReuseWorktreeReservedByPostCreateHook(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	sentinel := filepath.Join(t.TempDir(), "acquired.txt")
+	hookCwd := t.TempDir()
+	hook := quoteForShell(os.Args[0]) + " -test.run=TestAcquireDuringHookProbe -- " + quoteForShell(repoDir) + " " + quoteForShell(poolDir) + " " + quoteForShell(sentinel) + " " + quoteForShell(hookCwd)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, []string{hook})
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+
+	acquiredData, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatalf("expected hook acquire output: %v", err)
+	}
+	acquired := strings.TrimSpace(string(acquiredData))
+	if acquired == wtPath {
+		t.Fatalf("hook acquire reused reserved worktree %s", wtPath)
+	}
+}
+
+func TestList_RecoversDestroyingWorktreeWhenOwnerIsGone(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	state.Worktrees[0].Destroying = true
+	state.Worktrees[0].OwnerPID = 999999
+	if err := WriteState(poolDir, state); err != nil {
+		t.Fatalf("WriteState failed: %v", err)
+	}
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 || statuses[0].Path != wtPath {
+		t.Fatalf("expected stale destroying worktree to be visible, got %#v", statuses)
+	}
+
+	state, err = ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if state.Worktrees[0].Destroying || state.Worktrees[0].OwnerPID != 0 {
+		t.Fatalf("expected stale destroy reservation to be cleared, got %#v", state.Worktrees[0])
+	}
+}
+
+func TestList_ShowsReservedWorktreeAsInUse(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 || statuses[0].Path != wtPath || statuses[0].Status != StatusInUse {
+		t.Fatalf("expected reserved worktree to be listed as in-use, got %#v", statuses)
+	}
+}
+
 func TestHookLockProbe(t *testing.T) {
 	if len(os.Args) < 3 || os.Args[len(os.Args)-3] != "--" {
 		return
@@ -227,13 +303,28 @@ func TestDestroyAll_PreservesWorktreeAcquiredByHook(t *testing.T) {
 }
 
 func TestAcquireDuringHookProbe(t *testing.T) {
-	if len(os.Args) < 5 || os.Args[len(os.Args)-4] != "--" {
+	if len(os.Args) < 5 {
+		return
+	}
+	argStart := -1
+	for i := len(os.Args) - 1; i >= 0; i-- {
+		if os.Args[i] == "--" {
+			argStart = i
+			break
+		}
+	}
+	if argStart == -1 || len(os.Args)-argStart < 4 {
 		return
 	}
 
-	repoDir := os.Args[len(os.Args)-3]
-	poolDir := os.Args[len(os.Args)-2]
-	sentinel := os.Args[len(os.Args)-1]
+	repoDir := os.Args[argStart+1]
+	poolDir := os.Args[argStart+2]
+	sentinel := os.Args[argStart+3]
+	if len(os.Args) > argStart+4 {
+		if err := os.Chdir(os.Args[argStart+4]); err != nil {
+			t.Fatal(err)
+		}
+	}
 	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
 	if err != nil {
 		t.Fatal(err)

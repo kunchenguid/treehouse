@@ -51,8 +51,8 @@ func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (strin
 		state = healState(state)
 
 		// Try to find an available worktree (clean and not in-use)
-		for _, wt := range state.Worktrees {
-			if wt.Destroying {
+		for i, wt := range state.Worktrees {
+			if wt.Destroying || ownerAlive(wt) {
 				continue
 			}
 			inUse, _ := process.IsWorktreeInUse(wt.Path)
@@ -67,6 +67,7 @@ func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (strin
 			if err := git.ResetWorktree(wt.Path, branch); err != nil {
 				continue
 			}
+			state.Worktrees[i].OwnerPID = int32(os.Getpid())
 			acquired = wt.Path
 			if err := WriteState(poolDir, state); err != nil {
 				return err
@@ -96,6 +97,7 @@ func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (strin
 			Name:      name,
 			Path:      wtPath,
 			CreatedAt: time.Now(),
+			OwnerPID:  int32(os.Getpid()),
 		})
 
 		acquired = wtPath
@@ -124,7 +126,22 @@ func Release(poolDir, worktreePath string) error {
 	if err != nil {
 		return err
 	}
-	return git.ResetWorktree(worktreePath, branch)
+	if err := git.ResetWorktree(worktreePath, branch); err != nil {
+		return err
+	}
+	return WithStateLock(poolDir, func() error {
+		state, err := ReadState(poolDir)
+		if err != nil {
+			return err
+		}
+		for i := range state.Worktrees {
+			if state.Worktrees[i].Path == worktreePath {
+				state.Worktrees[i].OwnerPID = 0
+				break
+			}
+		}
+		return WriteState(poolDir, state)
+	})
 }
 
 func List(poolDir string) ([]WorktreeStatus, error) {
@@ -156,7 +173,9 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 			procs, _ := process.FindProcessesInWorktree(wt.Path)
 			ws.Processes = procs
 
-			if len(procs) > 0 {
+			if ownerAlive(wt) {
+				ws.Status = StatusInUse
+			} else if len(procs) > 0 {
 				ws.Status = StatusInUse
 				if cwdInWorktree(cwd, wt.Path) {
 					ws.Status = StatusHere
@@ -199,6 +218,7 @@ func Destroy(repoRoot, poolDir, worktreePath string, force bool, preDestroy []st
 		}
 
 		state.Worktrees[idx].Destroying = true
+		state.Worktrees[idx].OwnerPID = int32(os.Getpid())
 		return WriteState(poolDir, state)
 	}); err != nil {
 		return err
@@ -255,6 +275,7 @@ func DestroyAll(repoRoot, poolDir string, force bool, preDestroy []string) error
 		worktrees = append([]WorktreeEntry(nil), state.Worktrees...)
 		for i := range state.Worktrees {
 			state.Worktrees[i].Destroying = true
+			state.Worktrees[i].OwnerPID = int32(os.Getpid())
 		}
 		return WriteState(poolDir, state)
 	}); err != nil {
@@ -306,11 +327,19 @@ func healState(state State) State {
 	var healed []WorktreeEntry
 	for _, wt := range state.Worktrees {
 		if _, err := os.Stat(wt.Path); err == nil {
+			if wt.OwnerPID != 0 && !ownerAlive(wt) {
+				wt.OwnerPID = 0
+				wt.Destroying = false
+			}
 			healed = append(healed, wt)
 		}
 	}
 	state.Worktrees = healed
 	return state
+}
+
+func ownerAlive(wt WorktreeEntry) bool {
+	return wt.OwnerPID != 0 && process.Exists(wt.OwnerPID)
 }
 
 func cwdInWorktree(cwd, worktreePath string) bool {
