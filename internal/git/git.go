@@ -183,7 +183,7 @@ func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error
 }
 
 func IsDirty(worktreePath string) (bool, error) {
-	out, err := runGit(worktreePath, "status", "--porcelain")
+	out, err := runGit(worktreePath, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return false, err
 	}

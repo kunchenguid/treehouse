@@ -616,6 +616,7 @@ func TestPruneSkipsUnsafeWorktrees(t *testing.T) {
 		t.Fatal("could not extract worktree path")
 	}
 
+	gitCmd(t, wtPath, "config", "status.showUntrackedFiles", "no")
 	if err := os.WriteFile(filepath.Join(wtPath, "uncommitted.txt"), []byte("keep me\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -646,5 +647,44 @@ func TestPruneSkipsUnsafeWorktrees(t *testing.T) {
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("unmerged worktree was removed: %v", err)
+	}
+}
+
+func TestPruneRefreshesOriginBeforeMergeSafety(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	env := []string{"SHELL=" + exitShellBin}
+
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get failed (code %d): %s", code, getErr)
+	}
+	wtPath := extractWorktreePath(getErr, homeDir)
+	if wtPath == "" {
+		t.Fatal("could not extract worktree path")
+	}
+
+	base := filepath.Dir(repoDir)
+	rewriteDir := filepath.Join(base, "rewriter")
+	gitCmd(t, "", "clone", filepath.Join(base, "remote.git"), rewriteDir)
+	gitCmd(t, rewriteDir, "config", "user.email", "test@test.com")
+	gitCmd(t, rewriteDir, "config", "user.name", "Test")
+	gitCmd(t, rewriteDir, "checkout", "--orphan", "replacement")
+	gitCmd(t, rewriteDir, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(rewriteDir, "README.md"), []byte("replacement\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, rewriteDir, "add", ".")
+	gitCmd(t, rewriteDir, "commit", "-m", "replacement")
+	gitCmd(t, rewriteDir, "push", "--force", "origin", "replacement:main")
+
+	pruneOut, pruneErr, code := runTreehouse(t, repoDir, homeDir, nil, "prune", "--yes")
+	if code != 0 {
+		t.Fatalf("prune --yes failed after remote rewrite (code %d): %s", code, pruneErr)
+	}
+	if !strings.Contains(pruneOut, "not merged") {
+		t.Fatalf("expected stale local origin to be refreshed, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("worktree with remotely unmerged HEAD was removed: %v", err)
 	}
 }

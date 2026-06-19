@@ -32,6 +32,10 @@ type PruneResult struct {
 }
 
 func Prune(repoRoot, poolDir string, dryRun bool, preDestroy []string) (PruneResult, error) {
+	if err := git.Fetch(repoRoot); err != nil {
+		return PruneResult{}, fmt.Errorf("refresh origin before prune: %w", err)
+	}
+
 	entries, err := pruneSnapshot(poolDir)
 	if err != nil {
 		return PruneResult{}, err

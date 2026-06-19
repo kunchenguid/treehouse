@@ -579,6 +579,7 @@ func TestPruneSkipsDirtyWorktree(t *testing.T) {
 	if err := Release(poolDir, wtPath); err != nil {
 		t.Fatalf("Release failed: %v", err)
 	}
+	runGit(t, wtPath, "config", "status.showUntrackedFiles", "no")
 	if err := os.WriteFile(filepath.Join(wtPath, "uncommitted.txt"), []byte("keep me\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
@@ -627,6 +628,46 @@ func TestPruneSkipsUnmergedCommit(t *testing.T) {
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("expected unmerged worktree to remain: %v", err)
+	}
+}
+
+func TestPruneRefreshesOriginBeforeMergeSafety(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	base := filepath.Dir(repoDir)
+	rewriteDir := filepath.Join(base, "rewriter")
+	runGit(t, "", "clone", filepath.Join(base, "remote.git"), rewriteDir)
+	runGit(t, rewriteDir, "config", "user.email", "test@test.com")
+	runGit(t, rewriteDir, "config", "user.name", "Test")
+	runGit(t, rewriteDir, "checkout", "--orphan", "replacement")
+	runGit(t, rewriteDir, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(rewriteDir, "README.md"), []byte("replacement\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	runGit(t, rewriteDir, "add", ".")
+	runGit(t, rewriteDir, "commit", "-m", "replacement")
+	runGit(t, rewriteDir, "push", "--force", "origin", "replacement:main")
+
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if len(result.Pruned) != 0 {
+		t.Fatalf("worktree with remotely unmerged HEAD must not be pruned, got %#v", result.Pruned)
+	}
+	if !hasSkippedReason(result.Skipped, wtPath, "not merged") {
+		t.Fatalf("expected unmerged worktree skip after fetch, got %#v", result.Skipped)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected remotely unmerged worktree to remain: %v", err)
 	}
 }
 
