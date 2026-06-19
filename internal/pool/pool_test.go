@@ -569,6 +569,30 @@ func TestPruneRemovesAvailableWorktree(t *testing.T) {
 	}
 }
 
+func TestPruneInUseWorktreeDoesNotRequireOrigin(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	remoteDir := filepath.Join(filepath.Dir(repoDir), "remote.git")
+	if err := os.RemoveAll(remoteDir); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed on in-use worktree with offline origin: %v", err)
+	}
+	if len(result.Candidates) != 0 || len(result.Pruned) != 0 || len(result.Skipped) != 0 {
+		t.Fatalf("expected in-use worktree to be ignored, got %#v", result)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected in-use worktree to remain: %v", err)
+	}
+}
+
 func TestPruneSkipsDirtyWorktree(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 

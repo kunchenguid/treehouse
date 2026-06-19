@@ -603,6 +603,34 @@ func TestPruneDryRunAndYes(t *testing.T) {
 	}
 }
 
+func TestPruneRejectsPositionalArgs(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	_, pruneErr, code := runTreehouse(t, repoDir, homeDir, nil, "prune", "/some/path", "--yes")
+	if code == 0 {
+		t.Fatal("expected prune with positional arg to fail")
+	}
+	if !strings.Contains(pruneErr, `unknown command "/some/path" for "treehouse prune"`) {
+		t.Fatalf("expected positional arg error, got stderr:\n%s", pruneErr)
+	}
+}
+
+func TestPruneEmptyPoolDoesNotRequireOrigin(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	remoteDir := filepath.Join(filepath.Dir(repoDir), "remote.git")
+	if err := os.RemoveAll(remoteDir); err != nil {
+		t.Fatal(err)
+	}
+
+	pruneOut, pruneErr, code := runTreehouse(t, repoDir, homeDir, nil, "prune")
+	if code != 0 {
+		t.Fatalf("prune dry run failed on empty pool with offline origin (code %d): %s", code, pruneErr)
+	}
+	if !strings.Contains(pruneOut, "No stale worktrees to prune") {
+		t.Fatalf("expected empty prune output, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
+	}
+}
+
 func TestPruneSkipsUnsafeWorktrees(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	env := []string{"SHELL=" + exitShellBin}

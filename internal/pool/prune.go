@@ -32,20 +32,15 @@ type PruneResult struct {
 }
 
 func Prune(repoRoot, poolDir string, dryRun bool, preDestroy []string) (PruneResult, error) {
-	if err := git.Fetch(repoRoot); err != nil {
-		return PruneResult{}, fmt.Errorf("refresh origin before prune: %w", err)
-	}
-	defaultRef, err := git.DefaultBranchMergeRef(repoRoot)
-	if err != nil {
-		return PruneResult{}, fmt.Errorf("resolve default branch before prune: %w", err)
-	}
-
 	entries, err := pruneSnapshot(poolDir)
 	if err != nil {
 		return PruneResult{}, err
 	}
 
-	plan := planPrune(defaultRef, entries)
+	plan, defaultRef, err := planPrune(repoRoot, entries)
+	if err != nil {
+		return PruneResult{}, err
+	}
 	if dryRun || len(plan.Candidates) == 0 {
 		return plan, nil
 	}
@@ -72,10 +67,26 @@ func pruneSnapshot(poolDir string) ([]WorktreeEntry, error) {
 	return entries, err
 }
 
-func planPrune(defaultRef string, entries []WorktreeEntry) PruneResult {
+func planPrune(repoRoot string, entries []WorktreeEntry) (PruneResult, string, error) {
 	var result PruneResult
+	var defaultRef string
+	resolveDefaultRef := func() (string, error) {
+		if defaultRef != "" {
+			return defaultRef, nil
+		}
+		ref, err := resolvePruneDefaultRef(repoRoot)
+		if err != nil {
+			return "", err
+		}
+		defaultRef = ref
+		return defaultRef, nil
+	}
+
 	for _, wt := range entries {
-		worktree, skipped, stale := analyzePruneCandidate(defaultRef, wt)
+		worktree, skipped, stale, err := analyzePruneCandidate(resolveDefaultRef, wt)
+		if err != nil {
+			return PruneResult{}, "", err
+		}
 		if !stale {
 			continue
 		}
@@ -86,7 +97,18 @@ func planPrune(defaultRef string, entries []WorktreeEntry) PruneResult {
 		result.Candidates = append(result.Candidates, worktree)
 		result.ReclaimableBytes += worktree.Bytes
 	}
-	return result
+	return result, defaultRef, nil
+}
+
+func resolvePruneDefaultRef(repoRoot string) (string, error) {
+	if err := git.Fetch(repoRoot); err != nil {
+		return "", fmt.Errorf("refresh origin before prune: %w", err)
+	}
+	defaultRef, err := git.DefaultBranchMergeRef(repoRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve default branch before prune: %w", err)
+	}
+	return defaultRef, nil
 }
 
 func executePrune(repoRoot, poolDir, defaultRef string, plan PruneResult, preDestroy []string) (PruneResult, error) {
@@ -113,7 +135,10 @@ func executePrune(repoRoot, poolDir, defaultRef string, plan PruneResult, preDes
 				continue
 			}
 
-			worktree, skipped, stale := analyzePruneCandidate(defaultRef, state.Worktrees[i])
+			worktree, skipped, stale, err := analyzePruneCandidate(fixedPruneDefaultRef(defaultRef), state.Worktrees[i])
+			if err != nil {
+				return err
+			}
 			if !stale {
 				continue
 			}
@@ -211,22 +236,30 @@ func executePrune(repoRoot, poolDir, defaultRef string, plan PruneResult, preDes
 	return result, nil
 }
 
-func analyzePruneCandidate(defaultRef string, wt WorktreeEntry) (PruneWorktree, PruneSkipped, bool) {
+type pruneRefResolver func() (string, error)
+
+func fixedPruneDefaultRef(defaultRef string) pruneRefResolver {
+	return func() (string, error) {
+		return defaultRef, nil
+	}
+}
+
+func analyzePruneCandidate(resolveDefaultRef pruneRefResolver, wt WorktreeEntry) (PruneWorktree, PruneSkipped, bool, error) {
 	worktree := PruneWorktree{Name: wt.Name, Path: wt.Path}
 	skipped := PruneSkipped{Name: wt.Name, Path: wt.Path}
 
 	if wt.Destroying || ownerAlive(wt) {
-		return worktree, skipped, false
+		return worktree, skipped, false, nil
 	}
 	inUse, err := process.IsWorktreeInUse(wt.Path)
 	if err != nil {
 		skipped.Reason = fmt.Sprintf("cannot check processes: %v", err)
-		return worktree, skipped, true
+		return worktree, skipped, true, nil
 	}
 	if inUse {
-		return worktree, skipped, false
+		return worktree, skipped, false, nil
 	}
-	return analyzeIdleWorktree(defaultRef, worktree, skipped)
+	return analyzeIdleWorktree(resolveDefaultRef, worktree, skipped)
 }
 
 func finalPruneSafetyCheck(defaultRef string, wt WorktreeEntry) (PruneWorktree, PruneSkipped) {
@@ -242,38 +275,46 @@ func finalPruneSafetyCheck(defaultRef string, wt WorktreeEntry) (PruneWorktree, 
 		skipped.Reason = "in use"
 		return worktree, skipped
 	}
-	worktree, skipped, _ = analyzeIdleWorktree(defaultRef, worktree, skipped)
+	worktree, skipped, _, err = analyzeIdleWorktree(fixedPruneDefaultRef(defaultRef), worktree, skipped)
+	if err != nil {
+		skipped.Reason = fmt.Sprintf("cannot prove HEAD is merged into default branch: %v", err)
+	}
 	return worktree, skipped
 }
 
-func analyzeIdleWorktree(defaultRef string, worktree PruneWorktree, skipped PruneSkipped) (PruneWorktree, PruneSkipped, bool) {
+func analyzeIdleWorktree(resolveDefaultRef pruneRefResolver, worktree PruneWorktree, skipped PruneSkipped) (PruneWorktree, PruneSkipped, bool, error) {
 	dirty, err := git.IsDirty(worktree.Path)
 	if err != nil {
 		skipped.Reason = fmt.Sprintf("cannot check status: %v", err)
-		return worktree, skipped, true
+		return worktree, skipped, true, nil
 	}
 	if dirty {
 		skipped.Reason = "uncommitted changes"
-		return worktree, skipped, true
+		return worktree, skipped, true, nil
+	}
+
+	defaultRef, err := resolveDefaultRef()
+	if err != nil {
+		return worktree, skipped, true, err
 	}
 
 	merged, err := git.IsHeadMergedIntoRef(worktree.Path, defaultRef)
 	if err != nil {
 		skipped.Reason = fmt.Sprintf("cannot prove HEAD is merged into default branch: %v", err)
-		return worktree, skipped, true
+		return worktree, skipped, true, nil
 	}
 	if !merged {
 		skipped.Reason = fmt.Sprintf("HEAD is not merged into %s", defaultRef)
-		return worktree, skipped, true
+		return worktree, skipped, true, nil
 	}
 
 	bytes, err := dirSize(filepath.Dir(worktree.Path))
 	if err != nil {
 		skipped.Reason = fmt.Sprintf("cannot measure size: %v", err)
-		return worktree, skipped, true
+		return worktree, skipped, true, nil
 	}
 	worktree.Bytes = bytes
-	return worktree, skipped, true
+	return worktree, skipped, true, nil
 }
 
 func clearReservation(wt *WorktreeEntry) {

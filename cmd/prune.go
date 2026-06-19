@@ -26,6 +26,7 @@ running process is using it, it has no uncommitted changes, and its HEAD is
 already merged into the default branch.
 
 Prune is a dry run by default. Pass --yes to delete the listed worktrees.`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		repoRoot, err := git.FindRepoRoot()
 		if err != nil {
