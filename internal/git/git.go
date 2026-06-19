@@ -17,11 +17,23 @@ func FindRepoRootFrom(dir string) (string, error) {
 }
 
 func GetDefaultBranch(repoRoot string) (string, error) {
-	// Resolve to the main repo if we're inside a worktree.
+	mainRoot := mainRepoRoot(repoRoot)
+
+	// Try remote HEAD first (most reliable when remote exists).
+	if HasRemote(mainRoot, "origin") {
+		if out, err := runGit(mainRoot, "symbolic-ref", "refs/remotes/origin/HEAD"); err == nil {
+			if branch, ok := strings.CutPrefix(out, "refs/remotes/origin/"); ok && branch != "" {
+				return branch, nil
+			}
+		}
+	}
+
+	return getLocalDefaultBranch(mainRoot)
+}
+
+func mainRepoRoot(repoRoot string) string {
 	mainRoot := repoRoot
 	if dir, err := runGit(repoRoot, "rev-parse", "--git-common-dir"); err == nil {
-		// --git-common-dir returns the .git dir of the main repo.
-		// Derive the working tree root from it.
 		if d, err2 := runGit(repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"); err2 == nil {
 			dir = d
 		}
@@ -30,25 +42,16 @@ func GetDefaultBranch(repoRoot string) (string, error) {
 			mainRoot = strings.TrimSuffix(dir, gitSuffix)
 		}
 	}
+	return mainRoot
+}
 
-	// Try remote HEAD first (most reliable when remote exists).
-	if out, err := runGit(mainRoot, "symbolic-ref", "refs/remotes/origin/HEAD"); err == nil {
-		parts := strings.SplitN(out, "/", 4)
-		if len(parts) >= 4 {
-			return parts[3], nil
-		}
-	}
-
-	// Fall back to the local HEAD of the main repo.
+func getLocalDefaultBranch(mainRoot string) (string, error) {
 	if out, err := runGit(mainRoot, "symbolic-ref", "HEAD"); err == nil {
-		// output is like "refs/heads/main"
-		parts := strings.SplitN(out, "/", 3)
-		if len(parts) >= 3 {
-			return parts[2], nil
+		if branch, ok := strings.CutPrefix(out, "refs/heads/"); ok && branch != "" {
+			return branch, nil
 		}
 	}
 
-	// Fall back to git config init.defaultBranch.
 	if out, err := runGit(mainRoot, "config", "init.defaultBranch"); err == nil && out != "" {
 		return out, nil
 	}
@@ -162,13 +165,17 @@ func DetachWorktree(worktreePath string) error {
 
 func DefaultBranchMergeRef(repoRoot string) (string, error) {
 	if HasRemote(repoRoot, "origin") {
-		branch, err := remoteDefaultBranch(repoRoot, "origin")
+		branch, sha, err := remoteDefaultBranch(repoRoot, "origin")
 		if err != nil {
 			return "", err
 		}
 		ref := remoteTrackingRef("origin", branch)
-		if !refExists(repoRoot, ref) {
+		localSHA, err := refCommit(repoRoot, ref)
+		if err != nil {
 			return "", fmt.Errorf("%s is unavailable", ref)
+		}
+		if localSHA != sha {
+			return "", fmt.Errorf("%s is stale: expected %s, got %s", ref, sha, localSHA)
 		}
 		return ref, nil
 	}
@@ -177,29 +184,43 @@ func DefaultBranchMergeRef(repoRoot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	ref := branchRef(repoRoot, branch)
-	if !refExists(repoRoot, ref) {
+	ref := "refs/heads/" + branch
+	if _, err := refCommit(repoRoot, ref); err != nil {
 		return "", fmt.Errorf("%s is unavailable", ref)
 	}
 	return ref, nil
 }
 
-func remoteDefaultBranch(repoRoot, remote string) (string, error) {
+func refCommit(repoRoot, ref string) (string, error) {
+	return runGit(repoRoot, "rev-parse", "--verify", ref+"^{commit}")
+}
+
+func remoteDefaultBranch(repoRoot, remote string) (string, string, error) {
 	out, err := runGit(repoRoot, "ls-remote", "--symref", remote, "HEAD")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
+	var branch string
+	var sha string
 	for _, line := range strings.Split(out, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) != 3 || fields[0] != "ref:" || fields[2] != "HEAD" {
+		if len(fields) == 3 && fields[0] == "ref:" && fields[2] == "HEAD" {
+			if value, ok := strings.CutPrefix(fields[1], "refs/heads/"); ok {
+				branch = value
+			}
 			continue
 		}
-		branch, ok := strings.CutPrefix(fields[1], "refs/heads/")
-		if ok && branch != "" {
-			return branch, nil
+		if len(fields) == 2 && fields[1] == "HEAD" {
+			sha = fields[0]
 		}
 	}
-	return "", fmt.Errorf("cannot determine %s default branch", remote)
+	if branch == "" {
+		return "", "", fmt.Errorf("cannot determine %s default branch", remote)
+	}
+	if sha == "" {
+		return "", "", fmt.Errorf("cannot determine %s default branch commit", remote)
+	}
+	return branch, sha, nil
 }
 
 func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error) {
