@@ -695,6 +695,47 @@ func TestPruneRefreshesOriginBeforeMergeSafety(t *testing.T) {
 	}
 }
 
+func TestPruneUsesRemoteTrackingDefaultRefNotShadowingBranch(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+	runGit(t, repoDir, "branch", "origin/main", "main")
+
+	base := filepath.Dir(repoDir)
+	rewriteDir := filepath.Join(base, "shadow-rewriter")
+	runGit(t, "", "clone", filepath.Join(base, "remote.git"), rewriteDir)
+	runGit(t, rewriteDir, "config", "user.email", "test@test.com")
+	runGit(t, rewriteDir, "config", "user.name", "Test")
+	runGit(t, rewriteDir, "checkout", "--orphan", "replacement")
+	runGit(t, rewriteDir, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(rewriteDir, "README.md"), []byte("replacement\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	runGit(t, rewriteDir, "add", ".")
+	runGit(t, rewriteDir, "commit", "-m", "replacement")
+	runGit(t, rewriteDir, "push", "--force", "origin", "replacement:main")
+
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if len(result.Pruned) != 0 {
+		t.Fatalf("shadowed default ref must not prune unmerged worktree, got %#v", result.Pruned)
+	}
+	if !hasSkippedReason(result.Skipped, wtPath, "not merged") {
+		t.Fatalf("expected unmerged worktree skip with shadowed ref, got %#v", result.Skipped)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected shadowed-ref worktree to remain: %v", err)
+	}
+}
+
 func TestRelease_RejectsDestroyingWorktree(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 

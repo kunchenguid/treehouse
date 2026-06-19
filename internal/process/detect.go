@@ -70,7 +70,7 @@ func FindProcessesInWorktree(worktreePath string) ([]ProcessInfo, error) {
 			continue
 		}
 
-		if !strings.HasPrefix(rel, "..") {
+		if rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
 			name, _ := p.Name()
 			result = append(result, ProcessInfo{
 				PID:  p.Pid,

@@ -78,12 +78,12 @@ func refExists(repoRoot, ref string) bool {
 	return err == nil
 }
 
-// branchRef returns whichever of the local branch or origin/<branch> is
-// further ahead. If they have diverged (neither is an ancestor of the
-// other), it prefers origin. Falls back to whichever ref exists.
+// branchRef returns whichever of the local branch or remote-tracking branch is
+// further ahead. If they have diverged (neither is an ancestor of the other),
+// it prefers origin. Falls back to whichever ref exists.
 func branchRef(repoRoot, branch string) string {
 	local := "refs/heads/" + branch
-	remote := "origin/" + branch
+	remote := remoteTrackingRef("origin", branch)
 	hasLocal := refExists(repoRoot, local)
 	hasRemote := refExists(repoRoot, remote)
 
@@ -104,6 +104,10 @@ func branchRef(repoRoot, branch string) string {
 	default:
 		return remote
 	}
+}
+
+func remoteTrackingRef(remote, branch string) string {
+	return "refs/remotes/" + remote + "/" + branch
 }
 
 // isAncestor returns true if ref a is an ancestor of (or equal to) ref b.
@@ -162,7 +166,7 @@ func DefaultBranchMergeRef(repoRoot string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		ref := "origin/" + branch
+		ref := remoteTrackingRef("origin", branch)
 		if !refExists(repoRoot, ref) {
 			return "", fmt.Errorf("%s is unavailable", ref)
 		}
