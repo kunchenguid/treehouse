@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/kunchenguid/treehouse/compare/v1.4.0...v1.5.0) (2026-06-19)
+
+
+### Features
+
+* **prune:** add safe stale worktree pruning ([#24](https://github.com/kunchenguid/treehouse/issues/24)) ([3395c20](https://github.com/kunchenguid/treehouse/commit/3395c20e41dbb563e3437c4a0a5e031ce042ca2a))
+
 ## [1.4.0](https://github.com/kunchenguid/treehouse/compare/v1.3.2...v1.4.0) (2026-05-15)
 
 
