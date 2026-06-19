@@ -39,6 +39,8 @@ func StartedAt(pid int32) (int64, bool) {
 	return startedAt, err == nil
 }
 
+// FindProcessesInWorktree returns processes whose current directory is the
+// worktree root or a descendant after absolute path and symlink resolution.
 func FindProcessesInWorktree(worktreePath string) ([]ProcessInfo, error) {
 	procs, err := process.Processes()
 	if err != nil {

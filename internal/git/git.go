@@ -129,6 +129,7 @@ func RemoveWorktree(repoRoot, path string) error {
 	return err
 }
 
+// RemoveCleanWorktree removes a clean git worktree without forcing deletion.
 func RemoveCleanWorktree(repoRoot, path string) error {
 	_, err := runGit(repoRoot, "worktree", "remove", path)
 	return err
@@ -163,6 +164,10 @@ func DetachWorktree(worktreePath string) error {
 	return err
 }
 
+// DefaultBranchMergeRef returns the fully qualified ref used for merge safety checks.
+// Repositories with origin use the current remote default tracking ref and fail
+// closed if that local tracking ref does not match remote HEAD; local-only
+// repositories use the local default branch ref.
 func DefaultBranchMergeRef(repoRoot string) (string, error) {
 	if HasRemote(repoRoot, "origin") {
 		branch, sha, err := remoteDefaultBranch(repoRoot, "origin")
@@ -223,6 +228,7 @@ func remoteDefaultBranch(repoRoot, remote string) (string, string, error) {
 	return branch, sha, nil
 }
 
+// IsHeadMergedIntoDefault reports whether HEAD is merged into DefaultBranchMergeRef.
 func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error) {
 	ref, err := DefaultBranchMergeRef(repoRoot)
 	if err != nil {
@@ -233,6 +239,7 @@ func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error
 	return merged, ref, err
 }
 
+// IsHeadMergedIntoRef reports whether worktreePath's HEAD is an ancestor of ref.
 func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 	cmd := exec.Command("git", "merge-base", "--is-ancestor", "HEAD", ref)
 	cmd.Dir = worktreePath
@@ -246,6 +253,7 @@ func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 	return false, fmt.Errorf("git merge-base --is-ancestor HEAD %s: %s", ref, strings.TrimSpace(string(out)))
 }
 
+// IsDirty reports tracked or untracked changes, ignoring status.showUntrackedFiles.
 func IsDirty(worktreePath string) (bool, error) {
 	out, err := runGit(worktreePath, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {

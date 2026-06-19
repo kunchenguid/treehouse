@@ -130,7 +130,8 @@ Treehouse manages a **pool of git worktrees** per repository, stored under `~/.t
 
 - **Detached HEAD** — worktrees use detached HEAD mode, reset to whichever of the local or remote default branch is further ahead, avoiding branch name conflicts entirely.
 - **No daemon** — all operations are inline CLI commands. No background processes, no state to get corrupted.
-- **In-use detection** — treehouse scans running processes and short-lived owner reservations to determine which worktrees are in-use. Reservations are persisted only while `get` and `destroy` lifecycle work is running.
+- **In-use detection** — treehouse scans running processes and short-lived owner reservations to determine which worktrees are in-use. Reservations are persisted only while `get`, `destroy`, and `prune` lifecycle work is running.
+- **Dirty detection** - treehouse treats tracked changes and untracked files as dirty, even when repository config hides untracked files from normal `git status` output.
 - **Safe pruning** - `treehouse prune` removes only idle managed worktrees whose HEAD is already merged into the default branch and whose working tree is clean.
   It is a dry run unless you pass `--yes`.
 
@@ -155,6 +156,17 @@ Treehouse manages a **pool of git worktrees** per repository, stored under `~/.t
 | `prune`   | `--yes`   | Delete stale idle worktrees instead of doing a dry run |
 | `destroy` | `--force` | Force destroy even if in-use      |
 | `destroy` | `--all`   | Destroy all worktrees in the pool |
+
+### Pruning stale worktrees
+
+`treehouse prune` is a dry run by default.
+It lists stale idle managed worktrees that would be deleted and shows the reclaimable disk space.
+Pass `treehouse prune --yes` to delete those worktrees.
+
+Prune ignores worktrees that are currently in use or reserved by another lifecycle operation.
+It skips idle worktrees that are unsafe to remove and prints the skip reason, such as uncommitted tracked or untracked changes, or a HEAD commit that is not merged into the default branch.
+When `origin` exists, prune fetches it and proves each HEAD against the current remote default branch tracking ref.
+Without `origin`, prune uses the local default branch ref.
 
 ## Configuration
 
@@ -188,7 +200,7 @@ pre_destroy = ["./scripts/teardown.sh"]
 
 Commands in each list run sequentially in the worktree directory, via the OS shell (`/bin/sh -c` on Linux/macOS, `%COMSPEC% /c` on Windows).
 If a command exits non-zero, treehouse logs the command, exit code, and stderr, then continues with the remaining commands.
-A failing hook does not fail the overall `get` or `destroy` operation.
+A failing hook does not fail the overall `get`, `destroy`, or `prune` operation.
 
 ## Development
 

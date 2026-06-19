@@ -11,18 +11,22 @@ import (
 	"github.com/kunchenguid/treehouse/internal/process"
 )
 
+// PruneWorktree describes a stale worktree that prune can remove or did remove.
 type PruneWorktree struct {
 	Name  string
 	Path  string
 	Bytes int64
 }
 
+// PruneSkipped describes a worktree that prune left in place for safety.
 type PruneSkipped struct {
 	Name   string
 	Path   string
 	Reason string
 }
 
+// PruneResult describes dry-run candidates, removed worktrees, skipped worktrees,
+// and the corresponding byte counts.
 type PruneResult struct {
 	Candidates       []PruneWorktree
 	Pruned           []PruneWorktree
@@ -31,6 +35,10 @@ type PruneResult struct {
 	FreedBytes       int64
 }
 
+// Prune finds stale idle managed worktrees and optionally deletes them.
+// A stale worktree is clean, unused, unreserved, and merged into the default
+// branch ref selected by git.DefaultBranchMergeRef.
+// In dryRun mode Prune reports candidates and reclaimable bytes without deleting.
 func Prune(repoRoot, poolDir string, dryRun bool, preDestroy []string) (PruneResult, error) {
 	entries, err := pruneSnapshot(poolDir)
 	if err != nil {
