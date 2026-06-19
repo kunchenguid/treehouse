@@ -151,6 +151,37 @@ func DetachWorktree(worktreePath string) error {
 	return err
 }
 
+func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error) {
+	branch, err := GetDefaultBranch(repoRoot)
+	if err != nil {
+		return false, "", err
+	}
+
+	ref := ""
+	if HasRemote(repoRoot, "origin") {
+		ref = "origin/" + branch
+		if !refExists(repoRoot, ref) {
+			return false, ref, fmt.Errorf("%s is unavailable", ref)
+		}
+	} else {
+		ref = branchRef(repoRoot, branch)
+		if !refExists(repoRoot, ref) {
+			return false, ref, fmt.Errorf("%s is unavailable", ref)
+		}
+	}
+
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", "HEAD", ref)
+	cmd.Dir = worktreePath
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, ref, nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		return false, ref, nil
+	}
+	return false, ref, fmt.Errorf("git merge-base --is-ancestor HEAD %s: %s", ref, strings.TrimSpace(string(out)))
+}
+
 func IsDirty(worktreePath string) (bool, error) {
 	out, err := runGit(worktreePath, "status", "--porcelain")
 	if err != nil {

@@ -509,6 +509,127 @@ func TestDestroyAll_NonForceRejectsLiveDestroyingWorktree(t *testing.T) {
 	}
 }
 
+func TestPruneDryRunDoesNotDeleteAvailableWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	result, err := Prune(repoDir, poolDir, true, nil)
+	if err != nil {
+		t.Fatalf("Prune dry run failed: %v", err)
+	}
+	if len(result.Candidates) != 1 || result.Candidates[0].Path != wtPath {
+		t.Fatalf("expected dry run candidate %s, got %#v", wtPath, result.Candidates)
+	}
+	if len(result.Pruned) != 0 || result.ReclaimableBytes == 0 {
+		t.Fatalf("expected dry run to report reclaimable space without pruning, got %#v", result)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("dry run removed worktree %s: %v", wtPath, err)
+	}
+}
+
+func TestPruneRemovesAvailableWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if len(result.Pruned) != 1 || result.Pruned[0].Path != wtPath {
+		t.Fatalf("expected pruned worktree %s, got %#v", wtPath, result.Pruned)
+	}
+	if result.FreedBytes == 0 {
+		t.Fatalf("expected freed bytes, got %#v", result)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("expected worktree to be removed, stat err: %v", err)
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if len(state.Worktrees) != 0 {
+		t.Fatalf("expected pruned worktree to be removed from state, got %#v", state.Worktrees)
+	}
+}
+
+func TestPruneSkipsDirtyWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "uncommitted.txt"), []byte("keep me\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if len(result.Pruned) != 0 {
+		t.Fatalf("dirty worktree must not be pruned, got %#v", result.Pruned)
+	}
+	if !hasSkippedReason(result.Skipped, wtPath, "uncommitted changes") {
+		t.Fatalf("expected dirty worktree skip, got %#v", result.Skipped)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected dirty worktree to remain: %v", err)
+	}
+}
+
+func TestPruneSkipsUnmergedCommit(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	runGit(t, wtPath, "checkout", "-b", "unmerged-work")
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("unmerged\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	runGit(t, wtPath, "commit", "-am", "unmerged work")
+
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if len(result.Pruned) != 0 {
+		t.Fatalf("unmerged worktree must not be pruned, got %#v", result.Pruned)
+	}
+	if !hasSkippedReason(result.Skipped, wtPath, "not merged") {
+		t.Fatalf("expected unmerged worktree skip, got %#v", result.Skipped)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected unmerged worktree to remain: %v", err)
+	}
+}
+
 func TestRelease_RejectsDestroyingWorktree(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
@@ -555,6 +676,15 @@ func TestRelease_RejectsDestroyingWorktree(t *testing.T) {
 	if _, err := os.Stat(dirtyPath); err != nil {
 		t.Fatalf("expected Release to leave destroying worktree untouched: %v", err)
 	}
+}
+
+func hasSkippedReason(skipped []PruneSkipped, path, reason string) bool {
+	for _, wt := range skipped {
+		if wt.Path == path && strings.Contains(wt.Reason, reason) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAcquireDuringHookProbe(t *testing.T) {

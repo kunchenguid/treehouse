@@ -131,6 +131,8 @@ Treehouse manages a **pool of git worktrees** per repository, stored under `~/.t
 - **Detached HEAD** — worktrees use detached HEAD mode, reset to whichever of the local or remote default branch is further ahead, avoiding branch name conflicts entirely.
 - **No daemon** — all operations are inline CLI commands. No background processes, no state to get corrupted.
 - **In-use detection** — treehouse scans running processes and short-lived owner reservations to determine which worktrees are in-use. Reservations are persisted only while `get` and `destroy` lifecycle work is running.
+- **Safe pruning** - `treehouse prune` removes only idle managed worktrees whose HEAD is already merged into the default branch and whose working tree is clean.
+  It is a dry run unless you pass `--yes`.
 
 ## CLI Reference
 
@@ -140,6 +142,7 @@ Treehouse manages a **pool of git worktrees** per repository, stored under `~/.t
 | `treehouse get`            | Acquire a worktree from the pool                     |
 | `treehouse status`         | Show pool status (highlights your current worktree)  |
 | `treehouse return [path]`  | Terminate lingering worktree processes and return it to the pool |
+| `treehouse prune`          | Dry-run removal of stale idle worktrees to reclaim disk space |
 | `treehouse destroy [path]` | Remove a worktree from the pool                      |
 | `treehouse init`           | Create a default `treehouse.toml` config file        |
 | `treehouse update`         | Update treehouse to the latest version               |
@@ -149,6 +152,7 @@ Treehouse manages a **pool of git worktrees** per repository, stored under `~/.t
 | Command   | Flag      | Description                       |
 | --------- | --------- | --------------------------------- |
 | `return`  | `--force` | Clean, reset, and return without prompting |
+| `prune`   | `--yes`   | Delete stale idle worktrees instead of doing a dry run |
 | `destroy` | `--force` | Force destroy even if in-use      |
 | `destroy` | `--all`   | Destroy all worktrees in the pool |
 
