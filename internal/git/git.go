@@ -37,12 +37,19 @@ func mainRepoRoot(repoRoot string) string {
 		if d, err2 := runGit(repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"); err2 == nil {
 			dir = d
 		}
-		gitSuffix := string(filepath.Separator) + ".git"
-		if strings.HasSuffix(dir, gitSuffix) {
-			mainRoot = strings.TrimSuffix(dir, gitSuffix)
+		if root, ok := repoRootFromCommonGitDir(dir); ok {
+			mainRoot = root
 		}
 	}
 	return mainRoot
+}
+
+func repoRootFromCommonGitDir(dir string) (string, bool) {
+	cleaned := filepath.Clean(filepath.FromSlash(dir))
+	if filepath.Base(cleaned) != ".git" {
+		return "", false
+	}
+	return filepath.Dir(cleaned), true
 }
 
 func getLocalDefaultBranch(mainRoot string) (string, error) {

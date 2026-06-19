@@ -8,6 +8,43 @@ import (
 	"testing"
 )
 
+func TestRepoRootFromCommonGitDirHandlesForwardSlashPath(t *testing.T) {
+	root, ok := repoRootFromCommonGitDir("C:/Users/runner/AppData/Local/Temp/repo/.git")
+	if !ok {
+		t.Fatal("expected .git common dir to resolve to a repo root")
+	}
+
+	want := filepath.Clean(filepath.FromSlash("C:/Users/runner/AppData/Local/Temp/repo"))
+	if root != want {
+		t.Fatalf("expected repo root %q, got %q", want, root)
+	}
+}
+
+func TestGetDefaultBranchFromDetachedLinkedWorktreeUsesMainRepoHead(t *testing.T) {
+	base := t.TempDir()
+	repoDir := filepath.Join(base, "repo")
+	wtPath := filepath.Join(base, "worktree")
+
+	mustGit(t, "", "init", "--initial-branch=main", repoDir)
+	mustGit(t, repoDir, "config", "user.email", "test@test.com")
+	mustGit(t, repoDir, "config", "user.name", "Test")
+	mustGit(t, repoDir, "config", "init.defaultBranch", "wrong")
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repoDir, "add", ".")
+	mustGit(t, repoDir, "commit", "-m", "initial")
+	mustGit(t, repoDir, "worktree", "add", "--detach", wtPath, "main")
+
+	branch, err := GetDefaultBranch(wtPath)
+	if err != nil {
+		t.Fatalf("GetDefaultBranch failed: %v", err)
+	}
+	if branch != "main" {
+		t.Fatalf("expected default branch main from main repo HEAD, got %q", branch)
+	}
+}
+
 func TestRemoveCleanWorktreeRejectsDirtyWorktree(t *testing.T) {
 	base := t.TempDir()
 	repoDir := filepath.Join(base, "repo")
