@@ -688,3 +688,44 @@ func TestPruneRefreshesOriginBeforeMergeSafety(t *testing.T) {
 		t.Fatalf("worktree with remotely unmerged HEAD was removed: %v", err)
 	}
 }
+
+func TestPruneUsesCurrentRemoteDefaultBranch(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	env := []string{"SHELL=" + exitShellBin}
+
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get failed (code %d): %s", code, getErr)
+	}
+	wtPath := extractWorktreePath(getErr, homeDir)
+	if wtPath == "" {
+		t.Fatal("could not extract worktree path")
+	}
+
+	base := filepath.Dir(repoDir)
+	remoteDir := filepath.Join(base, "remote.git")
+	rewriteDir := filepath.Join(base, "default-renamer")
+	gitCmd(t, "", "clone", remoteDir, rewriteDir)
+	gitCmd(t, rewriteDir, "config", "user.email", "test@test.com")
+	gitCmd(t, rewriteDir, "config", "user.name", "Test")
+	gitCmd(t, rewriteDir, "checkout", "--orphan", "trunk")
+	gitCmd(t, rewriteDir, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(rewriteDir, "README.md"), []byte("new default\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, rewriteDir, "add", ".")
+	gitCmd(t, rewriteDir, "commit", "-m", "new default")
+	gitCmd(t, rewriteDir, "push", "origin", "trunk")
+	gitCmd(t, remoteDir, "symbolic-ref", "HEAD", "refs/heads/trunk")
+
+	pruneOut, pruneErr, code := runTreehouse(t, repoDir, homeDir, nil, "prune", "--yes")
+	if code != 0 {
+		t.Fatalf("prune --yes failed after remote default rename (code %d): %s", code, pruneErr)
+	}
+	if !strings.Contains(pruneOut, "not merged") || !strings.Contains(pruneOut, "origin/trunk") {
+		t.Fatalf("expected prune to use current remote default, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("worktree unmerged into current remote default was removed: %v", err)
+	}
+}

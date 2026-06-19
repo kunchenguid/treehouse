@@ -122,6 +122,11 @@ func RemoveWorktree(repoRoot, path string) error {
 	return err
 }
 
+func RemoveCleanWorktree(repoRoot, path string) error {
+	_, err := runGit(repoRoot, "worktree", "remove", path)
+	return err
+}
+
 func Fetch(repoRoot string) error {
 	if !HasRemote(repoRoot, "origin") {
 		return nil
@@ -151,35 +156,69 @@ func DetachWorktree(worktreePath string) error {
 	return err
 }
 
-func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error) {
+func DefaultBranchMergeRef(repoRoot string) (string, error) {
+	if HasRemote(repoRoot, "origin") {
+		branch, err := remoteDefaultBranch(repoRoot, "origin")
+		if err != nil {
+			return "", err
+		}
+		ref := "origin/" + branch
+		if !refExists(repoRoot, ref) {
+			return "", fmt.Errorf("%s is unavailable", ref)
+		}
+		return ref, nil
+	}
+
 	branch, err := GetDefaultBranch(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	ref := branchRef(repoRoot, branch)
+	if !refExists(repoRoot, ref) {
+		return "", fmt.Errorf("%s is unavailable", ref)
+	}
+	return ref, nil
+}
+
+func remoteDefaultBranch(repoRoot, remote string) (string, error) {
+	out, err := runGit(repoRoot, "ls-remote", "--symref", remote, "HEAD")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || fields[0] != "ref:" || fields[2] != "HEAD" {
+			continue
+		}
+		branch, ok := strings.CutPrefix(fields[1], "refs/heads/")
+		if ok && branch != "" {
+			return branch, nil
+		}
+	}
+	return "", fmt.Errorf("cannot determine %s default branch", remote)
+}
+
+func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error) {
+	ref, err := DefaultBranchMergeRef(repoRoot)
 	if err != nil {
 		return false, "", err
 	}
 
-	ref := ""
-	if HasRemote(repoRoot, "origin") {
-		ref = "origin/" + branch
-		if !refExists(repoRoot, ref) {
-			return false, ref, fmt.Errorf("%s is unavailable", ref)
-		}
-	} else {
-		ref = branchRef(repoRoot, branch)
-		if !refExists(repoRoot, ref) {
-			return false, ref, fmt.Errorf("%s is unavailable", ref)
-		}
-	}
+	merged, err := IsHeadMergedIntoRef(worktreePath, ref)
+	return merged, ref, err
+}
 
+func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 	cmd := exec.Command("git", "merge-base", "--is-ancestor", "HEAD", ref)
 	cmd.Dir = worktreePath
 	out, err := cmd.CombinedOutput()
 	if err == nil {
-		return true, ref, nil
+		return true, nil
 	}
 	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-		return false, ref, nil
+		return false, nil
 	}
-	return false, ref, fmt.Errorf("git merge-base --is-ancestor HEAD %s: %s", ref, strings.TrimSpace(string(out)))
+	return false, fmt.Errorf("git merge-base --is-ancestor HEAD %s: %s", ref, strings.TrimSpace(string(out)))
 }
 
 func IsDirty(worktreePath string) (bool, error) {
