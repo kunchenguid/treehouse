@@ -1,4 +1,4 @@
-# Treehouse — Agent Guide
+# Treehouse - Agent Guide
 
 ## What is this?
 
@@ -6,15 +6,15 @@ Treehouse is a Go CLI tool that manages a pool of git worktrees for parallel AI 
 
 ## Project Structure
 
-- `main.go` — entry point, calls `cmd.Execute()`
-- `cmd/` — CLI commands (cobra): `get`, `return`, `status`, `destroy`
-- `internal/config/` — config file loading (`treehouse.toml`)
-- `internal/hooks/` — user-configured lifecycle hook command execution
-- `internal/pool/` — pool manager (acquire, release, list, destroy) + state file
-- `internal/git/` — git operations (shells out to `git` binary)
-- `internal/process/` — in-use detection and lingering process termination for worktrees
-- `internal/shell/` — subshell spawning
-- `internal/ui/` — Y/n confirmation prompts
+- `main.go` - entry point, calls `cmd.Execute()`
+- `cmd/` - CLI commands (cobra): `get`, `return`, `status`, `prune`, `destroy`
+- `internal/config/` - config file loading (`treehouse.toml`)
+- `internal/hooks/` - user-configured lifecycle hook command execution
+- `internal/pool/` - pool manager (acquire, release, list, destroy, prune) + state file
+- `internal/git/` - git operations (shells out to `git` binary)
+- `internal/process/` - in-use detection and lingering process termination for worktrees
+- `internal/shell/` - subshell spawning
+- `internal/ui/` - Y/n confirmation prompts
 
 ## Building
 
@@ -34,9 +34,11 @@ make test
 
 ## Key Design Decisions
 
-- No daemon — all operations are inline CLI commands
+- No daemon - all operations are inline CLI commands
 - Detached HEAD worktrees reset to whichever of local or origin default branch is further ahead (prefers origin on divergence)
 - In-use detection uses process scanning plus short-lived persisted owner reservations for lifecycle operations
+- Dirty checks include untracked files even when repository config hides them from normal `git status` output
+- Prune deletes only idle managed worktrees that are clean and whose HEAD is merged into the default branch; dry run is the default
 - State file tracks pool membership and temporary owner/destroy reservations, not long-term usage status
 - Git operations shell out to `git` (go-git has incomplete worktree support)
 - Self-healing: stale state entries are auto-removed
@@ -50,7 +52,7 @@ This project targets Linux, macOS, and Windows. All new code **must** work on Wi
 - **Syscalls**: Unix-only syscalls (e.g., `syscall.Flock`) must be isolated behind build tags (`//go:build !windows` / `//go:build windows`). See `internal/pool/lock_unix.go` and `lock_windows.go` for the pattern.
 - **Build tags**: Follow the existing `_unix.go` / `_windows.go` naming convention (see also `internal/updater/sysproc_*.go`).
 - **CI**: The CI matrix runs tests on `ubuntu`, `macOS`, and `windows`. Cross-compile locally with `GOOS=windows go build ./...` to catch issues early.
-- **Process detection**: `gopsutil` is cross-platform — no special handling needed, but avoid importing platform-specific process APIs directly.
+- **Process detection**: `gopsutil` is cross-platform - no special handling needed, but avoid importing platform-specific process APIs directly.
 
 ## Config
 

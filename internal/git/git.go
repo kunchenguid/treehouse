@@ -17,38 +17,48 @@ func FindRepoRootFrom(dir string) (string, error) {
 }
 
 func GetDefaultBranch(repoRoot string) (string, error) {
-	// Resolve to the main repo if we're inside a worktree.
+	mainRoot := mainRepoRoot(repoRoot)
+
+	// Try remote HEAD first (most reliable when remote exists).
+	if HasRemote(mainRoot, "origin") {
+		if out, err := runGit(mainRoot, "symbolic-ref", "refs/remotes/origin/HEAD"); err == nil {
+			if branch, ok := strings.CutPrefix(out, "refs/remotes/origin/"); ok && branch != "" {
+				return branch, nil
+			}
+		}
+	}
+
+	return getLocalDefaultBranch(mainRoot)
+}
+
+func mainRepoRoot(repoRoot string) string {
 	mainRoot := repoRoot
 	if dir, err := runGit(repoRoot, "rev-parse", "--git-common-dir"); err == nil {
-		// --git-common-dir returns the .git dir of the main repo.
-		// Derive the working tree root from it.
 		if d, err2 := runGit(repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"); err2 == nil {
 			dir = d
 		}
-		gitSuffix := string(filepath.Separator) + ".git"
-		if strings.HasSuffix(dir, gitSuffix) {
-			mainRoot = strings.TrimSuffix(dir, gitSuffix)
+		if root, ok := repoRootFromCommonGitDir(dir); ok {
+			mainRoot = root
 		}
 	}
+	return mainRoot
+}
 
-	// Try remote HEAD first (most reliable when remote exists).
-	if out, err := runGit(mainRoot, "symbolic-ref", "refs/remotes/origin/HEAD"); err == nil {
-		parts := strings.SplitN(out, "/", 4)
-		if len(parts) >= 4 {
-			return parts[3], nil
-		}
+func repoRootFromCommonGitDir(dir string) (string, bool) {
+	cleaned := filepath.Clean(filepath.FromSlash(dir))
+	if filepath.Base(cleaned) != ".git" {
+		return "", false
 	}
+	return filepath.Dir(cleaned), true
+}
 
-	// Fall back to the local HEAD of the main repo.
+func getLocalDefaultBranch(mainRoot string) (string, error) {
 	if out, err := runGit(mainRoot, "symbolic-ref", "HEAD"); err == nil {
-		// output is like "refs/heads/main"
-		parts := strings.SplitN(out, "/", 3)
-		if len(parts) >= 3 {
-			return parts[2], nil
+		if branch, ok := strings.CutPrefix(out, "refs/heads/"); ok && branch != "" {
+			return branch, nil
 		}
 	}
 
-	// Fall back to git config init.defaultBranch.
 	if out, err := runGit(mainRoot, "config", "init.defaultBranch"); err == nil && out != "" {
 		return out, nil
 	}
@@ -78,12 +88,12 @@ func refExists(repoRoot, ref string) bool {
 	return err == nil
 }
 
-// branchRef returns whichever of the local branch or origin/<branch> is
-// further ahead. If they have diverged (neither is an ancestor of the
-// other), it prefers origin. Falls back to whichever ref exists.
+// branchRef returns whichever of the local branch or remote-tracking branch is
+// further ahead. If they have diverged (neither is an ancestor of the other),
+// it prefers origin. Falls back to whichever ref exists.
 func branchRef(repoRoot, branch string) string {
 	local := "refs/heads/" + branch
-	remote := "origin/" + branch
+	remote := remoteTrackingRef("origin", branch)
 	hasLocal := refExists(repoRoot, local)
 	hasRemote := refExists(repoRoot, remote)
 
@@ -106,6 +116,10 @@ func branchRef(repoRoot, branch string) string {
 	}
 }
 
+func remoteTrackingRef(remote, branch string) string {
+	return "refs/remotes/" + remote + "/" + branch
+}
+
 // isAncestor returns true if ref a is an ancestor of (or equal to) ref b.
 func isAncestor(repoRoot, a, b string) bool {
 	_, err := runGit(repoRoot, "merge-base", "--is-ancestor", a, b)
@@ -119,6 +133,12 @@ func AddWorktree(repoRoot, path, branch string) error {
 
 func RemoveWorktree(repoRoot, path string) error {
 	_, err := runGit(repoRoot, "worktree", "remove", "--force", path)
+	return err
+}
+
+// RemoveCleanWorktree removes a clean git worktree without forcing deletion.
+func RemoveCleanWorktree(repoRoot, path string) error {
+	_, err := runGit(repoRoot, "worktree", "remove", path)
 	return err
 }
 
@@ -151,8 +171,98 @@ func DetachWorktree(worktreePath string) error {
 	return err
 }
 
+// DefaultBranchMergeRef returns the fully qualified ref used for merge safety checks.
+// Repositories with origin use the current remote default tracking ref and fail
+// closed if that local tracking ref does not match remote HEAD; local-only
+// repositories use the local default branch ref.
+func DefaultBranchMergeRef(repoRoot string) (string, error) {
+	if HasRemote(repoRoot, "origin") {
+		branch, sha, err := remoteDefaultBranch(repoRoot, "origin")
+		if err != nil {
+			return "", err
+		}
+		ref := remoteTrackingRef("origin", branch)
+		localSHA, err := refCommit(repoRoot, ref)
+		if err != nil {
+			return "", fmt.Errorf("%s is unavailable", ref)
+		}
+		if localSHA != sha {
+			return "", fmt.Errorf("%s is stale: expected %s, got %s", ref, sha, localSHA)
+		}
+		return ref, nil
+	}
+
+	branch, err := GetDefaultBranch(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	ref := "refs/heads/" + branch
+	if _, err := refCommit(repoRoot, ref); err != nil {
+		return "", fmt.Errorf("%s is unavailable", ref)
+	}
+	return ref, nil
+}
+
+func refCommit(repoRoot, ref string) (string, error) {
+	return runGit(repoRoot, "rev-parse", "--verify", ref+"^{commit}")
+}
+
+func remoteDefaultBranch(repoRoot, remote string) (string, string, error) {
+	out, err := runGit(repoRoot, "ls-remote", "--symref", remote, "HEAD")
+	if err != nil {
+		return "", "", err
+	}
+	var branch string
+	var sha string
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 && fields[0] == "ref:" && fields[2] == "HEAD" {
+			if value, ok := strings.CutPrefix(fields[1], "refs/heads/"); ok {
+				branch = value
+			}
+			continue
+		}
+		if len(fields) == 2 && fields[1] == "HEAD" {
+			sha = fields[0]
+		}
+	}
+	if branch == "" {
+		return "", "", fmt.Errorf("cannot determine %s default branch", remote)
+	}
+	if sha == "" {
+		return "", "", fmt.Errorf("cannot determine %s default branch commit", remote)
+	}
+	return branch, sha, nil
+}
+
+// IsHeadMergedIntoDefault reports whether HEAD is merged into DefaultBranchMergeRef.
+func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error) {
+	ref, err := DefaultBranchMergeRef(repoRoot)
+	if err != nil {
+		return false, "", err
+	}
+
+	merged, err := IsHeadMergedIntoRef(worktreePath, ref)
+	return merged, ref, err
+}
+
+// IsHeadMergedIntoRef reports whether worktreePath's HEAD is an ancestor of ref.
+func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", "HEAD", ref)
+	cmd.Dir = worktreePath
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git merge-base --is-ancestor HEAD %s: %s", ref, strings.TrimSpace(string(out)))
+}
+
+// IsDirty reports tracked or untracked changes, ignoring status.showUntrackedFiles.
 func IsDirty(worktreePath string) (bool, error) {
-	out, err := runGit(worktreePath, "status", "--porcelain")
+	out, err := runGit(worktreePath, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return false, err
 	}

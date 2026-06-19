@@ -176,10 +176,11 @@ func runTreehouseFromDir(t *testing.T, repoDir, workDir, homeDir string, extraEn
 // HOME/USERPROFILE to the test homeDir and suppressing update checks.
 func buildEnv(homeDir string, extra ...string) []string {
 	skip := map[string]bool{
-		"HOME":        true,
-		"USERPROFILE": true,
-		"HOMEDRIVE":   true,
-		"HOMEPATH":    true,
+		"HOME":          true,
+		"USERPROFILE":   true,
+		"HOMEDRIVE":     true,
+		"HOMEPATH":      true,
+		"TREEHOUSE_DIR": true,
 	}
 	for _, kv := range extra {
 		if k, _, ok := strings.Cut(kv, "="); ok {
@@ -559,5 +560,200 @@ func TestDestroyNoArgs(t *testing.T) {
 	_, _, code := runTreehouse(t, repoDir, homeDir, nil, "destroy")
 	if code == 0 {
 		t.Fatal("expected destroy with no args and no --all to fail")
+	}
+}
+
+func TestPruneDryRunAndYes(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	env := []string{"SHELL=" + exitShellBin}
+
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get failed (code %d): %s", code, getErr)
+	}
+	wtPath := extractWorktreePath(getErr, homeDir)
+	if wtPath == "" {
+		t.Fatal("could not extract worktree path")
+	}
+
+	pruneOut, pruneErr, code := runTreehouse(t, repoDir, homeDir, nil, "prune")
+	if code != 0 {
+		t.Fatalf("prune dry run failed (code %d): %s", code, pruneErr)
+	}
+	if !strings.Contains(pruneOut, "Dry run") || !strings.Contains(pruneOut, "would prune 1 stale worktree") {
+		t.Fatalf("expected dry-run prune summary, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
+	}
+	prettyWtPath := "~" + wtPath[len(homeDir):]
+	if !strings.Contains(pruneOut, prettyWtPath) {
+		t.Fatalf("expected dry run to list %s, got:\n%s", prettyWtPath, pruneOut)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("dry run removed worktree %s: %v", wtPath, err)
+	}
+
+	pruneOut, pruneErr, code = runTreehouse(t, repoDir, homeDir, nil, "prune", "--yes")
+	if code != 0 {
+		t.Fatalf("prune --yes failed (code %d): %s", code, pruneErr)
+	}
+	if !strings.Contains(pruneOut, "Pruned 1 stale worktree") || !strings.Contains(pruneOut, "freed") {
+		t.Fatalf("expected prune --yes summary, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("expected worktree to be removed after prune --yes, stat err: %v", err)
+	}
+}
+
+func TestPruneRejectsPositionalArgs(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	_, pruneErr, code := runTreehouse(t, repoDir, homeDir, nil, "prune", "/some/path", "--yes")
+	if code == 0 {
+		t.Fatal("expected prune with positional arg to fail")
+	}
+	if !strings.Contains(pruneErr, `unknown command "/some/path" for "treehouse prune"`) {
+		t.Fatalf("expected positional arg error, got stderr:\n%s", pruneErr)
+	}
+}
+
+func TestPruneEmptyPoolDoesNotRequireOrigin(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	remoteDir := filepath.Join(filepath.Dir(repoDir), "remote.git")
+	if err := os.RemoveAll(remoteDir); err != nil {
+		t.Fatal(err)
+	}
+
+	pruneOut, pruneErr, code := runTreehouse(t, repoDir, homeDir, nil, "prune")
+	if code != 0 {
+		t.Fatalf("prune dry run failed on empty pool with offline origin (code %d): %s", code, pruneErr)
+	}
+	if !strings.Contains(pruneOut, "No stale worktrees to prune") {
+		t.Fatalf("expected empty prune output, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
+	}
+}
+
+func TestPruneSkipsUnsafeWorktrees(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	env := []string{"SHELL=" + exitShellBin}
+
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get failed (code %d): %s", code, getErr)
+	}
+	wtPath := extractWorktreePath(getErr, homeDir)
+	if wtPath == "" {
+		t.Fatal("could not extract worktree path")
+	}
+
+	gitCmd(t, wtPath, "config", "status.showUntrackedFiles", "no")
+	if err := os.WriteFile(filepath.Join(wtPath, "uncommitted.txt"), []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pruneOut, pruneErr, code := runTreehouse(t, repoDir, homeDir, nil, "prune", "--yes")
+	if code != 0 {
+		t.Fatalf("prune --yes failed on dirty worktree (code %d): %s", code, pruneErr)
+	}
+	if !strings.Contains(pruneOut, "uncommitted changes") {
+		t.Fatalf("expected dirty worktree skip, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("dirty worktree was removed: %v", err)
+	}
+
+	gitCmd(t, wtPath, "clean", "-fd")
+	gitCmd(t, wtPath, "checkout", "-b", "unmerged-work")
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("unmerged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, wtPath, "commit", "-am", "unmerged work")
+
+	pruneOut, pruneErr, code = runTreehouse(t, repoDir, homeDir, nil, "prune", "--yes")
+	if code != 0 {
+		t.Fatalf("prune --yes failed on unmerged worktree (code %d): %s", code, pruneErr)
+	}
+	if !strings.Contains(pruneOut, "not merged") {
+		t.Fatalf("expected unmerged worktree skip, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("unmerged worktree was removed: %v", err)
+	}
+}
+
+func TestPruneRefreshesOriginBeforeMergeSafety(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	env := []string{"SHELL=" + exitShellBin}
+
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get failed (code %d): %s", code, getErr)
+	}
+	wtPath := extractWorktreePath(getErr, homeDir)
+	if wtPath == "" {
+		t.Fatal("could not extract worktree path")
+	}
+
+	base := filepath.Dir(repoDir)
+	rewriteDir := filepath.Join(base, "rewriter")
+	gitCmd(t, "", "clone", filepath.Join(base, "remote.git"), rewriteDir)
+	gitCmd(t, rewriteDir, "config", "user.email", "test@test.com")
+	gitCmd(t, rewriteDir, "config", "user.name", "Test")
+	gitCmd(t, rewriteDir, "checkout", "--orphan", "replacement")
+	gitCmd(t, rewriteDir, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(rewriteDir, "README.md"), []byte("replacement\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, rewriteDir, "add", ".")
+	gitCmd(t, rewriteDir, "commit", "-m", "replacement")
+	gitCmd(t, rewriteDir, "push", "--force", "origin", "replacement:main")
+
+	pruneOut, pruneErr, code := runTreehouse(t, repoDir, homeDir, nil, "prune", "--yes")
+	if code != 0 {
+		t.Fatalf("prune --yes failed after remote rewrite (code %d): %s", code, pruneErr)
+	}
+	if !strings.Contains(pruneOut, "not merged") {
+		t.Fatalf("expected stale local origin to be refreshed, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("worktree with remotely unmerged HEAD was removed: %v", err)
+	}
+}
+
+func TestPruneUsesCurrentRemoteDefaultBranch(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	env := []string{"SHELL=" + exitShellBin}
+
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get failed (code %d): %s", code, getErr)
+	}
+	wtPath := extractWorktreePath(getErr, homeDir)
+	if wtPath == "" {
+		t.Fatal("could not extract worktree path")
+	}
+
+	base := filepath.Dir(repoDir)
+	remoteDir := filepath.Join(base, "remote.git")
+	rewriteDir := filepath.Join(base, "default-renamer")
+	gitCmd(t, "", "clone", remoteDir, rewriteDir)
+	gitCmd(t, rewriteDir, "config", "user.email", "test@test.com")
+	gitCmd(t, rewriteDir, "config", "user.name", "Test")
+	gitCmd(t, rewriteDir, "checkout", "--orphan", "trunk")
+	gitCmd(t, rewriteDir, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(rewriteDir, "README.md"), []byte("new default\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, rewriteDir, "add", ".")
+	gitCmd(t, rewriteDir, "commit", "-m", "new default")
+	gitCmd(t, rewriteDir, "push", "origin", "trunk")
+	gitCmd(t, remoteDir, "symbolic-ref", "HEAD", "refs/heads/trunk")
+
+	pruneOut, pruneErr, code := runTreehouse(t, repoDir, homeDir, nil, "prune", "--yes")
+	if code != 0 {
+		t.Fatalf("prune --yes failed after remote default rename (code %d): %s", code, pruneErr)
+	}
+	if !strings.Contains(pruneOut, "not merged") || !strings.Contains(pruneOut, "origin/trunk") {
+		t.Fatalf("expected prune to use current remote default, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("worktree unmerged into current remote default was removed: %v", err)
 	}
 }

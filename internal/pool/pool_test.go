@@ -36,6 +36,29 @@ func setupRepo(t *testing.T) (repoDir, poolDir string) {
 	return repoDir, poolDir
 }
 
+func setupLocalRepo(t *testing.T) (repoDir, poolDir string) {
+	t.Helper()
+	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repoDir = filepath.Join(base, "myrepo")
+	poolDir = filepath.Join(base, "pool")
+
+	runGit(t, "", "init", "--initial-branch=main", repoDir)
+	runGit(t, repoDir, "config", "user.email", "test@test.com")
+	runGit(t, repoDir, "config", "user.name", "Test")
+
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repoDir, "add", ".")
+	runGit(t, repoDir, "commit", "-m", "initial")
+	return repoDir, poolDir
+}
+
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
@@ -509,6 +532,345 @@ func TestDestroyAll_NonForceRejectsLiveDestroyingWorktree(t *testing.T) {
 	}
 }
 
+func TestPruneDryRunDoesNotDeleteAvailableWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	result, err := Prune(repoDir, poolDir, true, nil)
+	if err != nil {
+		t.Fatalf("Prune dry run failed: %v", err)
+	}
+	if len(result.Candidates) != 1 || result.Candidates[0].Path != wtPath {
+		t.Fatalf("expected dry run candidate %s, got %#v", wtPath, result.Candidates)
+	}
+	if len(result.Pruned) != 0 || result.ReclaimableBytes == 0 {
+		t.Fatalf("expected dry run to report reclaimable space without pruning, got %#v", result)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("dry run removed worktree %s: %v", wtPath, err)
+	}
+}
+
+func TestPruneRemovesAvailableWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if len(result.Pruned) != 1 || result.Pruned[0].Path != wtPath {
+		t.Fatalf("expected pruned worktree %s, got %#v", wtPath, result.Pruned)
+	}
+	if result.FreedBytes == 0 {
+		t.Fatalf("expected freed bytes, got %#v", result)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("expected worktree to be removed, stat err: %v", err)
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if len(state.Worktrees) != 0 {
+		t.Fatalf("expected pruned worktree to be removed from state, got %#v", state.Worktrees)
+	}
+}
+
+func TestPruneInUseWorktreeDoesNotRequireOrigin(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	remoteDir := filepath.Join(filepath.Dir(repoDir), "remote.git")
+	if err := os.RemoveAll(remoteDir); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed on in-use worktree with offline origin: %v", err)
+	}
+	if len(result.Candidates) != 0 || len(result.Pruned) != 0 || len(result.Skipped) != 0 {
+		t.Fatalf("expected in-use worktree to be ignored, got %#v", result)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected in-use worktree to remain: %v", err)
+	}
+}
+
+func TestPruneSkipsDirtyWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+	runGit(t, wtPath, "config", "status.showUntrackedFiles", "no")
+	if err := os.WriteFile(filepath.Join(wtPath, "uncommitted.txt"), []byte("keep me\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if len(result.Pruned) != 0 {
+		t.Fatalf("dirty worktree must not be pruned, got %#v", result.Pruned)
+	}
+	if !hasSkippedReason(result.Skipped, wtPath, "uncommitted changes") {
+		t.Fatalf("expected dirty worktree skip, got %#v", result.Skipped)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected dirty worktree to remain: %v", err)
+	}
+}
+
+func TestPruneSkipsUnmergedCommit(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	runGit(t, wtPath, "checkout", "-b", "unmerged-work")
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("unmerged\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	runGit(t, wtPath, "commit", "-am", "unmerged work")
+
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if len(result.Pruned) != 0 {
+		t.Fatalf("unmerged worktree must not be pruned, got %#v", result.Pruned)
+	}
+	if !hasSkippedReason(result.Skipped, wtPath, "not merged") {
+		t.Fatalf("expected unmerged worktree skip, got %#v", result.Skipped)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected unmerged worktree to remain: %v", err)
+	}
+}
+
+func TestPruneRefreshesOriginBeforeMergeSafety(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	base := filepath.Dir(repoDir)
+	rewriteDir := filepath.Join(base, "rewriter")
+	runGit(t, "", "clone", filepath.Join(base, "remote.git"), rewriteDir)
+	runGit(t, rewriteDir, "config", "user.email", "test@test.com")
+	runGit(t, rewriteDir, "config", "user.name", "Test")
+	runGit(t, rewriteDir, "checkout", "--orphan", "replacement")
+	runGit(t, rewriteDir, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(rewriteDir, "README.md"), []byte("replacement\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	runGit(t, rewriteDir, "add", ".")
+	runGit(t, rewriteDir, "commit", "-m", "replacement")
+	runGit(t, rewriteDir, "push", "--force", "origin", "replacement:main")
+
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if len(result.Pruned) != 0 {
+		t.Fatalf("worktree with remotely unmerged HEAD must not be pruned, got %#v", result.Pruned)
+	}
+	if !hasSkippedReason(result.Skipped, wtPath, "not merged") {
+		t.Fatalf("expected unmerged worktree skip after fetch, got %#v", result.Skipped)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected remotely unmerged worktree to remain: %v", err)
+	}
+}
+
+func TestPruneUsesRemoteTrackingDefaultRefNotShadowingBranch(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+	runGit(t, repoDir, "branch", "origin/main", "main")
+
+	base := filepath.Dir(repoDir)
+	rewriteDir := filepath.Join(base, "shadow-rewriter")
+	runGit(t, "", "clone", filepath.Join(base, "remote.git"), rewriteDir)
+	runGit(t, rewriteDir, "config", "user.email", "test@test.com")
+	runGit(t, rewriteDir, "config", "user.name", "Test")
+	runGit(t, rewriteDir, "checkout", "--orphan", "replacement")
+	runGit(t, rewriteDir, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(rewriteDir, "README.md"), []byte("replacement\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	runGit(t, rewriteDir, "add", ".")
+	runGit(t, rewriteDir, "commit", "-m", "replacement")
+	runGit(t, rewriteDir, "push", "--force", "origin", "replacement:main")
+
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if len(result.Pruned) != 0 {
+		t.Fatalf("shadowed default ref must not prune unmerged worktree, got %#v", result.Pruned)
+	}
+	if !hasSkippedReason(result.Skipped, wtPath, "not merged") {
+		t.Fatalf("expected unmerged worktree skip with shadowed ref, got %#v", result.Skipped)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected shadowed-ref worktree to remain: %v", err)
+	}
+}
+
+func TestPruneUsesFullLocalDefaultRefWithoutOrigin(t *testing.T) {
+	repoDir, poolDir := setupLocalRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	runGit(t, repoDir, "tag", "main", "HEAD")
+	runGit(t, repoDir, "checkout", "--orphan", "replacement")
+	runGit(t, repoDir, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("replacement\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	runGit(t, repoDir, "add", ".")
+	runGit(t, repoDir, "commit", "-m", "replacement")
+	runGit(t, repoDir, "branch", "-M", "main")
+
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if len(result.Pruned) != 0 {
+		t.Fatalf("local shadowed default ref must not prune unmerged worktree, got %#v", result.Pruned)
+	}
+	if !hasSkippedReason(result.Skipped, wtPath, "refs/heads/main") {
+		t.Fatalf("expected local default branch skip, got %#v", result.Skipped)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected local shadowed-ref worktree to remain: %v", err)
+	}
+}
+
+func TestPruneIgnoresStaleOriginHeadWhenOriginIsAbsent(t *testing.T) {
+	repoDir, poolDir := setupLocalRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	runGit(t, repoDir, "update-ref", "refs/remotes/origin/main", "HEAD")
+	runGit(t, repoDir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	runGit(t, repoDir, "checkout", "--orphan", "trunk")
+	runGit(t, repoDir, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("trunk\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	runGit(t, repoDir, "add", ".")
+	runGit(t, repoDir, "commit", "-m", "trunk")
+
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if len(result.Pruned) != 0 {
+		t.Fatalf("stale origin HEAD must not choose local main, got %#v", result.Pruned)
+	}
+	if !hasSkippedReason(result.Skipped, wtPath, "refs/heads/trunk") {
+		t.Fatalf("expected local HEAD branch skip, got %#v", result.Skipped)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected stale origin HEAD worktree to remain: %v", err)
+	}
+}
+
+func TestPruneFailsClosedWhenRemoteDefaultTrackingRefIsStale(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	runGit(t, repoDir, "branch", "side")
+	runGit(t, repoDir, "push", "origin", "side")
+	runGit(t, repoDir, "config", "--unset-all", "remote.origin.fetch")
+	runGit(t, repoDir, "config", "--add", "remote.origin.fetch", "+refs/heads/side:refs/remotes/origin/side")
+
+	base := filepath.Dir(repoDir)
+	rewriteDir := filepath.Join(base, "stale-default-rewriter")
+	runGit(t, "", "clone", filepath.Join(base, "remote.git"), rewriteDir)
+	runGit(t, rewriteDir, "config", "user.email", "test@test.com")
+	runGit(t, rewriteDir, "config", "user.name", "Test")
+	runGit(t, rewriteDir, "checkout", "--orphan", "replacement")
+	runGit(t, rewriteDir, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(rewriteDir, "README.md"), []byte("replacement\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	runGit(t, rewriteDir, "add", ".")
+	runGit(t, rewriteDir, "commit", "-m", "replacement")
+	runGit(t, rewriteDir, "push", "--force", "origin", "replacement:main")
+
+	if _, err := Prune(repoDir, poolDir, false, nil); err == nil {
+		t.Fatal("expected Prune to reject stale remote default tracking ref")
+	} else if !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("expected stale remote default error, got %v", err)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected stale remote default worktree to remain: %v", err)
+	}
+}
+
 func TestRelease_RejectsDestroyingWorktree(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
@@ -555,6 +917,15 @@ func TestRelease_RejectsDestroyingWorktree(t *testing.T) {
 	if _, err := os.Stat(dirtyPath); err != nil {
 		t.Fatalf("expected Release to leave destroying worktree untouched: %v", err)
 	}
+}
+
+func hasSkippedReason(skipped []PruneSkipped, path, reason string) bool {
+	for _, wt := range skipped {
+		if wt.Path == path && strings.Contains(wt.Reason, reason) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAcquireDuringHookProbe(t *testing.T) {
