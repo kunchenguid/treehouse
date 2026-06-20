@@ -14,7 +14,11 @@ import (
 	"github.com/kunchenguid/treehouse/internal/ui"
 )
 
-var pruneYes bool
+var (
+	pruneYes    bool
+	pruneAll    bool
+	pruneGlobal bool
+)
 
 var pruneCmd = &cobra.Command{
 	Use:   "prune",
@@ -25,9 +29,30 @@ A worktree is stale only when treehouse manages it, no owner reservation or
 running process is using it, it has no uncommitted changes, and its HEAD is
 already merged into the default branch.
 
-Prune is a dry run by default. Pass --yes to delete the listed worktrees.`,
+Prune is a dry run by default. Pass --yes to delete the listed worktrees.
+Pass --all to sweep every pool under the treehouse root from any directory.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if pruneAll || pruneGlobal {
+			cfg, err := config.LoadGlobal()
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			poolRoot, err := config.ResolvePoolRoot("", cfg.Root)
+			if err != nil {
+				return err
+			}
+
+			result, err := pool.PruneAll(poolRoot, !pruneYes, cfg.Hooks.PreDestroy)
+			if err != nil {
+				return err
+			}
+
+			printPruneAllResult(os.Stdout, result, !pruneYes)
+			return nil
+		}
+
 		repoRoot, err := git.FindRepoRoot()
 		if err != nil {
 			return fmt.Errorf("not in a git repository: %w", err)
@@ -55,6 +80,8 @@ Prune is a dry run by default. Pass --yes to delete the listed worktrees.`,
 
 func init() {
 	pruneCmd.Flags().BoolVar(&pruneYes, "yes", false, "Delete stale worktrees instead of doing a dry run")
+	pruneCmd.Flags().BoolVar(&pruneAll, "all", false, "Prune stale worktrees across every pool under the treehouse root")
+	pruneCmd.Flags().BoolVar(&pruneGlobal, "global", false, "Alias for --all")
 	rootCmd.AddCommand(pruneCmd)
 }
 
@@ -90,6 +117,45 @@ func printPruneResult(w io.Writer, result pool.PruneResult, dryRun bool) {
 	)
 	printPruneWorktrees(w, result.Pruned)
 	printPruneSkipped(w, result.Skipped)
+}
+
+func printPruneAllResult(w io.Writer, result pool.PruneAllResult, dryRun bool) {
+	poolCount := len(result.Pools)
+	if dryRun {
+		if len(result.Result.Candidates) == 0 {
+			fmt.Fprintf(w, "🌳 No stale worktrees to prune across %d %s.\n", poolCount, plural("pool", poolCount))
+			printPruneSkipped(w, result.Result.Skipped)
+			return
+		}
+
+		fmt.Fprintf(w, "🌳 Dry run: would prune %d stale %s across %d %s and reclaim %s.\n",
+			len(result.Result.Candidates),
+			plural("worktree", len(result.Result.Candidates)),
+			poolCount,
+			plural("pool", poolCount),
+			formatBytes(result.Result.ReclaimableBytes),
+		)
+		printPruneWorktrees(w, result.Result.Candidates)
+		printPruneSkipped(w, result.Result.Skipped)
+		fmt.Fprintln(w, "🌳 Re-run with --all --yes to delete these worktrees.")
+		return
+	}
+
+	if len(result.Result.Pruned) == 0 {
+		fmt.Fprintf(w, "🌳 No stale worktrees pruned across %d %s.\n", poolCount, plural("pool", poolCount))
+		printPruneSkipped(w, result.Result.Skipped)
+		return
+	}
+
+	fmt.Fprintf(w, "🌳 Pruned %d stale %s across %d %s and freed %s.\n",
+		len(result.Result.Pruned),
+		plural("worktree", len(result.Result.Pruned)),
+		poolCount,
+		plural("pool", poolCount),
+		formatBytes(result.Result.FreedBytes),
+	)
+	printPruneWorktrees(w, result.Result.Pruned)
+	printPruneSkipped(w, result.Result.Skipped)
 }
 
 func printPruneWorktrees(w io.Writer, worktrees []pool.PruneWorktree) {

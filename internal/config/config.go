@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -38,22 +39,46 @@ func Load(repoRoot string) (Config, error) {
 		cfg.Hooks = Hooks{}
 	}
 
-	if home, err := os.UserHomeDir(); err == nil {
-		userPath := filepath.Join(home, ".config", "treehouse", "config.toml")
-		if _, err := os.Stat(userPath); err == nil {
-			userCfg := DefaultConfig()
-			if _, err := toml.DecodeFile(userPath, &userCfg); err != nil {
-				return cfg, err
-			}
-			if !hasRepoConfig {
-				cfg = userCfg
-			} else {
-				cfg.Hooks = userCfg.Hooks
-			}
+	userCfg, hasUserConfig, err := loadUser()
+	if err != nil {
+		return cfg, err
+	}
+	if hasUserConfig {
+		if !hasRepoConfig {
+			cfg = userCfg
+		} else {
+			cfg.Hooks = userCfg.Hooks
 		}
 	}
 
 	return cfg, nil
+}
+
+func LoadGlobal() (Config, error) {
+	cfg := DefaultConfig()
+	userCfg, hasUserConfig, err := loadUser()
+	if err != nil {
+		return cfg, err
+	}
+	if hasUserConfig {
+		cfg = userCfg
+	}
+	return cfg, nil
+}
+
+func loadUser() (Config, bool, error) {
+	cfg := DefaultConfig()
+	if home, err := os.UserHomeDir(); err == nil {
+		userPath := filepath.Join(home, ".config", "treehouse", "config.toml")
+		if _, err := os.Stat(userPath); err == nil {
+			if _, err := toml.DecodeFile(userPath, &cfg); err != nil {
+				return cfg, false, err
+			}
+			return cfg, true, nil
+		}
+	}
+
+	return cfg, false, nil
 }
 
 func ResolvePoolDir(repoRoot string, root string) (string, error) {
@@ -68,17 +93,28 @@ func ResolvePoolDir(repoRoot string, root string) (string, error) {
 	shortHash := git.ShortHash(hashInput)
 	poolName := repoName + "-" + shortHash
 
+	poolRoot, err := ResolvePoolRoot(repoRoot, root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(poolRoot, poolName), nil
+}
+
+func ResolvePoolRoot(repoRoot string, root string) (string, error) {
 	if root == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(home, ".treehouse", poolName), nil
+		return filepath.Join(home, ".treehouse"), nil
 	}
 
 	expanded := os.ExpandEnv(root)
 	if !filepath.IsAbs(expanded) {
+		if repoRoot == "" {
+			return "", fmt.Errorf("relative treehouse root %q requires a repository", root)
+		}
 		expanded = filepath.Join(repoRoot, expanded)
 	}
-	return filepath.Join(expanded, ".treehouse", poolName), nil
+	return filepath.Join(expanded, ".treehouse"), nil
 }

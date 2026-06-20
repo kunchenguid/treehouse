@@ -592,6 +592,115 @@ func TestPruneRemovesAvailableWorktree(t *testing.T) {
 	}
 }
 
+func TestPrunePoolDerivesRepoContextFromManagedWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	originalCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalCwd); err != nil {
+			t.Fatalf("restore cwd failed: %v", err)
+		}
+	})
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("Chdir failed: %v", err)
+	}
+
+	result, err := PrunePool(poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("PrunePool failed: %v", err)
+	}
+	if len(result.Pruned) != 1 || result.Pruned[0].Path != wtPath {
+		t.Fatalf("expected pruned worktree %s, got %#v", wtPath, result.Pruned)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("expected worktree to be removed, stat err: %v", err)
+	}
+}
+
+func TestPruneAllSkipsUnsafeWorktreesAcrossPools(t *testing.T) {
+	poolRoot := t.TempDir()
+
+	safeRepo, _ := setupRepo(t)
+	safePool := filepath.Join(poolRoot, "safe")
+	safePath, err := Acquire(safeRepo, safePool, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire safe failed: %v", err)
+	}
+	if err := Release(safePool, safePath); err != nil {
+		t.Fatalf("Release safe failed: %v", err)
+	}
+
+	dirtyRepo, _ := setupRepo(t)
+	dirtyPool := filepath.Join(poolRoot, "dirty")
+	dirtyPath, err := Acquire(dirtyRepo, dirtyPool, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire dirty failed: %v", err)
+	}
+	if err := Release(dirtyPool, dirtyPath); err != nil {
+		t.Fatalf("Release dirty failed: %v", err)
+	}
+	runGit(t, dirtyPath, "config", "status.showUntrackedFiles", "no")
+	if err := os.WriteFile(filepath.Join(dirtyPath, "untracked.txt"), []byte("keep me\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile dirty failed: %v", err)
+	}
+
+	inUseRepo, _ := setupRepo(t)
+	inUsePool := filepath.Join(poolRoot, "in-use")
+	inUsePath, err := Acquire(inUseRepo, inUsePool, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire in-use failed: %v", err)
+	}
+
+	unmergedRepo, _ := setupRepo(t)
+	unmergedPool := filepath.Join(poolRoot, "unmerged")
+	unmergedPath, err := Acquire(unmergedRepo, unmergedPool, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire unmerged failed: %v", err)
+	}
+	if err := Release(unmergedPool, unmergedPath); err != nil {
+		t.Fatalf("Release unmerged failed: %v", err)
+	}
+	runGit(t, unmergedPath, "checkout", "-b", "unmerged-work")
+	if err := os.WriteFile(filepath.Join(unmergedPath, "README.md"), []byte("unmerged\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile unmerged failed: %v", err)
+	}
+	runGit(t, unmergedPath, "commit", "-am", "unmerged work")
+
+	result, err := PruneAll(poolRoot, false, nil)
+	if err != nil {
+		t.Fatalf("PruneAll failed: %v", err)
+	}
+	if len(result.Result.Pruned) != 1 || result.Result.Pruned[0].Path != safePath {
+		t.Fatalf("expected only safe worktree to be pruned, got %#v", result.Result.Pruned)
+	}
+	if !hasSkippedReason(result.Result.Skipped, dirtyPath, "uncommitted changes") {
+		t.Fatalf("expected dirty worktree skip, got %#v", result.Result.Skipped)
+	}
+	if !hasSkippedReason(result.Result.Skipped, unmergedPath, "not merged") {
+		t.Fatalf("expected unmerged worktree skip, got %#v", result.Result.Skipped)
+	}
+
+	if _, err := os.Stat(safePath); !os.IsNotExist(err) {
+		t.Fatalf("expected safe worktree to be removed, stat err: %v", err)
+	}
+	for _, path := range []string{dirtyPath, inUsePath, unmergedPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected unsafe worktree to remain at %s: %v", path, err)
+		}
+	}
+}
+
 func TestPruneInUseWorktreeDoesNotRequireOrigin(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 

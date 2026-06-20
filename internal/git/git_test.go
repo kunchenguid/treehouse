@@ -45,6 +45,34 @@ func TestGetDefaultBranchFromDetachedLinkedWorktreeUsesMainRepoHead(t *testing.T
 	}
 }
 
+func TestFindMainRepoRootFromLinkedWorktree(t *testing.T) {
+	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoDir := filepath.Join(base, "repo")
+	wtPath := filepath.Join(base, "worktree")
+
+	mustGit(t, "", "init", "--initial-branch=main", repoDir)
+	mustGit(t, repoDir, "config", "user.email", "test@test.com")
+	mustGit(t, repoDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repoDir, "add", ".")
+	mustGit(t, repoDir, "commit", "-m", "initial")
+	mustGit(t, repoDir, "worktree", "add", "--detach", wtPath, "main")
+
+	mainRoot, err := FindMainRepoRootFrom(wtPath)
+	if err != nil {
+		t.Fatalf("FindMainRepoRootFrom failed: %v", err)
+	}
+	if mainRoot != repoDir {
+		t.Fatalf("expected main repo root %s, got %s", repoDir, mainRoot)
+	}
+}
+
 func TestRemoveCleanWorktreeRejectsDirtyWorktree(t *testing.T) {
 	base := t.TempDir()
 	repoDir := filepath.Join(base, "repo")

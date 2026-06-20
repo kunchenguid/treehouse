@@ -133,6 +133,7 @@ Treehouse manages a **pool of git worktrees** per repository, stored under `~/.t
 - **In-use detection** — treehouse scans running processes and short-lived owner reservations to determine which worktrees are in-use. Reservations are persisted only while `get`, `destroy`, and `prune` lifecycle work is running.
 - **Dirty detection** - treehouse treats tracked changes and untracked files as dirty, even when repository config hides untracked files from normal `git status` output.
 - **Safe pruning** - `treehouse prune` removes only idle managed worktrees whose HEAD is already merged into the default branch and whose working tree is clean.
+  `treehouse prune --all` applies the same safety checks across every repo pool under the treehouse root.
   It is a dry run unless you pass `--yes`.
 
 ## CLI Reference
@@ -143,7 +144,8 @@ Treehouse manages a **pool of git worktrees** per repository, stored under `~/.t
 | `treehouse get`            | Acquire a worktree from the pool                     |
 | `treehouse status`         | Show pool status (highlights your current worktree)  |
 | `treehouse return [path]`  | Terminate lingering worktree processes and return it to the pool |
-| `treehouse prune`          | Dry-run removal of stale idle worktrees to reclaim disk space |
+| `treehouse prune`          | Dry-run removal of stale idle worktrees in the current repo pool |
+| `treehouse prune --all`    | Dry-run removal of stale idle worktrees across every repo pool |
 | `treehouse destroy [path]` | Remove a worktree from the pool                      |
 | `treehouse init`           | Create a default `treehouse.toml` config file        |
 | `treehouse update`         | Update treehouse to the latest version               |
@@ -154,6 +156,8 @@ Treehouse manages a **pool of git worktrees** per repository, stored under `~/.t
 | --------- | --------- | --------------------------------- |
 | `return`  | `--force` | Clean, reset, and return without prompting |
 | `prune`   | `--yes`   | Delete stale idle worktrees instead of doing a dry run |
+| `prune`   | `--all`   | Sweep every repo pool under the treehouse root |
+| `prune`   | `--global` | Alias for `--all` |
 | `destroy` | `--force` | Force destroy even if in-use      |
 | `destroy` | `--all`   | Destroy all worktrees in the pool |
 
@@ -162,6 +166,11 @@ Treehouse manages a **pool of git worktrees** per repository, stored under `~/.t
 `treehouse prune` is a dry run by default.
 It lists stale idle managed worktrees that would be deleted and shows the reclaimable disk space.
 Pass `treehouse prune --yes` to delete those worktrees.
+
+By default, prune only inspects the current repository's pool and must be run inside a git repo.
+Pass `treehouse prune --all` to inspect every pool under the treehouse root from any directory.
+Global prune still derives each worktree's owning repository from git metadata before fetching and checking merge safety.
+Pass `treehouse prune --all --yes` to delete only the globally safe candidates.
 
 Prune ignores worktrees that are currently in use or reserved by another lifecycle operation.
 It skips idle worktrees that are unsafe to remove and prints the skip reason, such as uncommitted tracked or untracked changes, or a HEAD commit that is not merged into the default branch.

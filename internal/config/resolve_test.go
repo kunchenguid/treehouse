@@ -92,3 +92,26 @@ func TestResolvePoolDir_EnvVarExpansion(t *testing.T) {
 		t.Errorf("expected pool dir to start with %s, got %s", expected, poolDir)
 	}
 }
+
+func TestResolvePoolRoot_EmptyRoot(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	poolRoot, err := ResolvePoolRoot("", "")
+	if err != nil {
+		t.Fatalf("ResolvePoolRoot failed: %v", err)
+	}
+
+	expected := filepath.Join(home, ".treehouse")
+	if poolRoot != expected {
+		t.Fatalf("expected pool root %s, got %s", expected, poolRoot)
+	}
+}
+
+func TestResolvePoolRoot_RelativeRootRequiresRepo(t *testing.T) {
+	if _, err := ResolvePoolRoot("", ".worktrees"); err == nil {
+		t.Fatal("expected relative root without repo to fail")
+	}
+}

@@ -142,6 +142,34 @@ func setupTestRepo(t *testing.T) (repoDir, homeDir string) {
 	return repoDir, homeDir
 }
 
+func setupTestRepoWithHome(t *testing.T, homeDir, repoName string) string {
+	t.Helper()
+
+	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bareDir := filepath.Join(base, repoName+"-remote.git")
+	repoDir := filepath.Join(base, repoName)
+
+	gitCmd(t, "", "init", "--bare", "--initial-branch=main", bareDir)
+	gitCmd(t, "", "init", "--initial-branch=main", repoDir)
+	gitCmd(t, repoDir, "config", "user.email", "test@test.com")
+	gitCmd(t, repoDir, "config", "user.name", "Test")
+	gitCmd(t, repoDir, "remote", "add", "origin", bareDir)
+
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repoDir, "add", ".")
+	gitCmd(t, repoDir, "commit", "-m", "initial commit")
+	gitCmd(t, repoDir, "push", "-u", "origin", "main")
+
+	return repoDir
+}
+
 // runTreehouse runs the treehouse binary as a subprocess with the given args.
 // HOME (or USERPROFILE on Windows) is set to homeDir so pool state is isolated.
 func runTreehouse(t *testing.T, repoDir, homeDir string, extraEnv []string, args ...string) (stdout, stderr string, exitCode int) {
@@ -600,6 +628,111 @@ func TestPruneDryRunAndYes(t *testing.T) {
 	}
 	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
 		t.Fatalf("expected worktree to be removed after prune --yes, stat err: %v", err)
+	}
+}
+
+func TestPruneAllDryRunAndYesAcrossPoolsFromAnywhere(t *testing.T) {
+	repoA, homeDir := setupTestRepo(t)
+	repoB := setupTestRepoWithHome(t, homeDir, "otherrepo")
+	env := []string{"SHELL=" + exitShellBin}
+
+	_, getErrA, code := runTreehouse(t, repoA, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("repo A get failed (code %d): %s", code, getErrA)
+	}
+	wtPathA := extractWorktreePath(getErrA, homeDir)
+	if wtPathA == "" {
+		t.Fatal("could not extract repo A worktree path")
+	}
+
+	_, getErrB, code := runTreehouse(t, repoB, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("repo B get failed (code %d): %s", code, getErrB)
+	}
+	wtPathB := extractWorktreePath(getErrB, homeDir)
+	if wtPathB == "" {
+		t.Fatal("could not extract repo B worktree path")
+	}
+
+	outsideDir := t.TempDir()
+	pruneOut, pruneErr, code := runTreehouseFromDir(t, repoA, outsideDir, homeDir, nil, "prune", "--all")
+	if code != 0 {
+		t.Fatalf("prune --all dry run failed from outside a repo (code %d): %s", code, pruneErr)
+	}
+	if !strings.Contains(pruneOut, "would prune 2 stale worktrees across 2 pools") {
+		t.Fatalf("expected global dry-run summary, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
+	}
+	for _, wtPath := range []string{wtPathA, wtPathB} {
+		prettyWtPath := "~" + wtPath[len(homeDir):]
+		if !strings.Contains(pruneOut, prettyWtPath) {
+			t.Fatalf("expected dry run to list %s, got:\n%s", prettyWtPath, pruneOut)
+		}
+		if _, err := os.Stat(wtPath); err != nil {
+			t.Fatalf("dry run removed worktree %s: %v", wtPath, err)
+		}
+	}
+
+	aliasOut, aliasErr, code := runTreehouseFromDir(t, repoA, outsideDir, homeDir, nil, "prune", "--global")
+	if code != 0 {
+		t.Fatalf("prune --global dry run failed from outside a repo (code %d): %s", code, aliasErr)
+	}
+	if !strings.Contains(aliasOut, "would prune 2 stale worktrees across 2 pools") {
+		t.Fatalf("expected --global alias to match --all, got stdout:\n%s\nstderr:\n%s", aliasOut, aliasErr)
+	}
+
+	pruneOut, pruneErr, code = runTreehouseFromDir(t, repoA, outsideDir, homeDir, nil, "prune", "--all", "--yes")
+	if code != 0 {
+		t.Fatalf("prune --all --yes failed from outside a repo (code %d): %s", code, pruneErr)
+	}
+	if !strings.Contains(pruneOut, "Pruned 2 stale worktrees across 2 pools") || !strings.Contains(pruneOut, "freed") {
+		t.Fatalf("expected global prune --yes summary, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
+	}
+	for _, wtPath := range []string{wtPathA, wtPathB} {
+		if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+			t.Fatalf("expected worktree to be removed after prune --all --yes, stat err: %v", err)
+		}
+	}
+}
+
+func TestPruneWithoutAllScopesToCurrentRepo(t *testing.T) {
+	repoA, homeDir := setupTestRepo(t)
+	repoB := setupTestRepoWithHome(t, homeDir, "otherrepo")
+	env := []string{"SHELL=" + exitShellBin}
+
+	_, getErrA, code := runTreehouse(t, repoA, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("repo A get failed (code %d): %s", code, getErrA)
+	}
+	wtPathA := extractWorktreePath(getErrA, homeDir)
+	if wtPathA == "" {
+		t.Fatal("could not extract repo A worktree path")
+	}
+
+	_, getErrB, code := runTreehouse(t, repoB, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("repo B get failed (code %d): %s", code, getErrB)
+	}
+	wtPathB := extractWorktreePath(getErrB, homeDir)
+	if wtPathB == "" {
+		t.Fatal("could not extract repo B worktree path")
+	}
+
+	pruneOut, pruneErr, code := runTreehouse(t, repoA, homeDir, nil, "prune", "--yes")
+	if code != 0 {
+		t.Fatalf("repo-scoped prune --yes failed (code %d): %s", code, pruneErr)
+	}
+	if !strings.Contains(pruneOut, "Pruned 1 stale worktree") {
+		t.Fatalf("expected repo-scoped prune summary, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
+	}
+	prettyWtPathB := "~" + wtPathB[len(homeDir):]
+	if strings.Contains(pruneOut, prettyWtPathB) {
+		t.Fatalf("repo-scoped prune listed other repo worktree %s:\n%s", prettyWtPathB, pruneOut)
+	}
+	if _, err := os.Stat(wtPathA); !os.IsNotExist(err) {
+		t.Fatalf("expected current repo worktree to be removed, stat err: %v", err)
+	}
+	if _, err := os.Stat(wtPathB); err != nil {
+		t.Fatalf("expected other repo worktree to remain: %v", err)
 	}
 }
 

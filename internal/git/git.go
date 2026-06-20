@@ -16,6 +16,14 @@ func FindRepoRootFrom(dir string) (string, error) {
 	return runGit(dir, "rev-parse", "--show-toplevel")
 }
 
+func FindMainRepoRootFrom(dir string) (string, error) {
+	repoRoot, err := FindRepoRootFrom(dir)
+	if err != nil {
+		return "", err
+	}
+	return mainRepoRoot(repoRoot), nil
+}
+
 func GetDefaultBranch(repoRoot string) (string, error) {
 	mainRoot := mainRepoRoot(repoRoot)
 
