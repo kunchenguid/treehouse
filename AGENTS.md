@@ -50,7 +50,7 @@ make test
 - State file tracks pool membership, temporary owner/destroy reservations, and explicit durable leases.
   It still does not infer long-term usage from processes.
 - Git operations shell out to `git` (go-git has incomplete worktree support)
-- Self-healing: stale state entries are auto-removed
+- Self-healing: stale state entries are auto-removed, and `get` prunes stale git worktree registrations before adding a worktree
 
 ## Windows Compatibility
 
