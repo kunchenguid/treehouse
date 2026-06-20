@@ -39,6 +39,9 @@ make test
 - In-use detection uses process scanning plus short-lived persisted owner reservations for lifecycle operations
 - Dirty checks include untracked files even when repository config hides them from normal `git status` output
 - Prune deletes only idle managed worktrees that are clean and whose HEAD is merged into the default branch; dry run is the default
+- Prune reports unsafe idle worktrees in grouped, stable categories and keeps raw git diagnostics for verbose output instead of default output
+- Prune treats backing-repository-missing linked worktrees as orphans; they are only deletable with explicit `--prune-orphans --yes`, and each candidate warns that content could not be verified
+- Prune never treats an unreachable origin as a deletable orphan; those worktrees stay skipped because the repository may still be valid
 - Global prune enumerates managed pool directories under the user-level treehouse root and derives each worktree's owning repository from git metadata instead of relying on the current directory
 - Global prune loads user-level config and hooks only because it can run without a repository context
 - State file tracks pool membership and temporary owner/destroy reservations, not long-term usage status

@@ -135,6 +135,7 @@ The default treehouse root is `~/.treehouse/`.
 - **Dirty detection** - treehouse treats tracked changes and untracked files as dirty, even when repository config hides untracked files from normal `git status` output.
 - **Safe pruning** - `treehouse prune` removes only idle managed worktrees whose HEAD is already merged into the default branch and whose working tree is clean.
   `treehouse prune --all` applies the same safety checks across every managed pool under the user-level treehouse root.
+  Backing-repository-missing orphans are reported by default and require `--prune-orphans --yes` before deletion.
   It is a dry run unless you pass `--yes`.
 
 ## CLI Reference
@@ -159,6 +160,8 @@ The default treehouse root is `~/.treehouse/`.
 | `prune`   | `--yes`   | Delete stale idle worktrees instead of doing a dry run |
 | `prune`   | `--all`   | Sweep every managed pool under the user-level treehouse root |
 | `prune`   | `--global` | Alias for `--all` |
+| `prune`   | `--prune-orphans` | Include backing-repository-missing orphans in prune candidates |
+| `prune`   | `--verbose` | Show detailed skip diagnostics |
 | `destroy` | `--force` | Force destroy even if in-use      |
 | `destroy` | `--all`   | Destroy all worktrees in the pool |
 
@@ -175,8 +178,15 @@ Pass `treehouse prune --all --yes` to delete only the globally safe candidates.
 
 Prune ignores worktrees that are currently in use or reserved by another lifecycle operation.
 It skips idle worktrees that are unsafe to remove and prints the skip reason, such as uncommitted tracked or untracked changes, or a HEAD commit that is not merged into the default branch.
+Skip output is grouped by reason so large global sweeps stay scannable.
 When `origin` exists, prune fetches it and proves each HEAD against the current remote default branch tracking ref.
 Without `origin`, prune uses the local default branch ref.
+If `origin` cannot be reached, prune reports `origin unreachable (cannot verify)` and leaves the worktree untouched, even when `--prune-orphans` is set.
+If a linked worktree points at a missing backing repository, prune reports `orphaned (backing repository missing)`.
+Plain `treehouse prune` and `treehouse prune --all` never delete those orphans.
+Pass `--prune-orphans` to include true backing-repository-missing orphans in the dry run, then add `--yes` to delete them.
+Treehouse cannot verify orphan contents after the backing git metadata is gone, so each orphan candidate is marked `content could not be verified`.
+Use `--verbose` to show the underlying git diagnostic details for skipped worktrees.
 
 ## Configuration
 

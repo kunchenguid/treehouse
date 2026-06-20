@@ -628,6 +628,122 @@ func TestPrunePoolDerivesRepoContextFromManagedWorktree(t *testing.T) {
 	}
 }
 
+func TestPruneAllReportsBackingMissingOrphanWithoutDeletingByDefault(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+	if err := os.RemoveAll(repoDir); err != nil {
+		t.Fatalf("RemoveAll repo failed: %v", err)
+	}
+
+	result, err := PruneAllWithOptions(filepath.Dir(poolDir), PruneOptions{DryRun: false})
+	if err != nil {
+		t.Fatalf("PruneAll failed: %v", err)
+	}
+	if len(result.Result.Pruned) != 0 {
+		t.Fatalf("plain prune must not delete orphans, got %#v", result.Result.Pruned)
+	}
+	if !hasSkippedCategory(result.Result.Skipped, wtPath, PruneSkipOrphanedBackingRepo) {
+		t.Fatalf("expected orphan skip, got %#v", result.Result.Skipped)
+	}
+	if !hasSkippedReason(result.Result.Skipped, wtPath, pruneOrphanUnverifiedWarning) {
+		t.Fatalf("expected unverified-content warning, got %#v", result.Result.Skipped)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("plain prune removed orphan %s: %v", wtPath, err)
+	}
+}
+
+func TestPruneAllPrunesBackingMissingOrphanOnlyWithExplicitFlag(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+	if err := os.RemoveAll(repoDir); err != nil {
+		t.Fatalf("RemoveAll repo failed: %v", err)
+	}
+
+	result, err := PruneAllWithOptions(filepath.Dir(poolDir), PruneOptions{
+		DryRun:       true,
+		PruneOrphans: true,
+	})
+	if err != nil {
+		t.Fatalf("PruneAll dry run failed: %v", err)
+	}
+	if len(result.Result.Candidates) != 1 || result.Result.Candidates[0].Path != wtPath {
+		t.Fatalf("expected orphan dry-run candidate %s, got %#v", wtPath, result.Result.Candidates)
+	}
+	if !result.Result.Candidates[0].Orphaned || result.Result.Candidates[0].Warning != pruneOrphanUnverifiedWarning {
+		t.Fatalf("expected orphan warning on candidate, got %#v", result.Result.Candidates[0])
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("dry run removed orphan %s: %v", wtPath, err)
+	}
+
+	result, err = PruneAllWithOptions(filepath.Dir(poolDir), PruneOptions{PruneOrphans: true})
+	if err != nil {
+		t.Fatalf("PruneAll --prune-orphans failed: %v", err)
+	}
+	if len(result.Result.Pruned) != 1 || result.Result.Pruned[0].Path != wtPath {
+		t.Fatalf("expected pruned orphan %s, got %#v", wtPath, result.Result.Pruned)
+	}
+	if !result.Result.Pruned[0].Orphaned || result.Result.Pruned[0].Warning != pruneOrphanUnverifiedWarning {
+		t.Fatalf("expected orphan warning on pruned worktree, got %#v", result.Result.Pruned[0])
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("expected orphan worktree to be removed, stat err: %v", err)
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if len(state.Worktrees) != 0 {
+		t.Fatalf("expected pruned orphan to be removed from state, got %#v", state.Worktrees)
+	}
+}
+
+func TestPruneAllNeverDeletesOriginUnreachableWithPruneOrphans(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+	remoteDir := filepath.Join(filepath.Dir(repoDir), "remote.git")
+	if err := os.RemoveAll(remoteDir); err != nil {
+		t.Fatalf("RemoveAll remote failed: %v", err)
+	}
+
+	result, err := PruneAllWithOptions(filepath.Dir(poolDir), PruneOptions{PruneOrphans: true})
+	if err != nil {
+		t.Fatalf("PruneAll failed: %v", err)
+	}
+	if len(result.Result.Pruned) != 0 {
+		t.Fatalf("origin-unreachable worktree must not be pruned, got %#v", result.Result.Pruned)
+	}
+	if !hasSkippedCategory(result.Result.Skipped, wtPath, PruneSkipOriginUnreachable) {
+		t.Fatalf("expected origin-unreachable skip, got %#v", result.Result.Skipped)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("origin-unreachable worktree was removed: %v", err)
+	}
+}
+
 func TestPruneAllSkipsUnsafeWorktreesAcrossPools(t *testing.T) {
 	poolRoot := t.TempDir()
 
@@ -940,7 +1056,7 @@ func TestPruneIgnoresStaleOriginHeadWhenOriginIsAbsent(t *testing.T) {
 	}
 }
 
-func TestPruneFailsClosedWhenRemoteDefaultTrackingRefIsStale(t *testing.T) {
+func TestPruneSkipsWhenRemoteDefaultTrackingRefIsStale(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
 	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
@@ -970,10 +1086,18 @@ func TestPruneFailsClosedWhenRemoteDefaultTrackingRefIsStale(t *testing.T) {
 	runGit(t, rewriteDir, "commit", "-m", "replacement")
 	runGit(t, rewriteDir, "push", "--force", "origin", "replacement:main")
 
-	if _, err := Prune(repoDir, poolDir, false, nil); err == nil {
-		t.Fatal("expected Prune to reject stale remote default tracking ref")
-	} else if !strings.Contains(err.Error(), "stale") {
-		t.Fatalf("expected stale remote default error, got %v", err)
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if len(result.Pruned) != 0 {
+		t.Fatalf("stale remote default worktree must not be pruned, got %#v", result.Pruned)
+	}
+	if !hasSkippedCategory(result.Skipped, wtPath, pruneSkipCannotVerify) {
+		t.Fatalf("expected cannot-verify skip, got %#v", result.Skipped)
+	}
+	if !hasSkippedDetail(result.Skipped, wtPath, "stale") {
+		t.Fatalf("expected stale diagnostic detail, got %#v", result.Skipped)
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("expected stale remote default worktree to remain: %v", err)
@@ -1031,6 +1155,24 @@ func TestRelease_RejectsDestroyingWorktree(t *testing.T) {
 func hasSkippedReason(skipped []PruneSkipped, path, reason string) bool {
 	for _, wt := range skipped {
 		if wt.Path == path && strings.Contains(wt.Reason, reason) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSkippedCategory(skipped []PruneSkipped, path, category string) bool {
+	for _, wt := range skipped {
+		if wt.Path == path && wt.Category == category {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSkippedDetail(skipped []PruneSkipped, path, detail string) bool {
+	for _, wt := range skipped {
+		if wt.Path == path && strings.Contains(wt.Detail, detail) {
 			return true
 		}
 	}

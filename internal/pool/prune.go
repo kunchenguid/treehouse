@@ -1,11 +1,13 @@
 package pool
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/kunchenguid/treehouse/internal/git"
 	"github.com/kunchenguid/treehouse/internal/hooks"
@@ -14,16 +16,20 @@ import (
 
 // PruneWorktree describes a stale worktree that prune can remove or did remove.
 type PruneWorktree struct {
-	Name  string
-	Path  string
-	Bytes int64
+	Name     string
+	Path     string
+	Bytes    int64
+	Orphaned bool
+	Warning  string
 }
 
 // PruneSkipped describes a worktree that prune left in place for safety.
 type PruneSkipped struct {
-	Name   string
-	Path   string
-	Reason string
+	Name     string
+	Path     string
+	Category string
+	Reason   string
+	Detail   string
 }
 
 // PruneResult describes dry-run candidates, removed worktrees, skipped worktrees,
@@ -49,6 +55,27 @@ type PruneAllResult struct {
 	Result   PruneResult
 }
 
+type PruneOptions struct {
+	DryRun       bool
+	PruneOrphans bool
+	PreDestroy   []string
+}
+
+const (
+	PruneSkipUncommitted           = "uncommitted changes"
+	PruneSkipUnmerged              = "unmerged"
+	PruneSkipOrphanedBackingRepo   = "orphaned (backing repository missing)"
+	PruneSkipOriginUnreachable     = "origin unreachable (cannot verify)"
+	pruneSkipCannotVerify          = "cannot verify worktree"
+	pruneSkipCannotCheckProcesses  = "cannot check processes"
+	pruneSkipCannotMeasureSize     = "cannot measure size"
+	pruneSkipCleanupFailed         = "cleanup failed"
+	pruneSkipRemoveFailed          = "remove failed"
+	pruneSkipInUse                 = "in use"
+	pruneOrphanUnverifiedWarning   = "content could not be verified"
+	pruneOrphanRecoveredRepository = "backing repository is available again"
+)
+
 type plannedPrunePool struct {
 	PoolDir string
 	Plan    prunePlan
@@ -59,7 +86,14 @@ type plannedPrunePool struct {
 // branch ref selected by git.DefaultBranchMergeRef.
 // In dryRun mode Prune reports candidates and reclaimable bytes without deleting.
 func Prune(repoRoot, poolDir string, dryRun bool, preDestroy []string) (PruneResult, error) {
-	return prunePool(poolDir, dryRun, preDestroy, singleRepoPruneContextResolver(repoRoot), false)
+	return PruneWithOptions(repoRoot, poolDir, PruneOptions{
+		DryRun:     dryRun,
+		PreDestroy: preDestroy,
+	})
+}
+
+func PruneWithOptions(repoRoot, poolDir string, options PruneOptions) (PruneResult, error) {
+	return prunePool(poolDir, options, singleRepoPruneContextResolver(repoRoot))
 }
 
 // PrunePool prunes one pool by deriving each worktree's repository context from
@@ -67,13 +101,27 @@ func Prune(repoRoot, poolDir string, dryRun bool, preDestroy []string) (PruneRes
 // Worktrees whose repository or default branch cannot be resolved are reported
 // as skipped.
 func PrunePool(poolDir string, dryRun bool, preDestroy []string) (PruneResult, error) {
-	return prunePool(poolDir, dryRun, preDestroy, worktreePruneContextResolver(), true)
+	return PrunePoolWithOptions(poolDir, PruneOptions{
+		DryRun:     dryRun,
+		PreDestroy: preDestroy,
+	})
+}
+
+func PrunePoolWithOptions(poolDir string, options PruneOptions) (PruneResult, error) {
+	return prunePool(poolDir, options, worktreePruneContextResolver())
 }
 
 // PruneAll prunes every managed pool directly under poolRoot and aggregates the
 // results.
 // When dryRun is false, all pools are planned before any worktree is deleted.
 func PruneAll(poolRoot string, dryRun bool, preDestroy []string) (PruneAllResult, error) {
+	return PruneAllWithOptions(poolRoot, PruneOptions{
+		DryRun:     dryRun,
+		PreDestroy: preDestroy,
+	})
+}
+
+func PruneAllWithOptions(poolRoot string, options PruneOptions) (PruneAllResult, error) {
 	poolDirs, err := prunePoolDirs(poolRoot)
 	if err != nil {
 		return PruneAllResult{}, err
@@ -86,7 +134,7 @@ func PruneAll(poolRoot string, dryRun bool, preDestroy []string) (PruneAllResult
 	plans := make([]plannedPrunePool, 0, len(poolDirs))
 	resolveContext := worktreePruneContextResolver()
 	for _, poolDir := range poolDirs {
-		plan, err := planPrunePool(poolDir, resolveContext, true)
+		plan, err := planPrunePool(poolDir, resolveContext, options)
 		if err != nil {
 			return PruneAllResult{}, err
 		}
@@ -96,7 +144,7 @@ func PruneAll(poolRoot string, dryRun bool, preDestroy []string) (PruneAllResult
 		})
 		addPrunePoolResult(&result, poolDir, plan.Result)
 	}
-	if dryRun || len(result.Result.Candidates) == 0 {
+	if options.DryRun || len(result.Result.Candidates) == 0 {
 		return result, nil
 	}
 
@@ -108,7 +156,7 @@ func PruneAll(poolRoot string, dryRun bool, preDestroy []string) (PruneAllResult
 		poolResult := planned.Plan.Result
 		if len(planned.Plan.Result.Candidates) > 0 {
 			var err error
-			poolResult, err = executePrune(planned.PoolDir, planned.Plan, preDestroy)
+			poolResult, err = executePrune(planned.PoolDir, planned.Plan, options)
 			if err != nil {
 				return PruneAllResult{}, err
 			}
@@ -130,24 +178,24 @@ func addPrunePoolResult(all *PruneAllResult, poolDir string, poolResult PruneRes
 	all.Result.FreedBytes += poolResult.FreedBytes
 }
 
-func prunePool(poolDir string, dryRun bool, preDestroy []string, resolveContext pruneContextResolver, skipContextErrors bool) (PruneResult, error) {
-	plan, err := planPrunePool(poolDir, resolveContext, skipContextErrors)
+func prunePool(poolDir string, options PruneOptions, resolveContext pruneContextResolver) (PruneResult, error) {
+	plan, err := planPrunePool(poolDir, resolveContext, options)
 	if err != nil {
 		return PruneResult{}, err
 	}
-	if dryRun || len(plan.Result.Candidates) == 0 {
+	if options.DryRun || len(plan.Result.Candidates) == 0 {
 		return plan.Result, nil
 	}
 
-	return executePrune(poolDir, plan, preDestroy)
+	return executePrune(poolDir, plan, options)
 }
 
-func planPrunePool(poolDir string, resolveContext pruneContextResolver, skipContextErrors bool) (prunePlan, error) {
+func planPrunePool(poolDir string, resolveContext pruneContextResolver, options PruneOptions) (prunePlan, error) {
 	entries, err := pruneSnapshot(poolDir)
 	if err != nil {
 		return prunePlan{}, err
 	}
-	return planPrune(entries, resolveContext, skipContextErrors)
+	return planPrune(entries, resolveContext, options)
 }
 
 func prunePoolDirs(poolRoot string) ([]string, error) {
@@ -209,21 +257,16 @@ type plannedPruneWorktree struct {
 type prunePlan struct {
 	Result   PruneResult
 	Planned  map[string]plannedPruneWorktree
-	Reserved map[string]pruneContext
+	Reserved map[string]plannedPruneWorktree
 }
 
-func planPrune(entries []WorktreeEntry, resolveContext pruneContextResolver, skipContextErrors bool) (prunePlan, error) {
+func planPrune(entries []WorktreeEntry, resolveContext pruneContextResolver, options PruneOptions) (prunePlan, error) {
 	plan := prunePlan{
 		Planned: make(map[string]plannedPruneWorktree),
 	}
 	for _, wt := range entries {
-		worktree, skipped, stale, context, err := analyzePruneCandidate(resolveContext, wt)
+		worktree, skipped, stale, context, err := analyzePruneCandidate(resolveContext, wt, options)
 		if err != nil {
-			if skipContextErrors {
-				skipped.Reason = fmt.Sprintf("cannot resolve default branch: %v", err)
-				plan.Result.Skipped = append(plan.Result.Skipped, skipped)
-				continue
-			}
 			return prunePlan{}, err
 		}
 		if !stale {
@@ -245,24 +288,47 @@ func planPrune(entries []WorktreeEntry, resolveContext pruneContextResolver, ski
 
 func resolvePruneDefaultRef(repoRoot string) (string, error) {
 	if err := git.Fetch(repoRoot); err != nil {
-		return "", fmt.Errorf("refresh origin before prune: %w", err)
+		return "", pruneVerificationError{
+			Category: PruneSkipOriginUnreachable,
+			Reason:   "cannot fetch origin",
+			Detail:   fmt.Sprintf("refresh origin before prune: %v", err),
+		}
 	}
 	defaultRef, err := git.DefaultBranchMergeRef(repoRoot)
 	if err != nil {
-		return "", fmt.Errorf("resolve default branch before prune: %w", err)
+		category := pruneSkipCannotVerify
+		reason := "cannot resolve default branch"
+		if git.HasRemote(repoRoot, "origin") && isOriginAccessError(err) {
+			category = PruneSkipOriginUnreachable
+			reason = "cannot resolve origin default branch"
+		} else if git.HasRemote(repoRoot, "origin") {
+			reason = "cannot verify origin default branch"
+		}
+		return "", pruneVerificationError{
+			Category: category,
+			Reason:   reason,
+			Detail:   fmt.Sprintf("resolve default branch before prune: %v", err),
+		}
 	}
 	return defaultRef, nil
 }
 
 func singleRepoPruneContextResolver(repoRoot string) pruneContextResolver {
 	var defaultRef string
+	var defaultErr error
+	resolved := false
 	return func(WorktreeEntry) (pruneContext, error) {
-		if defaultRef == "" {
+		if !resolved {
 			ref, err := resolvePruneDefaultRef(repoRoot)
 			if err != nil {
-				return pruneContext{}, err
+				defaultErr = err
+			} else {
+				defaultRef = ref
 			}
-			defaultRef = ref
+			resolved = true
+		}
+		if defaultErr != nil {
+			return pruneContext{}, defaultErr
 		}
 		return pruneContext{RepoRoot: repoRoot, DefaultRef: defaultRef}, nil
 	}
@@ -270,6 +336,7 @@ func singleRepoPruneContextResolver(repoRoot string) pruneContextResolver {
 
 func worktreePruneContextResolver() pruneContextResolver {
 	contexts := make(map[string]pruneContext)
+	contextErrors := make(map[string]error)
 	return func(wt WorktreeEntry) (pruneContext, error) {
 		repoRoot, err := git.FindMainRepoRootFrom(wt.Path)
 		if err != nil {
@@ -278,9 +345,13 @@ func worktreePruneContextResolver() pruneContextResolver {
 		if context, ok := contexts[repoRoot]; ok {
 			return context, nil
 		}
+		if err, ok := contextErrors[repoRoot]; ok {
+			return pruneContext{}, err
+		}
 
 		defaultRef, err := resolvePruneDefaultRef(repoRoot)
 		if err != nil {
+			contextErrors[repoRoot] = err
 			return pruneContext{}, err
 		}
 		context := pruneContext{RepoRoot: repoRoot, DefaultRef: defaultRef}
@@ -295,7 +366,7 @@ func fixedPruneContextResolver(context pruneContext) pruneContextResolver {
 	}
 }
 
-func executePrune(poolDir string, plan prunePlan, preDestroy []string) (PruneResult, error) {
+func executePrune(poolDir string, plan prunePlan, options PruneOptions) (PruneResult, error) {
 	result := PruneResult{
 		Skipped: append([]PruneSkipped(nil), plan.Result.Skipped...),
 	}
@@ -314,7 +385,7 @@ func executePrune(poolDir string, plan prunePlan, preDestroy []string) (PruneRes
 				continue
 			}
 
-			worktree, skipped, stale, context, err := analyzePruneCandidate(fixedPruneContextResolver(plannedWorktree.Context), state.Worktrees[i])
+			worktree, skipped, stale, context, err := analyzePruneCandidate(fixedPruneContextResolver(plannedWorktree.Context), state.Worktrees[i], options)
 			if err != nil {
 				return err
 			}
@@ -332,9 +403,12 @@ func executePrune(poolDir string, plan prunePlan, preDestroy []string) (PruneRes
 			}
 			reserved = append(reserved, state.Worktrees[i])
 			if plan.Reserved == nil {
-				plan.Reserved = make(map[string]pruneContext)
+				plan.Reserved = make(map[string]plannedPruneWorktree)
 			}
-			plan.Reserved[state.Worktrees[i].Path] = context
+			plan.Reserved[state.Worktrees[i].Path] = plannedPruneWorktree{
+				Worktree: worktree,
+				Context:  context,
+			}
 			result.Candidates = append(result.Candidates, worktree)
 			result.ReclaimableBytes += worktree.Bytes
 		}
@@ -345,7 +419,7 @@ func executePrune(poolDir string, plan prunePlan, preDestroy []string) (PruneRes
 	}
 
 	for _, wt := range reserved {
-		hooks.Run(preDestroy, wt.Path, os.Stdout, os.Stderr)
+		hooks.Run(options.PreDestroy, wt.Path, os.Stdout, os.Stderr)
 	}
 
 	if err := WithStateLock(poolDir, func() error {
@@ -367,8 +441,15 @@ func executePrune(poolDir string, plan prunePlan, preDestroy []string) (PruneRes
 				continue
 			}
 
-			context := plan.Reserved[reservation.Path]
-			worktree, skipped := finalPruneSafetyCheck(context.DefaultRef, state.Worktrees[idx])
+			plannedWorktree := plan.Reserved[reservation.Path]
+			context := plannedWorktree.Context
+			var worktree PruneWorktree
+			var skipped PruneSkipped
+			if plannedWorktree.Worktree.Orphaned {
+				worktree, skipped = finalOrphanPruneSafetyCheck(state.Worktrees[idx])
+			} else {
+				worktree, skipped = finalPruneSafetyCheck(context.DefaultRef, state.Worktrees[idx])
+			}
 			if skipped.Reason != "" {
 				clearReservation(&state.Worktrees[idx])
 				result.Skipped = append(result.Skipped, skipped)
@@ -381,23 +462,35 @@ func executePrune(poolDir string, plan prunePlan, preDestroy []string) (PruneRes
 				}
 			}
 
-			if err := git.RemoveCleanWorktree(context.RepoRoot, worktree.Path); err != nil {
-				clearReservation(&state.Worktrees[idx])
-				result.Skipped = append(result.Skipped, PruneSkipped{
-					Name:   worktree.Name,
-					Path:   worktree.Path,
-					Reason: fmt.Sprintf("remove failed: %v", err),
-				})
-				continue
-			}
-			if err := os.RemoveAll(filepath.Dir(worktree.Path)); err != nil {
-				clearReservation(&state.Worktrees[idx])
-				result.Skipped = append(result.Skipped, PruneSkipped{
-					Name:   worktree.Name,
-					Path:   worktree.Path,
-					Reason: fmt.Sprintf("cleanup failed: %v", err),
-				})
-				continue
+			if worktree.Orphaned {
+				container, err := removableWorktreeContainer(worktree.Path)
+				if err != nil {
+					clearReservation(&state.Worktrees[idx])
+					result.Skipped = append(result.Skipped, newPruneSkipped(worktree.Name, worktree.Path, pruneSkipCleanupFailed, "refusing unsafe cleanup path", err.Error()))
+					continue
+				}
+				if err := os.RemoveAll(container); err != nil {
+					clearReservation(&state.Worktrees[idx])
+					result.Skipped = append(result.Skipped, newPruneSkipped(worktree.Name, worktree.Path, pruneSkipCleanupFailed, "could not remove worktree directory", err.Error()))
+					continue
+				}
+			} else {
+				if err := git.RemoveCleanWorktree(context.RepoRoot, worktree.Path); err != nil {
+					clearReservation(&state.Worktrees[idx])
+					result.Skipped = append(result.Skipped, newPruneSkipped(worktree.Name, worktree.Path, pruneSkipRemoveFailed, "git refused to remove worktree", err.Error()))
+					continue
+				}
+				container, err := removableWorktreeContainer(worktree.Path)
+				if err != nil {
+					clearReservation(&state.Worktrees[idx])
+					result.Skipped = append(result.Skipped, newPruneSkipped(worktree.Name, worktree.Path, pruneSkipCleanupFailed, "refusing unsafe cleanup path", err.Error()))
+					continue
+				}
+				if err := os.RemoveAll(container); err != nil {
+					clearReservation(&state.Worktrees[idx])
+					result.Skipped = append(result.Skipped, newPruneSkipped(worktree.Name, worktree.Path, pruneSkipCleanupFailed, "could not remove worktree directory", err.Error()))
+					continue
+				}
 			}
 
 			removed[worktree.Path] = struct{}{}
@@ -420,7 +513,7 @@ func executePrune(poolDir string, plan prunePlan, preDestroy []string) (PruneRes
 	return result, nil
 }
 
-func analyzePruneCandidate(resolveContext pruneContextResolver, wt WorktreeEntry) (PruneWorktree, PruneSkipped, bool, pruneContext, error) {
+func analyzePruneCandidate(resolveContext pruneContextResolver, wt WorktreeEntry, options PruneOptions) (PruneWorktree, PruneSkipped, bool, pruneContext, error) {
 	worktree := PruneWorktree{Name: wt.Name, Path: wt.Path}
 	skipped := PruneSkipped{Name: wt.Name, Path: wt.Path}
 
@@ -429,13 +522,13 @@ func analyzePruneCandidate(resolveContext pruneContextResolver, wt WorktreeEntry
 	}
 	inUse, err := process.IsWorktreeInUse(wt.Path)
 	if err != nil {
-		skipped.Reason = fmt.Sprintf("cannot check processes: %v", err)
+		skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotCheckProcesses, "cannot check processes", err.Error())
 		return worktree, skipped, true, pruneContext{}, nil
 	}
 	if inUse {
 		return worktree, skipped, false, pruneContext{}, nil
 	}
-	return analyzeIdleWorktree(resolveContext, wt, worktree, skipped)
+	return analyzeIdleWorktree(resolveContext, wt, worktree, skipped, options)
 }
 
 func finalPruneSafetyCheck(defaultRef string, wt WorktreeEntry) (PruneWorktree, PruneSkipped) {
@@ -444,54 +537,217 @@ func finalPruneSafetyCheck(defaultRef string, wt WorktreeEntry) (PruneWorktree, 
 
 	inUse, err := process.IsWorktreeInUse(wt.Path)
 	if err != nil {
-		skipped.Reason = fmt.Sprintf("cannot check processes: %v", err)
+		skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotCheckProcesses, "cannot check processes", err.Error())
 		return worktree, skipped
 	}
 	if inUse {
-		skipped.Reason = "in use"
+		skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipInUse, pruneSkipInUse, "")
 		return worktree, skipped
 	}
 	context := pruneContext{DefaultRef: defaultRef}
-	worktree, skipped, _, _, err = analyzeIdleWorktree(fixedPruneContextResolver(context), wt, worktree, skipped)
+	worktree, skipped, _, _, err = analyzeIdleWorktree(fixedPruneContextResolver(context), wt, worktree, skipped, PruneOptions{})
 	if err != nil {
-		skipped.Reason = fmt.Sprintf("cannot prove HEAD is merged into default branch: %v", err)
+		skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotVerify, "cannot prove HEAD is merged into default branch", err.Error())
 	}
 	return worktree, skipped
 }
 
-func analyzeIdleWorktree(resolveContext pruneContextResolver, wt WorktreeEntry, worktree PruneWorktree, skipped PruneSkipped) (PruneWorktree, PruneSkipped, bool, pruneContext, error) {
+func finalOrphanPruneSafetyCheck(wt WorktreeEntry) (PruneWorktree, PruneSkipped) {
+	worktree := PruneWorktree{
+		Name:     wt.Name,
+		Path:     wt.Path,
+		Orphaned: true,
+		Warning:  pruneOrphanUnverifiedWarning,
+	}
+	skipped := PruneSkipped{Name: wt.Name, Path: wt.Path}
+
+	inUse, err := process.IsWorktreeInUse(wt.Path)
+	if err != nil {
+		return worktree, newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotCheckProcesses, "cannot check processes", err.Error())
+	}
+	if inUse {
+		return worktree, newPruneSkipped(wt.Name, wt.Path, pruneSkipInUse, pruneSkipInUse, "")
+	}
+
+	orphaned, detail := backingRepositoryMissing(wt.Path)
+	if !orphaned {
+		return worktree, newPruneSkipped(wt.Name, wt.Path, PruneSkipOrphanedBackingRepo, pruneOrphanRecoveredRepository, detail)
+	}
+
+	container, err := removableWorktreeContainer(worktree.Path)
+	if err != nil {
+		return worktree, newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotMeasureSize, "refusing unsafe cleanup path", err.Error())
+	}
+	bytes, err := dirSize(container)
+	if err != nil {
+		return worktree, newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotMeasureSize, "cannot measure size", err.Error())
+	}
+	worktree.Bytes = bytes
+	return worktree, skipped
+}
+
+func analyzeIdleWorktree(resolveContext pruneContextResolver, wt WorktreeEntry, worktree PruneWorktree, skipped PruneSkipped, options PruneOptions) (PruneWorktree, PruneSkipped, bool, pruneContext, error) {
+	if orphaned, detail := backingRepositoryMissing(worktree.Path); orphaned {
+		if !options.PruneOrphans {
+			skipped = newPruneSkipped(wt.Name, wt.Path, PruneSkipOrphanedBackingRepo, pruneOrphanUnverifiedWarning, detail)
+			return worktree, skipped, true, pruneContext{}, nil
+		}
+
+		container, err := removableWorktreeContainer(worktree.Path)
+		if err != nil {
+			skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotMeasureSize, "refusing unsafe cleanup path", err.Error())
+			return worktree, skipped, true, pruneContext{}, nil
+		}
+		bytes, err := dirSize(container)
+		if err != nil {
+			skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotMeasureSize, "cannot measure size", err.Error())
+			return worktree, skipped, true, pruneContext{}, nil
+		}
+		worktree.Bytes = bytes
+		worktree.Orphaned = true
+		worktree.Warning = pruneOrphanUnverifiedWarning
+		return worktree, skipped, true, pruneContext{}, nil
+	}
+
 	dirty, err := git.IsDirty(worktree.Path)
 	if err != nil {
-		skipped.Reason = fmt.Sprintf("cannot check status: %v", err)
+		if orphaned, detail := backingRepositoryMissing(worktree.Path); orphaned {
+			skipped = newPruneSkipped(wt.Name, wt.Path, PruneSkipOrphanedBackingRepo, pruneOrphanUnverifiedWarning, detail)
+		} else {
+			skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotVerify, "cannot check status", err.Error())
+		}
 		return worktree, skipped, true, pruneContext{}, nil
 	}
 	if dirty {
-		skipped.Reason = "uncommitted changes"
+		skipped = newPruneSkipped(wt.Name, wt.Path, PruneSkipUncommitted, PruneSkipUncommitted, "")
 		return worktree, skipped, true, pruneContext{}, nil
 	}
 
 	context, err := resolveContext(wt)
 	if err != nil {
-		return worktree, skipped, true, pruneContext{}, err
+		skipped = skippedFromVerificationError(wt.Name, wt.Path, err)
+		return worktree, skipped, true, pruneContext{}, nil
 	}
 
 	merged, err := git.IsHeadMergedIntoRef(worktree.Path, context.DefaultRef)
 	if err != nil {
-		skipped.Reason = fmt.Sprintf("cannot prove HEAD is merged into default branch: %v", err)
+		if orphaned, detail := backingRepositoryMissing(worktree.Path); orphaned {
+			skipped = newPruneSkipped(wt.Name, wt.Path, PruneSkipOrphanedBackingRepo, pruneOrphanUnverifiedWarning, detail)
+		} else {
+			skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotVerify, "cannot prove HEAD is merged into default branch", err.Error())
+		}
 		return worktree, skipped, true, context, nil
 	}
 	if !merged {
-		skipped.Reason = fmt.Sprintf("HEAD is not merged into %s", context.DefaultRef)
+		skipped = newPruneSkipped(wt.Name, wt.Path, PruneSkipUnmerged, fmt.Sprintf("HEAD not merged into %s", context.DefaultRef), "")
 		return worktree, skipped, true, context, nil
 	}
 
-	bytes, err := dirSize(filepath.Dir(worktree.Path))
+	container, err := removableWorktreeContainer(worktree.Path)
 	if err != nil {
-		skipped.Reason = fmt.Sprintf("cannot measure size: %v", err)
+		skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotMeasureSize, "refusing unsafe cleanup path", err.Error())
+		return worktree, skipped, true, context, nil
+	}
+	bytes, err := dirSize(container)
+	if err != nil {
+		skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotMeasureSize, "cannot measure size", err.Error())
 		return worktree, skipped, true, context, nil
 	}
 	worktree.Bytes = bytes
 	return worktree, skipped, true, context, nil
+}
+
+type pruneVerificationError struct {
+	Category string
+	Reason   string
+	Detail   string
+}
+
+func (e pruneVerificationError) Error() string {
+	return e.Detail
+}
+
+func skippedFromVerificationError(name, path string, err error) PruneSkipped {
+	var pruneErr pruneVerificationError
+	if errors.As(err, &pruneErr) {
+		return newPruneSkipped(name, path, pruneErr.Category, pruneErr.Reason, pruneErr.Detail)
+	}
+	return newPruneSkipped(name, path, pruneSkipCannotVerify, "cannot verify worktree", err.Error())
+}
+
+func isOriginAccessError(err error) bool {
+	detail := err.Error()
+	return strings.Contains(detail, "git ls-remote") ||
+		strings.Contains(detail, "Could not read from remote repository") ||
+		strings.Contains(detail, "does not appear to be a git repository") ||
+		strings.Contains(detail, "repository") && strings.Contains(detail, "not found")
+}
+
+func newPruneSkipped(name, path, category, reason, detail string) PruneSkipped {
+	if category == "" {
+		category = pruneSkipCannotVerify
+	}
+	if reason == "" {
+		reason = category
+	}
+	return PruneSkipped{
+		Name:     name,
+		Path:     path,
+		Category: category,
+		Reason:   reason,
+		Detail:   detail,
+	}
+}
+
+func backingRepositoryMissing(worktreePath string) (bool, string) {
+	gitDir, ok, detail := linkedWorktreeGitDir(worktreePath)
+	if !ok {
+		return false, detail
+	}
+	if _, err := os.Stat(gitDir); err == nil {
+		return false, ""
+	} else if os.IsNotExist(err) {
+		return true, fmt.Sprintf("gitdir %s does not exist", gitDir)
+	} else {
+		return false, fmt.Sprintf("cannot inspect gitdir %s: %v", gitDir, err)
+	}
+}
+
+func linkedWorktreeGitDir(worktreePath string) (string, bool, string) {
+	gitFile := filepath.Join(worktreePath, ".git")
+	info, err := os.Stat(gitFile)
+	if err != nil {
+		return "", false, err.Error()
+	}
+	if info.IsDir() {
+		return "", false, ""
+	}
+
+	data, err := os.ReadFile(gitFile)
+	if err != nil {
+		return "", false, err.Error()
+	}
+	line, _, _ := strings.Cut(string(data), "\n")
+	gitDir, ok := strings.CutPrefix(strings.TrimSpace(line), "gitdir:")
+	if !ok {
+		return "", false, fmt.Sprintf("%s does not contain a gitdir pointer", gitFile)
+	}
+	gitDir = strings.TrimSpace(gitDir)
+	if gitDir == "" {
+		return "", false, fmt.Sprintf("%s has an empty gitdir pointer", gitFile)
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(worktreePath, gitDir)
+	}
+	return filepath.Clean(gitDir), true, ""
+}
+
+func removableWorktreeContainer(worktreePath string) (string, error) {
+	container := filepath.Clean(filepath.Dir(worktreePath))
+	if container == "." || filepath.Dir(container) == container {
+		return "", fmt.Errorf("refusing to remove %s", container)
+	}
+	return container, nil
 }
 
 func clearReservation(wt *WorktreeEntry) {
