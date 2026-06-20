@@ -121,6 +121,7 @@ func printPruneResult(w io.Writer, result pool.PruneResult, dryRun bool, pruneOr
 		printPruneWorktrees(w, result.Candidates)
 		printPruneSkipped(w, result.Skipped, verbose)
 		fmt.Fprintf(w, "🌳 Re-run with %s to delete these worktrees.\n", pruneDeleteFlags(false, pruneOrphans))
+		printPruneOrphanHint(w, result.Skipped, false, pruneOrphans, false)
 		return
 	}
 
@@ -139,6 +140,7 @@ func printPruneResult(w io.Writer, result pool.PruneResult, dryRun bool, pruneOr
 	)
 	printPruneWorktrees(w, result.Pruned)
 	printPruneSkipped(w, result.Skipped, verbose)
+	printPruneOrphanHint(w, result.Skipped, false, pruneOrphans, true)
 }
 
 func printPruneAllResult(w io.Writer, result pool.PruneAllResult, dryRun bool, pruneOrphans bool, verbose bool) {
@@ -162,6 +164,7 @@ func printPruneAllResult(w io.Writer, result pool.PruneAllResult, dryRun bool, p
 		printPruneWorktrees(w, result.Result.Candidates)
 		printPruneSkipped(w, result.Result.Skipped, verbose)
 		fmt.Fprintf(w, "🌳 Re-run with %s to delete these worktrees.\n", pruneDeleteFlags(true, pruneOrphans))
+		printPruneOrphanHint(w, result.Result.Skipped, true, pruneOrphans, false)
 		return
 	}
 
@@ -182,6 +185,7 @@ func printPruneAllResult(w io.Writer, result pool.PruneAllResult, dryRun bool, p
 	)
 	printPruneWorktrees(w, result.Result.Pruned)
 	printPruneSkipped(w, result.Result.Skipped, verbose)
+	printPruneOrphanHint(w, result.Result.Skipped, true, pruneOrphans, true)
 }
 
 func printPruneWorktrees(w io.Writer, worktrees []pool.PruneWorktree) {
