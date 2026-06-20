@@ -39,7 +39,8 @@ make test
 - In-use detection uses process scanning plus short-lived persisted owner reservations for lifecycle operations
 - Dirty checks include untracked files even when repository config hides them from normal `git status` output
 - Prune deletes only idle managed worktrees that are clean and whose HEAD is merged into the default branch; dry run is the default
-- Global prune enumerates managed pool directories under the treehouse root and derives each worktree's owning repository from git metadata instead of relying on the current directory
+- Global prune enumerates managed pool directories under the user-level treehouse root and derives each worktree's owning repository from git metadata instead of relying on the current directory
+- Global prune loads user-level config and hooks only because it can run without a repository context
 - State file tracks pool membership and temporary owner/destroy reservations, not long-term usage status
 - Git operations shell out to `git` (go-git has incomplete worktree support)
 - Self-healing: stale state entries are auto-removed
@@ -61,6 +62,10 @@ Place repo-safe settings in repo root `treehouse.toml` or user-level `~/.config/
 
 ```toml
 max_trees = 16
+
+# Optional worktree root.
+# Relative roots need a repo context; use an absolute user-level root for global prune.
+# root = "$HOME/worktrees"
 
 # User-level config only:
 [hooks]

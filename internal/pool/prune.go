@@ -36,11 +36,13 @@ type PruneResult struct {
 	FreedBytes       int64
 }
 
+// PrunePoolResult records the prune result for one managed pool directory.
 type PrunePoolResult struct {
 	PoolDir string
 	Result  PruneResult
 }
 
+// PruneAllResult records per-pool and aggregate prune results under a pool root.
 type PruneAllResult struct {
 	PoolRoot string
 	Pools    []PrunePoolResult
@@ -60,10 +62,17 @@ func Prune(repoRoot, poolDir string, dryRun bool, preDestroy []string) (PruneRes
 	return prunePool(poolDir, dryRun, preDestroy, singleRepoPruneContextResolver(repoRoot), false)
 }
 
+// PrunePool prunes one pool by deriving each worktree's repository context from
+// git metadata.
+// Worktrees whose repository or default branch cannot be resolved are reported
+// as skipped.
 func PrunePool(poolDir string, dryRun bool, preDestroy []string) (PruneResult, error) {
 	return prunePool(poolDir, dryRun, preDestroy, worktreePruneContextResolver(), true)
 }
 
+// PruneAll prunes every managed pool directly under poolRoot and aggregates the
+// results.
+// When dryRun is false, all pools are planned before any worktree is deleted.
 func PruneAll(poolRoot string, dryRun bool, preDestroy []string) (PruneAllResult, error) {
 	poolDirs, err := prunePoolDirs(poolRoot)
 	if err != nil {

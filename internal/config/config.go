@@ -54,6 +54,9 @@ func Load(repoRoot string) (Config, error) {
 	return cfg, nil
 }
 
+// LoadGlobal returns the default configuration merged with user-level config.
+// It intentionally ignores repo-level config because callers may run without a
+// repository context.
 func LoadGlobal() (Config, error) {
 	cfg := DefaultConfig()
 	userCfg, hasUserConfig, err := loadUser()
@@ -100,6 +103,9 @@ func ResolvePoolDir(repoRoot string, root string) (string, error) {
 	return filepath.Join(poolRoot, poolName), nil
 }
 
+// ResolvePoolRoot resolves the directory that contains per-repository pools.
+// Relative roots require repoRoot because they are resolved from the repository
+// root.
 func ResolvePoolRoot(repoRoot string, root string) (string, error) {
 	if root == "" {
 		home, err := os.UserHomeDir()

@@ -30,7 +30,10 @@ running process is using it, it has no uncommitted changes, and its HEAD is
 already merged into the default branch.
 
 Prune is a dry run by default. Pass --yes to delete the listed worktrees.
-Pass --all to sweep every pool under the treehouse root from any directory.`,
+Pass --all or --global to sweep every managed pool under the user-level
+treehouse root from any directory. Global prune derives each worktree's owning
+repository from git metadata and requires the configured root to be unset or
+absolute.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if pruneAll || pruneGlobal {
@@ -80,7 +83,7 @@ Pass --all to sweep every pool under the treehouse root from any directory.`,
 
 func init() {
 	pruneCmd.Flags().BoolVar(&pruneYes, "yes", false, "Delete stale worktrees instead of doing a dry run")
-	pruneCmd.Flags().BoolVar(&pruneAll, "all", false, "Prune stale worktrees across every pool under the treehouse root")
+	pruneCmd.Flags().BoolVar(&pruneAll, "all", false, "Prune stale worktrees across every managed pool under the user-level treehouse root")
 	pruneCmd.Flags().BoolVar(&pruneGlobal, "global", false, "Alias for --all")
 	rootCmd.AddCommand(pruneCmd)
 }
