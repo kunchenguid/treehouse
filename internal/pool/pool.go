@@ -133,6 +133,14 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			return err
 		}
 
+		// Clear any stale worktree bookkeeping left behind by a crashed or
+		// forcibly removed worktree. Without this, git rejects the add with
+		// "missing but already registered worktree". Prune is safe: it only
+		// removes registrations whose target directories are already gone.
+		if err := git.PruneWorktrees(repoRoot); err != nil {
+			return fmt.Errorf("failed to prune stale worktrees: %w", err)
+		}
+
 		if err := git.AddWorktree(repoRoot, wtPath, branch); err != nil {
 			return fmt.Errorf("failed to create worktree: %w", err)
 		}
