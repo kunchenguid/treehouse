@@ -14,22 +14,29 @@ import (
 	"github.com/kunchenguid/treehouse/internal/process"
 )
 
-// PruneWorktree describes a stale worktree that prune can remove or did remove.
+// PruneWorktree describes a stale or explicitly selected orphaned worktree that
+// prune can remove or did remove.
 type PruneWorktree struct {
-	Name     string
-	Path     string
-	Bytes    int64
+	Name  string
+	Path  string
+	Bytes int64
+	// Orphaned marks a backing-repository-missing worktree that was explicitly
+	// included by PruneOptions.PruneOrphans.
 	Orphaned bool
-	Warning  string
+	// Warning describes safety information that should be shown with the entry.
+	Warning string
 }
 
 // PruneSkipped describes a worktree that prune left in place for safety.
 type PruneSkipped struct {
-	Name     string
-	Path     string
+	Name string
+	Path string
+	// Category is the stable group label for prune skip reporting.
 	Category string
-	Reason   string
-	Detail   string
+	// Reason is the short user-facing explanation for this specific worktree.
+	Reason string
+	// Detail carries raw diagnostics intended for verbose output.
+	Detail string
 }
 
 // PruneResult describes dry-run candidates, removed worktrees, skipped worktrees,
@@ -55,16 +62,25 @@ type PruneAllResult struct {
 	Result   PruneResult
 }
 
+// PruneOptions controls dry-run, orphan, and hook behavior for prune operations.
 type PruneOptions struct {
-	DryRun       bool
+	// DryRun reports candidates and byte counts without deleting worktrees.
+	DryRun bool
+	// PruneOrphans includes backing-repository-missing linked worktrees as
+	// unverified prune candidates.
 	PruneOrphans bool
-	PreDestroy   []string
+	// PreDestroy is the hook command list to run before deleting each candidate.
+	PreDestroy []string
 }
 
 const (
-	PruneSkipUncommitted           = "uncommitted changes"
-	PruneSkipUnmerged              = "unmerged"
-	PruneSkipOrphanedBackingRepo   = "orphaned (backing repository missing)"
+	// PruneSkipUncommitted means a worktree has tracked or untracked changes.
+	PruneSkipUncommitted = "uncommitted changes"
+	// PruneSkipUnmerged means HEAD is not merged into the selected default ref.
+	PruneSkipUnmerged = "unmerged"
+	// PruneSkipOrphanedBackingRepo means the linked worktree's gitdir is gone.
+	PruneSkipOrphanedBackingRepo = "orphaned (backing repository missing)"
+	// PruneSkipOriginUnreachable means origin could not be reached for verification.
 	PruneSkipOriginUnreachable     = "origin unreachable (cannot verify)"
 	pruneSkipCannotVerify          = "cannot verify worktree"
 	pruneSkipCannotCheckProcesses  = "cannot check processes"
@@ -85,6 +101,8 @@ type plannedPrunePool struct {
 // A stale worktree is clean, unused, unreserved, and merged into the default
 // branch ref selected by git.DefaultBranchMergeRef.
 // In dryRun mode Prune reports candidates and reclaimable bytes without deleting.
+// Backing-repository-missing orphans are reported as skipped; use
+// PruneWithOptions with PruneOptions.PruneOrphans to include them as candidates.
 func Prune(repoRoot, poolDir string, dryRun bool, preDestroy []string) (PruneResult, error) {
 	return PruneWithOptions(repoRoot, poolDir, PruneOptions{
 		DryRun:     dryRun,
@@ -92,6 +110,8 @@ func Prune(repoRoot, poolDir string, dryRun bool, preDestroy []string) (PruneRes
 	})
 }
 
+// PruneWithOptions finds prune candidates in one repository pool and applies
+// options for dry-run behavior, orphan handling, and pre-destroy hooks.
 func PruneWithOptions(repoRoot, poolDir string, options PruneOptions) (PruneResult, error) {
 	return prunePool(poolDir, options, singleRepoPruneContextResolver(repoRoot))
 }
@@ -100,6 +120,9 @@ func PruneWithOptions(repoRoot, poolDir string, options PruneOptions) (PruneResu
 // git metadata.
 // Worktrees whose repository or default branch cannot be resolved are reported
 // as skipped.
+// Backing-repository-missing orphans are reported as skipped; use
+// PrunePoolWithOptions with PruneOptions.PruneOrphans to include them as
+// candidates.
 func PrunePool(poolDir string, dryRun bool, preDestroy []string) (PruneResult, error) {
 	return PrunePoolWithOptions(poolDir, PruneOptions{
 		DryRun:     dryRun,
@@ -107,6 +130,8 @@ func PrunePool(poolDir string, dryRun bool, preDestroy []string) (PruneResult, e
 	})
 }
 
+// PrunePoolWithOptions prunes one pool by deriving each worktree's repository
+// context from git metadata and applying the supplied options.
 func PrunePoolWithOptions(poolDir string, options PruneOptions) (PruneResult, error) {
 	return prunePool(poolDir, options, worktreePruneContextResolver())
 }
@@ -114,6 +139,9 @@ func PrunePoolWithOptions(poolDir string, options PruneOptions) (PruneResult, er
 // PruneAll prunes every managed pool directly under poolRoot and aggregates the
 // results.
 // When dryRun is false, all pools are planned before any worktree is deleted.
+// Backing-repository-missing orphans are reported as skipped; use
+// PruneAllWithOptions with PruneOptions.PruneOrphans to include them as
+// candidates.
 func PruneAll(poolRoot string, dryRun bool, preDestroy []string) (PruneAllResult, error) {
 	return PruneAllWithOptions(poolRoot, PruneOptions{
 		DryRun:     dryRun,
@@ -121,6 +149,8 @@ func PruneAll(poolRoot string, dryRun bool, preDestroy []string) (PruneAllResult
 	})
 }
 
+// PruneAllWithOptions prunes every managed pool directly under poolRoot and
+// applies options for dry-run behavior, orphan handling, and pre-destroy hooks.
 func PruneAllWithOptions(poolRoot string, options PruneOptions) (PruneAllResult, error) {
 	poolDirs, err := prunePoolDirs(poolRoot)
 	if err != nil {

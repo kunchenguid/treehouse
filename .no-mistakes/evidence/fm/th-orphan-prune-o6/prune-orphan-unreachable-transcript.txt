@@ -1,0 +1,77 @@
+Treehouse prune orphan and unverifiable worktree CLI transcript
+Workspace: /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVHZB97RVQYFQSYS0ZGD1YY7
+
+Scenario 1: true backing-repository-missing orphan
+
+$ cd case-orphan/myrepo && treehouse get
+🌳 Setting up worktree...
+🌳 Entered worktree at ~/.treehouse/myrepo-f9065e/1/myrepo. Type 'exit' to return.
+🌳 Worktree returned to pool.
+
+$ cd case-orphan/myrepo && treehouse get # first worktree is dirty, so a second managed worktree is created
+🌳 Setting up worktree...
+🌳 Entered worktree at ~/.treehouse/myrepo-f9065e/2/myrepo. Type 'exit' to return.
+🌳 Worktree returned to pool.
+
+Prepared clean stale worktree: /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVHZB97RVQYFQSYS0ZGD1YY7/.no-mistakes/tmp/prune-orphan-e2e/case-orphan/myrepo/.home/.treehouse/myrepo-f9065e/1/myrepo
+Prepared true orphan: /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVHZB97RVQYFQSYS0ZGD1YY7/.no-mistakes/tmp/prune-orphan-e2e/case-orphan/myrepo/.home/.treehouse/myrepo-f9065e/2/myrepo
+
+$ cd case-orphan/outside && treehouse prune --all
+🌳 Dry run: would prune 1 stale worktree across 1 pool and reclaim 391 B.
+1     391 B  ~/.treehouse/myrepo-f9065e/1/myrepo
+🌳 Skipped 1 unsafe idle worktree:
+  orphaned (backing repository missing):
+  2     content could not be verified  ~/.treehouse/myrepo-f9065e/2/myrepo
+🌳 Re-run with --all --yes to delete these worktrees.
+🌳 Re-run with --all --prune-orphans to include true orphans in the dry run; add --yes to delete them.
+
+$ cd case-orphan/outside && treehouse prune --all --yes
+🌳 Pruned 1 stale worktree across 1 pool and freed 391 B.
+1     391 B  ~/.treehouse/myrepo-f9065e/1/myrepo
+🌳 Skipped 1 unsafe idle worktree:
+  orphaned (backing repository missing):
+  2     content could not be verified  ~/.treehouse/myrepo-f9065e/2/myrepo
+🌳 Re-run with --all --prune-orphans --yes to delete true orphans whose backing repository is missing.
+
+verified: --yes pruned the stale worktree and left the orphan in place
+
+$ cd case-orphan/outside && treehouse prune --all --prune-orphans
+🌳 Dry run: would prune 1 stale/orphaned worktree across 1 pool and reclaim 392 B.
+2     392 B  ~/.treehouse/myrepo-f9065e/2/myrepo  content could not be verified
+🌳 Re-run with --all --prune-orphans --yes to delete these worktrees.
+
+$ cd case-orphan/outside && treehouse prune --all --prune-orphans --yes
+🌳 Pruned 1 stale/orphaned worktree across 1 pool and freed 392 B.
+2     392 B  ~/.treehouse/myrepo-f9065e/2/myrepo  content could not be verified
+
+verified: explicit --prune-orphans --yes removed the true orphan
+
+Scenario 2: origin unreachable is unverifiable, not deletable
+
+$ cd case-unreachable/myrepo && treehouse get
+🌳 Setting up worktree...
+🌳 Entered worktree at ~/.treehouse/myrepo-b7b084/1/myrepo. Type 'exit' to return.
+🌳 Worktree returned to pool.
+
+Prepared origin-unreachable worktree: /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVHZB97RVQYFQSYS0ZGD1YY7/.no-mistakes/tmp/prune-orphan-e2e/case-unreachable/myrepo/.home/.treehouse/myrepo-b7b084/1/myrepo
+
+$ cd case-unreachable/outside && treehouse prune --all --prune-orphans --yes
+🌳 No stale worktrees pruned across 1 pool.
+🌳 Skipped 1 unsafe idle worktree:
+  origin unreachable (cannot verify):
+  1     cannot fetch origin  ~/.treehouse/myrepo-b7b084/1/myrepo
+
+verified: origin-unreachable worktree remains after --prune-orphans --yes
+
+$ cd case-unreachable/outside && treehouse prune --all --verbose
+🌳 No stale worktrees to prune across 1 pool.
+🌳 Skipped 1 unsafe idle worktree:
+  origin unreachable (cannot verify):
+  1     cannot fetch origin  ~/.treehouse/myrepo-b7b084/1/myrepo
+        detail: refresh origin before prune: git fetch origin: fatal: '/Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVHZB97RVQYFQSYS0ZGD1YY7/.no-mistakes/tmp/prune-orphan-e2e/case-unreachable/remote.git' does not appear to be a git repository
+fatal: Could not read from remote repository.
+
+Please make sure you have the correct access rights
+and the repository exists.
+
+verified: verbose output includes detailed diagnostics, while default output above stays grouped and actionable

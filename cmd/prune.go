@@ -25,16 +25,17 @@ var (
 
 var pruneCmd = &cobra.Command{
 	Use:   "prune",
-	Short: "Remove stale idle worktrees from the pool",
-	Long: `Remove stale idle worktrees from the pool to reclaim disk space.
+	Short: "Remove stale worktrees and opted-in orphans from the pool",
+	Long: `Remove stale worktrees and opted-in orphans from the pool to reclaim disk space.
 
 A worktree is stale only when treehouse manages it, no owner reservation or
 running process is using it, it has no uncommitted changes, and its HEAD is
 already merged into the default branch.
 
-Prune is a dry run by default. Pass --yes to delete the listed worktrees.
-Backing-repository-missing orphans are reported by default but are only included
-for deletion when --prune-orphans is explicitly set.
+Prune is a dry run by default. Pass --yes to delete the listed candidates.
+Backing-repository-missing orphans are reported by default. Pass --prune-orphans
+to include them as unverified candidates, and combine it with --yes to delete
+them.
 Pass --all or --global to sweep every managed pool under the user-level
 treehouse root from any directory. Global prune derives each worktree's owning
 repository from git metadata and requires the configured root to be unset or
@@ -95,8 +96,8 @@ absolute.`,
 }
 
 func init() {
-	pruneCmd.Flags().BoolVar(&pruneYes, "yes", false, "Delete stale worktrees instead of doing a dry run")
-	pruneCmd.Flags().BoolVar(&pruneAll, "all", false, "Prune stale worktrees across every managed pool under the user-level treehouse root")
+	pruneCmd.Flags().BoolVar(&pruneYes, "yes", false, "Delete listed prune candidates instead of doing a dry run")
+	pruneCmd.Flags().BoolVar(&pruneAll, "all", false, "Sweep every managed pool under the user-level treehouse root")
 	pruneCmd.Flags().BoolVar(&pruneGlobal, "global", false, "Alias for --all")
 	pruneCmd.Flags().BoolVar(&pruneOrphans, "prune-orphans", false, "Include backing-repository-missing orphaned worktrees in prune candidates")
 	pruneCmd.Flags().BoolVarP(&pruneVerbose, "verbose", "v", false, "Show detailed skip diagnostics")

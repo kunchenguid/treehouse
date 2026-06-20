@@ -133,9 +133,9 @@ The default treehouse root is `~/.treehouse/`.
 - **No daemon** — all operations are inline CLI commands. No background processes, no state to get corrupted.
 - **In-use detection** — treehouse scans running processes and short-lived owner reservations to determine which worktrees are in-use. Reservations are persisted only while `get`, `destroy`, and `prune` lifecycle work is running.
 - **Dirty detection** - treehouse treats tracked changes and untracked files as dirty, even when repository config hides untracked files from normal `git status` output.
-- **Safe pruning** - `treehouse prune` removes only idle managed worktrees whose HEAD is already merged into the default branch and whose working tree is clean.
+- **Safe pruning** - By default, `treehouse prune` removes only idle managed worktrees whose HEAD is already merged into the default branch and whose working tree is clean.
   `treehouse prune --all` applies the same safety checks across every managed pool under the user-level treehouse root.
-  Backing-repository-missing orphans are reported by default and require `--prune-orphans --yes` before deletion.
+  Backing-repository-missing orphans are reported by default; `--prune-orphans` includes them as unverified prune candidates, and `--yes` is required before deletion.
   It is a dry run unless you pass `--yes`.
 
 ## CLI Reference
@@ -157,24 +157,24 @@ The default treehouse root is `~/.treehouse/`.
 | Command   | Flag      | Description                       |
 | --------- | --------- | --------------------------------- |
 | `return`  | `--force` | Clean, reset, and return without prompting |
-| `prune`   | `--yes`   | Delete stale idle worktrees instead of doing a dry run |
+| `prune`   | `--yes`   | Delete listed prune candidates instead of doing a dry run |
 | `prune`   | `--all`   | Sweep every managed pool under the user-level treehouse root |
 | `prune`   | `--global` | Alias for `--all` |
 | `prune`   | `--prune-orphans` | Include backing-repository-missing orphans in prune candidates |
-| `prune`   | `--verbose` | Show detailed skip diagnostics |
+| `prune`   | `--verbose`, `-v` | Show detailed skip diagnostics |
 | `destroy` | `--force` | Force destroy even if in-use      |
 | `destroy` | `--all`   | Destroy all worktrees in the pool |
 
-### Pruning stale worktrees
+### Pruning stale worktrees and orphans
 
 `treehouse prune` is a dry run by default.
-It lists stale idle managed worktrees that would be deleted and shows the reclaimable disk space.
+By default, it lists stale idle managed worktrees that would be deleted and shows the reclaimable disk space.
 Pass `treehouse prune --yes` to delete those worktrees.
 
 By default, prune only inspects the current repository's pool and must be run inside a git repo.
 Pass `treehouse prune --all` or `treehouse prune --global` to inspect every managed pool under the user-level treehouse root from any directory.
 Global prune reads the user-level config and hooks, derives each worktree's owning repository from git metadata, then fetches and checks merge safety against that repository.
-Pass `treehouse prune --all --yes` to delete only the globally safe candidates.
+Without `--prune-orphans`, pass `treehouse prune --all --yes` to delete only the globally safe stale candidates.
 
 Prune ignores worktrees that are currently in use or reserved by another lifecycle operation.
 It skips idle worktrees that are unsafe to remove and prints the skip reason, such as uncommitted tracked or untracked changes, or a HEAD commit that is not merged into the default branch.
@@ -223,7 +223,7 @@ pre_destroy = ["./scripts/teardown.sh"]
 ```
 
 - `post_create` runs after a worktree is provisioned or reset and right before `treehouse get` hands it to you.
-- `pre_destroy` runs before a worktree is removed by `treehouse destroy`, `treehouse destroy --all`, or `treehouse prune --yes`.
+- `pre_destroy` runs before a worktree is removed by `treehouse destroy`, `treehouse destroy --all`, or prune deletion commands such as `treehouse prune --yes` and `treehouse prune --prune-orphans --yes`.
 
 Commands in each list run sequentially in the worktree directory, via the OS shell (`/bin/sh -c` on Linux/macOS, `%COMSPEC% /c` on Windows).
 If a command exits non-zero, treehouse logs the command, exit code, and stderr, then continues with the remaining commands.
