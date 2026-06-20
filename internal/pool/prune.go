@@ -47,6 +47,11 @@ type PruneAllResult struct {
 	Result   PruneResult
 }
 
+type plannedPrunePool struct {
+	PoolDir string
+	Plan    prunePlan
+}
+
 // Prune finds stale idle managed worktrees and optionally deletes them.
 // A stale worktree is clean, unused, unreserved, and merged into the default
 // branch ref selected by git.DefaultBranchMergeRef.
@@ -69,31 +74,55 @@ func PruneAll(poolRoot string, dryRun bool, preDestroy []string) (PruneAllResult
 		PoolRoot: poolRoot,
 		Pools:    make([]PrunePoolResult, 0, len(poolDirs)),
 	}
+	plans := make([]plannedPrunePool, 0, len(poolDirs))
+	resolveContext := worktreePruneContextResolver()
 	for _, poolDir := range poolDirs {
-		poolResult, err := PrunePool(poolDir, dryRun, preDestroy)
+		plan, err := planPrunePool(poolDir, resolveContext, true)
 		if err != nil {
 			return PruneAllResult{}, err
 		}
-		result.Pools = append(result.Pools, PrunePoolResult{
+		plans = append(plans, plannedPrunePool{
 			PoolDir: poolDir,
-			Result:  poolResult,
+			Plan:    plan,
 		})
-		result.Result.Candidates = append(result.Result.Candidates, poolResult.Candidates...)
-		result.Result.Pruned = append(result.Result.Pruned, poolResult.Pruned...)
-		result.Result.Skipped = append(result.Result.Skipped, poolResult.Skipped...)
-		result.Result.ReclaimableBytes += poolResult.ReclaimableBytes
-		result.Result.FreedBytes += poolResult.FreedBytes
+		addPrunePoolResult(&result, poolDir, plan.Result)
 	}
-	return result, nil
+	if dryRun || len(result.Result.Candidates) == 0 {
+		return result, nil
+	}
+
+	executed := PruneAllResult{
+		PoolRoot: poolRoot,
+		Pools:    make([]PrunePoolResult, 0, len(plans)),
+	}
+	for _, planned := range plans {
+		poolResult := planned.Plan.Result
+		if len(planned.Plan.Result.Candidates) > 0 {
+			var err error
+			poolResult, err = executePrune(planned.PoolDir, planned.Plan, preDestroy)
+			if err != nil {
+				return PruneAllResult{}, err
+			}
+		}
+		addPrunePoolResult(&executed, planned.PoolDir, poolResult)
+	}
+	return executed, nil
+}
+
+func addPrunePoolResult(all *PruneAllResult, poolDir string, poolResult PruneResult) {
+	all.Pools = append(all.Pools, PrunePoolResult{
+		PoolDir: poolDir,
+		Result:  poolResult,
+	})
+	all.Result.Candidates = append(all.Result.Candidates, poolResult.Candidates...)
+	all.Result.Pruned = append(all.Result.Pruned, poolResult.Pruned...)
+	all.Result.Skipped = append(all.Result.Skipped, poolResult.Skipped...)
+	all.Result.ReclaimableBytes += poolResult.ReclaimableBytes
+	all.Result.FreedBytes += poolResult.FreedBytes
 }
 
 func prunePool(poolDir string, dryRun bool, preDestroy []string, resolveContext pruneContextResolver, skipContextErrors bool) (PruneResult, error) {
-	entries, err := pruneSnapshot(poolDir)
-	if err != nil {
-		return PruneResult{}, err
-	}
-
-	plan, err := planPrune(entries, resolveContext, skipContextErrors)
+	plan, err := planPrunePool(poolDir, resolveContext, skipContextErrors)
 	if err != nil {
 		return PruneResult{}, err
 	}
@@ -102,6 +131,14 @@ func prunePool(poolDir string, dryRun bool, preDestroy []string, resolveContext 
 	}
 
 	return executePrune(poolDir, plan, preDestroy)
+}
+
+func planPrunePool(poolDir string, resolveContext pruneContextResolver, skipContextErrors bool) (prunePlan, error) {
+	entries, err := pruneSnapshot(poolDir)
+	if err != nil {
+		return prunePlan{}, err
+	}
+	return planPrune(entries, resolveContext, skipContextErrors)
 }
 
 func prunePoolDirs(poolRoot string) ([]string, error) {

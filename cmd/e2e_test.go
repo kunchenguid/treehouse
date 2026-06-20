@@ -694,6 +694,49 @@ func TestPruneAllDryRunAndYesAcrossPoolsFromAnywhere(t *testing.T) {
 	}
 }
 
+func TestPruneAllYesDoesNotPartiallyDeleteBeforePlanningAllPools(t *testing.T) {
+	repoA, homeDir := setupTestRepo(t)
+	repoB := setupTestRepoWithHome(t, homeDir, "zzrepo")
+	env := []string{"SHELL=" + exitShellBin}
+
+	_, getErrA, code := runTreehouse(t, repoA, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("repo A get failed (code %d): %s", code, getErrA)
+	}
+	wtPathA := extractWorktreePath(getErrA, homeDir)
+	if wtPathA == "" {
+		t.Fatal("could not extract repo A worktree path")
+	}
+
+	_, getErrB, code := runTreehouse(t, repoB, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("repo B get failed (code %d): %s", code, getErrB)
+	}
+	wtPathB := extractWorktreePath(getErrB, homeDir)
+	if wtPathB == "" {
+		t.Fatal("could not extract repo B worktree path")
+	}
+
+	poolDirB := filepath.Dir(filepath.Dir(wtPathB))
+	if err := os.WriteFile(filepath.Join(poolDirB, "treehouse-state.json"), []byte("{"), 0o644); err != nil {
+		t.Fatalf("corrupt state failed: %v", err)
+	}
+
+	outsideDir := t.TempDir()
+	_, pruneErr, code := runTreehouseFromDir(t, repoA, outsideDir, homeDir, nil, "prune", "--all", "--yes")
+	if code == 0 {
+		t.Fatal("expected prune --all --yes to fail")
+	}
+	if !strings.Contains(pruneErr, "unexpected end of JSON input") {
+		t.Fatalf("expected corrupt state error, got stderr:\n%s", pruneErr)
+	}
+	for _, wtPath := range []string{wtPathA, wtPathB} {
+		if _, err := os.Stat(wtPath); err != nil {
+			t.Fatalf("expected worktree to remain at %s: %v", wtPath, err)
+		}
+	}
+}
+
 func TestPruneWithoutAllScopesToCurrentRepo(t *testing.T) {
 	repoA, homeDir := setupTestRepo(t)
 	repoB := setupTestRepoWithHome(t, homeDir, "otherrepo")
