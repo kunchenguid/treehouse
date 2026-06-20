@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/kunchenguid/treehouse/compare/v1.6.0...v1.7.0) (2026-06-20)
+
+
+### Features
+
+* **pool:** classify orphaned worktrees during prune ([#28](https://github.com/kunchenguid/treehouse/issues/28)) ([836044f](https://github.com/kunchenguid/treehouse/commit/836044f85e992d2fd65969dca387704998c144b6))
+
 ## [1.6.0](https://github.com/kunchenguid/treehouse/compare/v1.5.0...v1.6.0) (2026-06-20)
 
 
