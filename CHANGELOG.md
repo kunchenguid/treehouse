@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/kunchenguid/treehouse/compare/v1.5.0...v1.6.0) (2026-06-20)
+
+
+### Features
+
+* **cmd:** add global prune mode ([#26](https://github.com/kunchenguid/treehouse/issues/26)) ([6de3a91](https://github.com/kunchenguid/treehouse/commit/6de3a9150453cc5cf5fb4e95627788551adae66c))
+
 ## [1.5.0](https://github.com/kunchenguid/treehouse/compare/v1.4.0...v1.5.0) (2026-06-19)
 
 
