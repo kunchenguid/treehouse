@@ -300,7 +300,7 @@ A failing hook does not fail the overall `get`, `destroy`, or `prune` operation.
 
 ## Environment Variables
 
-- **`TREEHOUSE_DIR`** — `treehouse get` exports this into the subshell, set to the worktree path it drops you into, and `treehouse return` reads it to know which worktree to return when no path is given. You usually don't set it yourself; reference it from your own scripts or hooks to target the worktree you're currently inside.
+- **`TREEHOUSE_DIR`** — `treehouse get` exports this into the subshell, set to the worktree path it drops you into, and `treehouse return` reads it to know which worktree to return when no path is given. You usually don't set it yourself; reference it from your own scripts inside the subshell to target the worktree you're currently in. (Lifecycle hooks run before the subshell is spawned, so they do not see this variable.)
 
 - **`TREEHOUSE_NO_UPDATE_CHECK`** — set to `1` to skip the background update check treehouse runs on startup. Useful in CI, automation, or air-gapped environments where you don't want treehouse reaching out for new releases.
 
