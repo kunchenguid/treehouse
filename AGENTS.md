@@ -81,3 +81,8 @@ pre_destroy = ["./scripts/teardown.sh"]
 ```
 
 Hooks are ignored in repo-level config for safety.
+
+## Environment Variables
+
+- `TREEHOUSE_DIR` - exported into the `treehouse get` subshell (worktree path); `treehouse return` reads it to pick the worktree when no path is given.
+- `TREEHOUSE_NO_UPDATE_CHECK` - set to `1` to disable the startup background update check (CI, automation, air-gapped).

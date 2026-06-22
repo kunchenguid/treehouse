@@ -298,6 +298,12 @@ Commands in each list run sequentially in the worktree directory, via the OS she
 If a command exits non-zero, treehouse logs the command, exit code, and stderr, then continues with the remaining commands.
 A failing hook does not fail the overall `get`, `destroy`, or `prune` operation.
 
+## Environment Variables
+
+- **`TREEHOUSE_DIR`** — `treehouse get` exports this into the subshell, set to the worktree path it drops you into, and `treehouse return` reads it to know which worktree to return when no path is given. You usually don't set it yourself; reference it from your own scripts or hooks to target the worktree you're currently inside.
+
+- **`TREEHOUSE_NO_UPDATE_CHECK`** — set to `1` to skip the background update check treehouse runs on startup. Useful in CI, automation, or air-gapped environments where you don't want treehouse reaching out for new releases.
+
 ## Development
 
 ```sh
