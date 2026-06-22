@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 )
 
 var returnForce bool
+var errReturnWorktreeUnmanaged = errors.New("return worktree unmanaged")
 
 var returnCmd = &cobra.Command{
 	Use:   "return [path]",
@@ -24,29 +26,12 @@ var returnCmd = &cobra.Command{
 			return err
 		}
 
-		var repoRoot string
-		if len(args) > 0 {
-			repoRoot, err = git.FindMainRepoRootFrom(wtPath)
-		} else {
-			repoRoot, err = git.FindRepoRoot()
-		}
+		poolDir, err := resolveReturnPoolDir(wtPath, len(args) > 0)
 		if err != nil {
-			return fmt.Errorf("not in a git repository: %w", err)
-		}
-
-		cfg, err := config.Load(repoRoot)
-		if err != nil {
-			return fmt.Errorf("failed to load config: %w", err)
-		}
-
-		poolDir, err := config.ResolvePoolDir(repoRoot, cfg.Root)
-		if err != nil {
+			if errors.Is(err, errReturnWorktreeUnmanaged) {
+				return fmt.Errorf("worktree %s is not managed by treehouse", wtPath)
+			}
 			return err
-		}
-
-		entry, err := pool.FindByPath(poolDir, wtPath)
-		if err != nil || entry == nil {
-			return fmt.Errorf("worktree %s is not managed by treehouse", wtPath)
 		}
 
 		if !returnForce {
@@ -88,4 +73,47 @@ func resolveWorktreePath(args []string) (string, error) {
 		return filepath.Abs(env)
 	}
 	return os.Getwd()
+}
+
+func resolveReturnPoolDir(wtPath string, explicitPath bool) (string, error) {
+	pathPoolDir := filepath.Dir(filepath.Dir(wtPath))
+	entry, err := pool.FindByPath(pathPoolDir, wtPath)
+	if err != nil {
+		return "", err
+	}
+	if entry != nil {
+		return pathPoolDir, nil
+	}
+
+	var repoRoot string
+	if explicitPath {
+		repoRoot, err = git.FindMainRepoRootFrom(wtPath)
+	} else {
+		repoRoot, err = git.FindRepoRoot()
+	}
+	if err != nil {
+		if explicitPath {
+			return "", errReturnWorktreeUnmanaged
+		}
+		return "", fmt.Errorf("not in a git repository: %w", err)
+	}
+
+	cfg, err := config.Load(repoRoot)
+	if err != nil {
+		return "", fmt.Errorf("failed to load config: %w", err)
+	}
+
+	fallbackPoolDir, err := config.ResolvePoolDir(repoRoot, cfg.Root)
+	if err != nil {
+		return "", err
+	}
+
+	entry, err = pool.FindByPath(fallbackPoolDir, wtPath)
+	if err != nil {
+		return "", err
+	}
+	if entry == nil {
+		return "", errReturnWorktreeUnmanaged
+	}
+	return fallbackPoolDir, nil
 }
