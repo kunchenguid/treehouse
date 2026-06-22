@@ -14,6 +14,16 @@ type WorktreeEntry struct {
 	Destroying     bool      `json:"destroying,omitempty"`
 	OwnerPID       int32     `json:"owner_pid,omitempty"`
 	OwnerStartedAt int64     `json:"owner_started_at,omitempty"`
+	// Leased marks a worktree as durably reserved by an external consumer that
+	// keeps no live process inside it. Unlike OwnerPID/OwnerStartedAt (which are
+	// process-derived and self-heal when the owner dies), a lease persists until
+	// it is explicitly released by `treehouse return`. A missing field decodes to
+	// false, so pre-lease state files keep today's behavior.
+	Leased bool `json:"leased,omitempty"`
+	// LeaseHolder is an optional human-readable label for who holds the lease.
+	LeaseHolder string `json:"lease_holder,omitempty"`
+	// LeasedAt records when the lease was taken.
+	LeasedAt time.Time `json:"leased_at,omitempty"`
 }
 
 type State struct {

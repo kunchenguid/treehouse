@@ -2,6 +2,7 @@ package pool
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,6 +17,7 @@ const (
 	StatusAvailable = "available"
 	StatusDirty     = "dirty"
 	StatusInUse     = "in-use"
+	StatusLeased    = "leased"
 	StatusHere      = "you're here"
 )
 
@@ -24,9 +26,48 @@ type WorktreeStatus struct {
 	Path      string
 	Status    string
 	Processes []process.ProcessInfo
+	// LeaseHolder is the recorded holder for a leased worktree, if any.
+	LeaseHolder string
 }
 
+// acquireOptions controls how Acquire reserves the worktree it hands out.
+type acquireOptions struct {
+	// lease records a durable, process-independent reservation instead of the
+	// default short-lived owner reservation.
+	lease bool
+	// leaseHolder is an optional label stored with a lease.
+	leaseHolder string
+	// hookStdout/hookStderr receive post-create hook output. Lease mode routes
+	// hook stdout to stderr so the worktree path stays the only stdout line.
+	hookStdout io.Writer
+	hookStderr io.Writer
+}
+
+// Acquire reserves a clean worktree from the pool with a short-lived owner
+// reservation (the calling process). It is the backing call for the interactive
+// `treehouse get` subshell.
 func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (string, error) {
+	return acquire(repoRoot, poolDir, poolSize, postCreate, acquireOptions{
+		hookStdout: os.Stdout,
+		hookStderr: os.Stderr,
+	})
+}
+
+// AcquireLease reserves a clean worktree and marks it durably LEASED so the
+// reservation survives with zero processes running inside it. The lease persists
+// until it is released by Release. holder is an optional label recorded with the
+// lease for diagnostics. Post-create hook stdout is routed to stderr so callers
+// can capture the returned path as the sole stdout line.
+func AcquireLease(repoRoot, poolDir string, poolSize int, postCreate []string, holder string) (string, error) {
+	return acquire(repoRoot, poolDir, poolSize, postCreate, acquireOptions{
+		lease:       true,
+		leaseHolder: holder,
+		hookStdout:  os.Stderr,
+		hookStderr:  os.Stderr,
+	})
+}
+
+func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts acquireOptions) (string, error) {
 	branch, err := git.GetDefaultBranch(repoRoot)
 	if err != nil {
 		return "", err
@@ -50,9 +91,9 @@ func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (strin
 
 		state = healState(state)
 
-		// Try to find an available worktree (clean and not in-use)
+		// Try to find an available worktree (clean, not in-use, not leased)
 		for i, wt := range state.Worktrees {
-			if wt.Destroying || ownerAlive(wt) {
+			if wt.Destroying || wt.Leased || ownerAlive(wt) {
 				continue
 			}
 			inUse, _ := process.IsWorktreeInUse(wt.Path)
@@ -67,7 +108,7 @@ func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (strin
 			if err := git.ResetWorktree(wt.Path, branch); err != nil {
 				continue
 			}
-			if err := reserveOwner(&state.Worktrees[i]); err != nil {
+			if err := markAcquired(&state.Worktrees[i], opts); err != nil {
 				return err
 			}
 			acquired = wt.Path
@@ -100,7 +141,7 @@ func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (strin
 			Path:      wtPath,
 			CreatedAt: time.Now(),
 		}
-		if err := reserveOwner(&entry); err != nil {
+		if err := markAcquired(&entry, opts); err != nil {
 			return err
 		}
 		state.Worktrees = append(state.Worktrees, entry)
@@ -116,10 +157,25 @@ func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (strin
 		return "", err
 	}
 	if runPostCreate {
-		hooks.Run(postCreate, acquired, os.Stdout, os.Stderr)
+		hooks.Run(postCreate, acquired, opts.hookStdout, opts.hookStderr)
 	}
 
 	return acquired, nil
+}
+
+// markAcquired stamps an acquired worktree entry: a durable lease in lease mode,
+// otherwise the default short-lived owner reservation.
+func markAcquired(wt *WorktreeEntry, opts acquireOptions) error {
+	if opts.lease {
+		wt.Leased = true
+		wt.LeaseHolder = opts.leaseHolder
+		wt.LeasedAt = time.Now()
+		// A lease is process-independent, so it carries no owner reservation.
+		wt.OwnerPID = 0
+		wt.OwnerStartedAt = 0
+		return nil
+	}
+	return reserveOwner(wt)
 }
 
 func Release(poolDir, worktreePath string) error {
@@ -160,6 +216,7 @@ func Release(poolDir, worktreePath string) error {
 				}
 				state.Worktrees[i].OwnerPID = 0
 				state.Worktrees[i].OwnerStartedAt = 0
+				clearLease(&state.Worktrees[i])
 				break
 			}
 		}
@@ -196,7 +253,10 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 			procs, _ := process.FindProcessesInWorktree(wt.Path)
 			ws.Processes = procs
 
-			if ownerAlive(wt) {
+			if wt.Leased {
+				ws.Status = StatusLeased
+				ws.LeaseHolder = wt.LeaseHolder
+			} else if ownerAlive(wt) {
 				ws.Status = StatusInUse
 			} else if len(procs) > 0 {
 				ws.Status = StatusInUse
@@ -398,10 +458,17 @@ func reserveOwner(wt *WorktreeEntry) error {
 }
 
 func worktreeInUse(wt WorktreeEntry) (bool, error) {
-	if ownerAlive(wt) {
+	if wt.Leased || ownerAlive(wt) {
 		return true, nil
 	}
 	return process.IsWorktreeInUse(wt.Path)
+}
+
+// clearLease removes any durable lease from a worktree entry.
+func clearLease(wt *WorktreeEntry) {
+	wt.Leased = false
+	wt.LeaseHolder = ""
+	wt.LeasedAt = time.Time{}
 }
 
 func sameDestroyReservation(current, reserved WorktreeEntry) bool {

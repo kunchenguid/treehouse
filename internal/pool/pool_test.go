@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1149,6 +1150,270 @@ func TestRelease_RejectsDestroyingWorktree(t *testing.T) {
 	}
 	if _, err := os.Stat(dirtyPath); err != nil {
 		t.Fatalf("expected Release to leave destroying worktree untouched: %v", err)
+	}
+}
+
+func TestAcquireLease_MarksWorktreeLeasedInState(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := AcquireLease(repoDir, poolDir, 4, nil, "secondmate-home")
+	if err != nil {
+		t.Fatalf("AcquireLease failed: %v", err)
+	}
+	if wtPath == "" {
+		t.Fatal("AcquireLease returned empty path")
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if len(state.Worktrees) != 1 {
+		t.Fatalf("expected one worktree, got %#v", state.Worktrees)
+	}
+	wt := state.Worktrees[0]
+	if !wt.Leased || wt.LeaseHolder != "secondmate-home" {
+		t.Fatalf("expected durable lease with holder, got %#v", wt)
+	}
+	// A lease must not depend on a live process: no owner reservation is kept.
+	if wt.OwnerPID != 0 || wt.OwnerStartedAt != 0 {
+		t.Fatalf("expected no owner reservation on a lease, got %#v", wt)
+	}
+	if wt.LeasedAt.IsZero() {
+		t.Fatalf("expected LeasedAt to be set, got %#v", wt)
+	}
+}
+
+func TestAcquireLease_NotHandedOutBySubsequentAcquire(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	leased, err := AcquireLease(repoDir, poolDir, 4, nil, "")
+	if err != nil {
+		t.Fatalf("AcquireLease failed: %v", err)
+	}
+
+	// A plain acquire must never reuse the leased worktree even though no
+	// process runs inside it.
+	next, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if next == leased {
+		t.Fatalf("acquire reused leased worktree %s", leased)
+	}
+}
+
+func TestAcquireLease_ExhaustsPoolWhenAllLeased(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	if _, err := AcquireLease(repoDir, poolDir, 1, nil, ""); err != nil {
+		t.Fatalf("AcquireLease failed: %v", err)
+	}
+
+	// With pool size 1 and the only worktree leased, a second acquire cannot
+	// find or create one.
+	if _, err := Acquire(repoDir, poolDir, 1, nil); err == nil {
+		t.Fatal("expected acquire to fail when the only worktree is leased")
+	}
+}
+
+func TestPrune_NeverRemovesLeasedWorktreeWithoutProcess(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := AcquireLease(repoDir, poolDir, 4, nil, "home")
+	if err != nil {
+		t.Fatalf("AcquireLease failed: %v", err)
+	}
+
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if len(result.Candidates) != 0 || len(result.Pruned) != 0 || len(result.Skipped) != 0 {
+		t.Fatalf("expected leased worktree to be ignored by prune, got %#v", result)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("prune removed leased worktree %s: %v", wtPath, err)
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if len(state.Worktrees) != 1 || !state.Worktrees[0].Leased {
+		t.Fatalf("expected lease to persist after prune, got %#v", state.Worktrees)
+	}
+}
+
+func TestRelease_ClearsLease(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := AcquireLease(repoDir, poolDir, 4, nil, "home")
+	if err != nil {
+		t.Fatalf("AcquireLease failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if len(state.Worktrees) != 1 {
+		t.Fatalf("expected one worktree, got %#v", state.Worktrees)
+	}
+	if state.Worktrees[0].Leased || state.Worktrees[0].LeaseHolder != "" || !state.Worktrees[0].LeasedAt.IsZero() {
+		t.Fatalf("expected lease to be cleared, got %#v", state.Worktrees[0])
+	}
+
+	// After release the worktree becomes available for reuse.
+	reused, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire after release failed: %v", err)
+	}
+	if reused != wtPath {
+		t.Fatalf("expected released worktree %s to be reused, got %s", wtPath, reused)
+	}
+}
+
+func TestList_ShowsLeasedState(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := AcquireLease(repoDir, poolDir, 4, nil, "secondmate-7")
+	if err != nil {
+		t.Fatalf("AcquireLease failed: %v", err)
+	}
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 || statuses[0].Path != wtPath {
+		t.Fatalf("expected one leased worktree, got %#v", statuses)
+	}
+	if statuses[0].Status != StatusLeased {
+		t.Fatalf("expected leased status, got %q", statuses[0].Status)
+	}
+	if statuses[0].LeaseHolder != "secondmate-7" {
+		t.Fatalf("expected lease holder to be reported, got %q", statuses[0].LeaseHolder)
+	}
+}
+
+func TestHealState_PreservesLease(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := AcquireLease(repoDir, poolDir, 4, nil, "home")
+	if err != nil {
+		t.Fatalf("AcquireLease failed: %v", err)
+	}
+
+	// Simulate a stale owner pid alongside the lease; healing must clear the
+	// dead owner reservation but keep the durable lease intact.
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	state.Worktrees[0].OwnerPID = 999999
+	state.Worktrees[0].OwnerStartedAt = 1
+	if err := WriteState(poolDir, state); err != nil {
+		t.Fatalf("WriteState failed: %v", err)
+	}
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 || statuses[0].Status != StatusLeased {
+		t.Fatalf("expected lease to survive healing, got %#v", statuses)
+	}
+
+	state, err = ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if !state.Worktrees[0].Leased {
+		t.Fatalf("expected lease to persist after healing, got %#v", state.Worktrees[0])
+	}
+	if state.Worktrees[0].OwnerPID != 0 {
+		t.Fatalf("expected stale owner reservation to be cleared, got %#v", state.Worktrees[0])
+	}
+	_ = wtPath
+}
+
+func TestDestroy_NonForceRejectsLeasedWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := AcquireLease(repoDir, poolDir, 4, nil, "home")
+	if err != nil {
+		t.Fatalf("AcquireLease failed: %v", err)
+	}
+
+	err = Destroy(repoDir, poolDir, wtPath, false, nil)
+	if err == nil {
+		t.Fatal("expected non-force Destroy to reject leased worktree")
+	}
+	if !strings.Contains(err.Error(), "is in use") {
+		t.Fatalf("expected in-use error, got %v", err)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected leased worktree to remain on disk: %v", err)
+	}
+
+	// --force overrides the lease.
+	if err := Destroy(repoDir, poolDir, wtPath, true, nil); err != nil {
+		t.Fatalf("force Destroy failed: %v", err)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("expected leased worktree to be removed after force destroy, stat err: %v", err)
+	}
+}
+
+func TestAcquireLease_ConcurrentAcquiresNeverDoubleLease(t *testing.T) {
+	// A local repo has no origin, so AcquireLease skips git fetch and avoids
+	// concurrent-fetch races; the state lock still serializes pool mutation.
+	repoDir, poolDir := setupLocalRepo(t)
+
+	const n = 6
+	paths := make([]string, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			paths[i], errs[i] = AcquireLease(repoDir, poolDir, n, nil, "")
+		}(i)
+	}
+	wg.Wait()
+
+	seen := make(map[string]int)
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Fatalf("AcquireLease %d failed: %v", i, errs[i])
+		}
+		if paths[i] == "" {
+			t.Fatalf("AcquireLease %d returned empty path", i)
+		}
+		seen[paths[i]]++
+	}
+	for path, count := range seen {
+		if count != 1 {
+			t.Fatalf("worktree %s was leased %d times (double-lease)", path, count)
+		}
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if len(state.Worktrees) != n {
+		t.Fatalf("expected %d distinct leased worktrees, got %d: %#v", n, len(state.Worktrees), state.Worktrees)
+	}
+	for _, wt := range state.Worktrees {
+		if !wt.Leased {
+			t.Fatalf("expected every concurrently acquired worktree to be leased, got %#v", wt)
+		}
 	}
 }
 

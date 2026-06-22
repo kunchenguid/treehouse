@@ -7,7 +7,7 @@ Treehouse is a Go CLI tool that manages a pool of git worktrees for parallel AI 
 ## Project Structure
 
 - `main.go` - entry point, calls `cmd.Execute()`
-- `cmd/` - CLI commands (cobra): `get`, `return`, `status`, `prune`, `destroy`
+- `cmd/` - CLI commands (cobra): `get` (incl. `get --lease`), `return`, `status`, `prune`, `destroy`
 - `internal/config/` - config file loading (`treehouse.toml`)
 - `internal/hooks/` - user-configured lifecycle hook command execution
 - `internal/pool/` - pool manager (acquire, release, list, destroy, prune) + state file
@@ -37,6 +37,8 @@ make test
 - No daemon - all operations are inline CLI commands
 - Detached HEAD worktrees reset to whichever of local or origin default branch is further ahead (prefers origin on divergence)
 - In-use detection uses process scanning plus short-lived persisted owner reservations for lifecycle operations
+- Durable leases are a separate, process-independent reservation: `WorktreeEntry.Leased`/`LeaseHolder`/`LeasedAt` persist in the state file (all `omitempty`, so pre-lease state files keep today's behavior). A lease is NOT derived from live processes, so it survives with zero processes inside the worktree and `healState` never clears it (it only clears dead owner reservations). Leased worktrees are skipped by `Acquire` and `prune`, treated as in-use by `worktreeInUse` (so non-force `destroy` rejects them), surfaced by `status` as `StatusLeased`, and cleared by `Release` (`return`)
+- `get --lease` (see `getLeaseRunE`) is the non-interactive acquire: it implies the durable lease, opens no subshell, routes post-create hook stdout and all banners to stderr, and prints ONLY the worktree path to stdout so `path=$(treehouse get --lease)` is clean. `--lease-holder`/`$TREEHOUSE_LEASE_HOLDER` set the recorded holder. `pool.AcquireLease` is the entry point; both it and `Acquire` delegate to the shared `acquire(..., acquireOptions)` core, and `markAcquired` stamps either a lease or an owner reservation. Concurrency safety comes from the existing `WithStateLock` (flock) around all pool mutation
 - Dirty checks include untracked files even when repository config hides them from normal `git status` output
 - Prune deletes only idle managed worktrees that are clean and whose HEAD is merged into the default branch; dry run is the default
 - Prune reports unsafe idle worktrees in grouped, stable categories and keeps raw git diagnostics for verbose output instead of default output

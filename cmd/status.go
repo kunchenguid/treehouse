@@ -47,6 +47,7 @@ var statusCmd = &cobra.Command{
 		red := color.New(color.FgRed).SprintFunc()
 		yellow := color.New(color.FgYellow).SprintFunc()
 		cyan := color.New(color.FgCyan, color.Bold).SprintFunc()
+		magenta := color.New(color.FgMagenta).SprintFunc()
 
 		// statusWidth must be >= longest status string ("you're here" = 11)
 		const statusWidth = 11
@@ -60,13 +61,19 @@ var statusCmd = &cobra.Command{
 				status = red(wt.Status)
 			case pool.StatusDirty:
 				status = yellow(wt.Status)
+			case pool.StatusLeased:
+				status = magenta(wt.Status)
 			case pool.StatusHere:
 				status = cyan(wt.Status)
 			}
 
 			// "%-4s  %-11s  " = 4 + 2 + 11 + 2 = 19 chars before path
 			statusPad := strings.Repeat(" ", statusWidth-len(wt.Status))
-			fmt.Fprintf(os.Stdout, "%-4s  %s%s  %s\n", wt.Name, status, statusPad, ui.PrettyPath(wt.Path))
+			line := fmt.Sprintf("%-4s  %s%s  %s", wt.Name, status, statusPad, ui.PrettyPath(wt.Path))
+			if wt.Status == pool.StatusLeased && wt.LeaseHolder != "" {
+				line += fmt.Sprintf("  (held by %s)", wt.LeaseHolder)
+			}
+			fmt.Fprintln(os.Stdout, line)
 
 			if len(wt.Processes) > 0 {
 				var procStrs []string

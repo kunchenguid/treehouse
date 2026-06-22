@@ -547,7 +547,7 @@ func analyzePruneCandidate(resolveContext pruneContextResolver, wt WorktreeEntry
 	worktree := PruneWorktree{Name: wt.Name, Path: wt.Path}
 	skipped := PruneSkipped{Name: wt.Name, Path: wt.Path}
 
-	if wt.Destroying || ownerAlive(wt) {
+	if wt.Destroying || wt.Leased || ownerAlive(wt) {
 		return worktree, skipped, false, pruneContext{}, nil
 	}
 	inUse, err := process.IsWorktreeInUse(wt.Path)

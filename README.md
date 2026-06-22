@@ -132,6 +132,7 @@ The default treehouse root is `~/.treehouse/`.
 - **Detached HEAD** — worktrees use detached HEAD mode, reset to whichever of the local or remote default branch is further ahead, avoiding branch name conflicts entirely.
 - **No daemon** — all operations are inline CLI commands. No background processes, no state to get corrupted.
 - **In-use detection** — treehouse scans running processes and short-lived owner reservations to determine which worktrees are in-use. Reservations are persisted only while `get`, `destroy`, and `prune` lifecycle work is running.
+- **Durable leases** — `treehouse get --lease` reserves a worktree as a persistent home without keeping a process inside it. The lease is recorded in treehouse's own state, so the worktree is never handed out by a later `get` and never removed by `prune` until you release it with `treehouse return`. Unlike process-based in-use detection, a lease survives with zero processes running inside the worktree.
 - **Dirty detection** - treehouse treats tracked changes and untracked files as dirty, even when repository config hides untracked files from normal `git status` output.
 - **Safe pruning** - By default, `treehouse prune` removes only idle managed worktrees whose HEAD is already merged into the default branch and whose working tree is clean.
   `treehouse prune --all` applies the same safety checks across every managed pool under the user-level treehouse root.
@@ -144,8 +145,9 @@ The default treehouse root is `~/.treehouse/`.
 | -------------------------- | ---------------------------------------------------- |
 | `treehouse`                | Get a worktree and open a subshell (alias for `get`) |
 | `treehouse get`            | Acquire a worktree from the pool                     |
-| `treehouse status`         | Show pool status (highlights your current worktree)  |
-| `treehouse return [path]`  | Terminate lingering worktree processes and return it to the pool |
+| `treehouse get --lease`    | Durably lease a worktree without a subshell; print its path |
+| `treehouse status`         | Show pool status (highlights leased and current worktrees) |
+| `treehouse return [path]`  | Release any lease, terminate lingering worktree processes, and return it to the pool |
 | `treehouse prune`          | Dry-run removal of stale idle worktrees in the current repo pool |
 | `treehouse prune --all`    | Dry-run removal of stale idle worktrees across every managed pool |
 | `treehouse destroy [path]` | Remove a worktree from the pool                      |
@@ -156,6 +158,8 @@ The default treehouse root is `~/.treehouse/`.
 
 | Command   | Flag      | Description                       |
 | --------- | --------- | --------------------------------- |
+| `get`     | `--lease` | Durably lease the worktree without opening a subshell; print only its path to stdout |
+| `get`     | `--lease-holder` | Optional label recorded as the lease holder (defaults to `$TREEHOUSE_LEASE_HOLDER`) |
 | `return`  | `--force` | Clean, reset, and return without prompting |
 | `prune`   | `--yes`   | Delete listed prune candidates instead of doing a dry run |
 | `prune`   | `--all`   | Sweep every managed pool under the user-level treehouse root |
@@ -164,6 +168,27 @@ The default treehouse root is `~/.treehouse/`.
 | `prune`   | `--verbose`, `-v` | Show detailed skip diagnostics |
 | `destroy` | `--force` | Force destroy even if in-use      |
 | `destroy` | `--all`   | Destroy all worktrees in the pool |
+
+### Leasing a worktree (no subshell)
+
+`treehouse get` normally opens an interactive subshell whose lifetime is the hold: when the shell exits, the worktree returns to the pool.
+That is awkward for callers that need a worktree to persist as a permanent home with no long-lived process inside it.
+
+`treehouse get --lease` is the non-interactive, durable alternative:
+
+```sh
+path=$(treehouse get --lease)
+# $path is the leased worktree's absolute path; all banners went to stderr.
+```
+
+It acquires a worktree exactly like `get`, but instead of opening a subshell it marks the worktree **leased** in treehouse's persistent state and prints only the worktree's absolute path to stdout (every human-facing message goes to stderr, so command substitution stays clean).
+
+A leased worktree is never handed out by a later `get` and never removed by `prune`, regardless of whether any process runs inside it, until the lease is explicitly released.
+It also requires `--force` to `destroy`.
+
+Pass `--lease-holder <label>` (or set `$TREEHOUSE_LEASE_HOLDER`) to record who holds the lease; `treehouse status` then shows it next to the `leased` state.
+
+Release a lease with `treehouse return <path>`, which clears the lease, terminates any lingering processes, resets the worktree, and returns it to the pool.
 
 ### Pruning stale worktrees and orphans
 
@@ -176,7 +201,7 @@ Pass `treehouse prune --all` or `treehouse prune --global` to inspect every mana
 Global prune reads the user-level config and hooks, derives each worktree's owning repository from git metadata, then fetches and checks merge safety against that repository.
 Without `--prune-orphans`, pass `treehouse prune --all --yes` to delete only the globally safe stale candidates.
 
-Prune ignores worktrees that are currently in use or reserved by another lifecycle operation.
+Prune ignores worktrees that are currently in use, leased, or reserved by another lifecycle operation.
 It skips idle worktrees that are unsafe to remove and prints the skip reason, such as uncommitted tracked or untracked changes, or a HEAD commit that is not merged into the default branch.
 Skip output is grouped by reason so large global sweeps stay scannable.
 When `origin` exists, prune fetches it and proves each HEAD against the current remote default branch tracking ref.

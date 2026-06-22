@@ -434,6 +434,147 @@ func TestGetAndStatus(t *testing.T) {
 	}
 }
 
+func TestGetLeasePrintsOnlyPathToStdout(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease")
+	if code != 0 {
+		t.Fatalf("treehouse get --lease failed (code %d): %s", code, stderr)
+	}
+
+	// stdout must be exactly the worktree path on a single line, so scripts can
+	// do path=$(treehouse get --lease).
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected exactly one stdout line, got %d:\n%q", len(lines), stdout)
+	}
+	wtPath := lines[0]
+	if !filepath.IsAbs(wtPath) {
+		t.Fatalf("expected an absolute path on stdout, got %q", wtPath)
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, "README.md")); err != nil {
+		t.Fatalf("expected leased worktree to contain repo content: %v", err)
+	}
+
+	// Human-facing banners go to stderr only.
+	if strings.Contains(stdout, "🌳") || strings.Contains(stdout, "Leased worktree") {
+		t.Fatalf("stdout must contain only the path, got:\n%q", stdout)
+	}
+	if !strings.Contains(stderr, "Leased worktree at") {
+		t.Fatalf("expected lease banner on stderr, got:\n%s", stderr)
+	}
+
+	// status reports the durable lease as a distinct state.
+	statusOut, statusErr, code := runTreehouse(t, repoDir, homeDir, nil, "status")
+	if code != 0 {
+		t.Fatalf("status failed (code %d): %s", code, statusErr)
+	}
+	if !strings.Contains(statusOut, "leased") {
+		t.Fatalf("expected status to show leased state, got:\n%s", statusOut)
+	}
+}
+
+func TestGetLeaseRecordsHolder(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	_, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease", "--lease-holder", "secondmate-home")
+	if code != 0 {
+		t.Fatalf("treehouse get --lease failed (code %d): %s", code, stderr)
+	}
+
+	statusOut, statusErr, code := runTreehouse(t, repoDir, homeDir, nil, "status")
+	if code != 0 {
+		t.Fatalf("status failed (code %d): %s", code, statusErr)
+	}
+	if !strings.Contains(statusOut, "leased") || !strings.Contains(statusOut, "secondmate-home") {
+		t.Fatalf("expected status to show lease holder, got:\n%s", statusOut)
+	}
+}
+
+func TestLeasedWorktreeSkippedByGetAndPrune(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	leaseOut, leaseErr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease")
+	if code != 0 {
+		t.Fatalf("get --lease failed (code %d): %s", code, leaseErr)
+	}
+	leasedPath := strings.TrimSpace(leaseOut)
+	if leasedPath == "" {
+		t.Fatal("could not capture leased worktree path")
+	}
+
+	// A later interactive get must not hand out the leased worktree.
+	env := []string{"SHELL=" + exitShellBin}
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get failed (code %d): %s", code, getErr)
+	}
+	otherPath := extractWorktreePath(getErr, homeDir)
+	if otherPath == "" {
+		t.Fatal("could not extract second worktree path")
+	}
+	if otherPath == leasedPath {
+		t.Fatalf("get handed out the leased worktree %s", leasedPath)
+	}
+
+	// prune must never remove the leased worktree, even with no process inside.
+	pruneOut, pruneErr, code := runTreehouse(t, repoDir, homeDir, nil, "prune", "--yes")
+	if code != 0 {
+		t.Fatalf("prune --yes failed (code %d): %s", code, pruneErr)
+	}
+	prettyLeased := "~" + leasedPath[len(homeDir):]
+	if strings.Contains(pruneOut, prettyLeased) {
+		t.Fatalf("prune listed the leased worktree %s:\n%s", prettyLeased, pruneOut)
+	}
+	if _, err := os.Stat(leasedPath); err != nil {
+		t.Fatalf("prune removed leased worktree %s: %v", leasedPath, err)
+	}
+}
+
+func TestReturnReleasesLease(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	leaseOut, leaseErr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease")
+	if code != 0 {
+		t.Fatalf("get --lease failed (code %d): %s", code, leaseErr)
+	}
+	leasedPath := strings.TrimSpace(leaseOut)
+	if leasedPath == "" {
+		t.Fatal("could not capture leased worktree path")
+	}
+
+	_, returnErr, code := runTreehouse(t, repoDir, homeDir, nil, "return", leasedPath)
+	if code != 0 {
+		t.Fatalf("return failed (code %d): %s", code, returnErr)
+	}
+	if !strings.Contains(returnErr, "Worktree returned to pool") {
+		t.Fatalf("expected return confirmation, got: %s", returnErr)
+	}
+
+	// Status no longer reports the worktree as leased.
+	statusOut, statusErr, code := runTreehouse(t, repoDir, homeDir, nil, "status")
+	if code != 0 {
+		t.Fatalf("status failed (code %d): %s", code, statusErr)
+	}
+	if strings.Contains(statusOut, "leased") {
+		t.Fatalf("expected lease to be released, got status:\n%s", statusOut)
+	}
+	if !strings.Contains(statusOut, "available") {
+		t.Fatalf("expected released worktree to be available, got status:\n%s", statusOut)
+	}
+
+	// The released worktree is reusable by a normal get.
+	env := []string{"SHELL=" + exitShellBin}
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get after release failed (code %d): %s", code, getErr)
+	}
+	reusedPath := extractWorktreePath(getErr, homeDir)
+	if reusedPath != leasedPath {
+		t.Fatalf("expected released worktree %s to be reused, got %s", leasedPath, reusedPath)
+	}
+}
+
 func TestGetReusesWorktree(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	env := []string{"SHELL=" + exitShellBin}

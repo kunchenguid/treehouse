@@ -17,13 +17,27 @@ import (
 	"github.com/kunchenguid/treehouse/internal/ui"
 )
 
+var (
+	getLease       bool
+	getLeaseHolder string
+)
+
 var getCmd = &cobra.Command{
 	Use:   "get",
 	Short: "Acquire a worktree from the pool and open a subshell",
-	RunE:  getRunE,
+	Long: `Acquire a worktree from the pool and open a subshell in it.
+
+Pass --lease for a non-interactive, durable acquire: treehouse reserves the
+worktree, marks it leased in its persistent state, and prints only the worktree's
+absolute path to stdout (all banners go to stderr). A leased worktree is never
+handed out by a later get and never removed by prune, even with no process
+running inside it, until you release it with 'treehouse return <path>'.`,
+	RunE: getRunE,
 }
 
 func init() {
+	getCmd.Flags().BoolVar(&getLease, "lease", false, "Durably lease a worktree without opening a subshell; print only its path to stdout")
+	getCmd.Flags().StringVar(&getLeaseHolder, "lease-holder", "", "Optional label recorded as the lease holder (defaults to $TREEHOUSE_LEASE_HOLDER)")
 	rootCmd.AddCommand(getCmd)
 }
 
@@ -45,6 +59,10 @@ func getRunE(cmd *cobra.Command, args []string) error {
 
 	if err := config.EnsureGitignore(filepath.Dir(poolDir)); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to update .gitignore: %v\n", err)
+	}
+
+	if getLease {
+		return getLeaseRunE(repoRoot, poolDir, cfg)
 	}
 
 	wtPath, err := pool.Acquire(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate)
@@ -83,6 +101,28 @@ func getRunE(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr, "🌳 Worktree returned to pool.")
 	}
 
+	return nil
+}
+
+// getLeaseRunE performs a non-interactive, durable acquire. It reserves a
+// worktree, marks it leased in persistent state, prints only the worktree path
+// to stdout, and routes every human-facing message to stderr so that
+// `path=$(treehouse get --lease)` works cleanly in scripts.
+func getLeaseRunE(repoRoot, poolDir string, cfg config.Config) error {
+	holder := getLeaseHolder
+	if holder == "" {
+		holder = os.Getenv("TREEHOUSE_LEASE_HOLDER")
+	}
+
+	wtPath, err := pool.AcquireLease(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate, holder)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "🌳 Leased worktree at %s. Run 'treehouse return %s' to release it.\n",
+		ui.PrettyPath(wtPath), ui.PrettyPath(wtPath))
+	// The bare path is the only thing on stdout, so callers can capture it.
+	fmt.Fprintln(os.Stdout, wtPath)
 	return nil
 }
 
