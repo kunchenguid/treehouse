@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/kunchenguid/treehouse/compare/v1.7.0...v1.8.0) (2026-06-22)
+
+
+### Features
+
+* **pool:** add durable worktree leases ([#35](https://github.com/kunchenguid/treehouse/issues/35)) ([97d6708](https://github.com/kunchenguid/treehouse/commit/97d67089ea55cba166c3f4d5332e9a7a09206057))
+
 ## [1.7.0](https://github.com/kunchenguid/treehouse/compare/v1.6.0...v1.7.0) (2026-06-20)
 
 
