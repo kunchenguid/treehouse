@@ -97,10 +97,10 @@ The default treehouse root is `~/.treehouse/`.
   git fetch origin
       │
       ▼
-  ┌────────────────────────────────────┐
-  │  Scan pool for available worktree  │
-  │  (not in-use, not dirty)           │
-  └──────────┬─────────────────────────┘
+  ┌───────────────────────────────────────┐
+  │  Scan pool for available worktree     │
+  │  (not leased, not in-use, not dirty)  │
+  └──────────┬────────────────────────────┘
              │
         ┌────┴────┐
         │  Found? │
@@ -166,7 +166,7 @@ The default treehouse root is `~/.treehouse/`.
 | `prune`   | `--global` | Alias for `--all` |
 | `prune`   | `--prune-orphans` | Include backing-repository-missing orphans in prune candidates |
 | `prune`   | `--verbose`, `-v` | Show detailed skip diagnostics |
-| `destroy` | `--force` | Force destroy even if in-use      |
+| `destroy` | `--force` | Force destroy even if in-use or leased |
 | `destroy` | `--all`   | Destroy all worktrees in the pool |
 
 ### Leasing a worktree (no subshell)
@@ -189,6 +189,7 @@ It also requires `--force` to `destroy`.
 Pass `--lease-holder <label>` (or set `$TREEHOUSE_LEASE_HOLDER`) to record who holds the lease; `treehouse status` then shows it next to the `leased` state.
 
 Release a lease with `treehouse return <path>`, which clears the lease, terminates any lingering processes, resets the worktree, and returns it to the pool.
+When you pass an explicit path, `treehouse return` can run from outside the repository because it resolves the managed pool from that worktree path.
 
 ### Pruning stale worktrees and orphans
 
@@ -248,6 +249,7 @@ pre_destroy = ["./scripts/teardown.sh"]
 ```
 
 - `post_create` runs after a worktree is provisioned or reset and right before `treehouse get` hands it to you.
+  For `treehouse get --lease`, stdout from `post_create` is routed to stderr so stdout remains the leased path.
 - `pre_destroy` runs before a worktree is removed by `treehouse destroy`, `treehouse destroy --all`, or prune deletion commands such as `treehouse prune --yes` and `treehouse prune --prune-orphans --yes`.
 
 Commands in each list run sequentially in the worktree directory, via the OS shell (`/bin/sh -c` on Linux/macOS, `%COMSPEC% /c` on Windows).

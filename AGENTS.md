@@ -46,7 +46,8 @@ make test
 - Prune never treats an unreachable origin as a deletable orphan; those worktrees stay skipped because the repository may still be valid
 - Global prune enumerates managed pool directories under the user-level treehouse root and derives each worktree's owning repository from git metadata instead of relying on the current directory
 - Global prune loads user-level config and hooks only because it can run without a repository context
-- State file tracks pool membership and temporary owner/destroy reservations, not long-term usage status
+- State file tracks pool membership, temporary owner/destroy reservations, and explicit durable leases.
+  It still does not infer long-term usage from processes.
 - Git operations shell out to `git` (go-git has incomplete worktree support)
 - Self-healing: stale state entries are auto-removed
 

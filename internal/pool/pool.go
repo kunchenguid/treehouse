@@ -21,6 +21,7 @@ const (
 	StatusHere      = "you're here"
 )
 
+// WorktreeStatus describes one managed worktree as reported by List.
 type WorktreeStatus struct {
 	Name      string
 	Path      string
@@ -178,6 +179,8 @@ func markAcquired(wt *WorktreeEntry, opts acquireOptions) error {
 	return reserveOwner(wt)
 }
 
+// Release resets a managed worktree, clears its short-lived owner reservation or
+// durable lease, and returns it to the available pool.
 func Release(poolDir, worktreePath string) error {
 	repoRoot, err := git.FindRepoRootFrom(worktreePath)
 	if err != nil {
@@ -224,6 +227,8 @@ func Release(poolDir, worktreePath string) error {
 	})
 }
 
+// List returns the current status of managed worktrees in poolDir.
+// Leased worktrees are reported with StatusLeased and their optional holder.
 func List(poolDir string) ([]WorktreeStatus, error) {
 	var result []WorktreeStatus
 
@@ -275,6 +280,9 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 	return result, err
 }
 
+// Destroy removes one managed worktree from the pool.
+// Without force, it refuses worktrees with live processes, owner reservations,
+// or durable leases.
 func Destroy(repoRoot, poolDir, worktreePath string, force bool, preDestroy []string) error {
 	var reserved WorktreeEntry
 	if err := WithStateLock(poolDir, func() error {
@@ -342,6 +350,9 @@ func Destroy(repoRoot, poolDir, worktreePath string, force bool, preDestroy []st
 	})
 }
 
+// DestroyAll removes every managed worktree from the pool.
+// Without force, it refuses when any worktree has live processes, an owner
+// reservation, or a durable lease.
 func DestroyAll(repoRoot, poolDir string, force bool, preDestroy []string) error {
 	var worktrees []WorktreeEntry
 	if err := WithStateLock(poolDir, func() error {

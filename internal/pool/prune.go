@@ -98,8 +98,9 @@ type plannedPrunePool struct {
 }
 
 // Prune finds stale idle managed worktrees and optionally deletes them.
-// A stale worktree is clean, unused, unreserved, and merged into the default
-// branch ref selected by git.DefaultBranchMergeRef.
+// A stale worktree is clean, unused, unleased, not reserved by another lifecycle
+// operation, and merged into the default branch ref selected by
+// git.DefaultBranchMergeRef.
 // In dryRun mode Prune reports candidates and reclaimable bytes without deleting.
 // Backing-repository-missing orphans are reported as skipped; use
 // PruneWithOptions with PruneOptions.PruneOrphans to include them as candidates.

@@ -1,0 +1,90 @@
+Treehouse durable lease CLI E2E transcript
+source_commit=a22297d2bda85e045324784bcc47504953d171aa
+evidence_generated_at=2026-06-22T23:10:18Z
+
+$ go build -o <run-dir>/treehouse .
+build_exit=0
+
+Fixture repo created at /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVRQHS508TSFYHYAJN944WEG/.no-mistakes/evidence/fm/treehouse-lease-t4/.tmp-lease-e2e-55093/repo with isolated HOME /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVRQHS508TSFYHYAJN944WEG/.no-mistakes/evidence/fm/treehouse-lease-t4/.tmp-lease-e2e-55093/home and pool root /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVRQHS508TSFYHYAJN944WEG/.no-mistakes/evidence/fm/treehouse-lease-t4/.tmp-lease-e2e-55093/pool-root.
+
+$ path=$(treehouse get --lease --lease-holder secondmate-home)
+stdout:
+/Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVRQHS508TSFYHYAJN944WEG/.no-mistakes/evidence/fm/treehouse-lease-t4/.tmp-lease-e2e-55093/pool-root/.treehouse/repo-5f2bf8/1/repo
+stderr:
+🌳 Setting up worktree...
+🌳 Leased worktree at /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVRQHS508TSFYHYAJN944WEG/.no-mistakes/evidence/fm/treehouse-lease-t4/.tmp-lease-e2e-55093/pool-root/.treehouse/repo-5f2bf8/1/repo. Run 'treehouse return /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVRQHS508TSFYHYAJN944WEG/.no-mistakes/evidence/fm/treehouse-lease-t4/.tmp-lease-e2e-55093/pool-root/.treehouse/repo-5f2bf8/1/repo' to release it.
+stdout_line_count=1
+stdout_is_absolute_path=yes
+stdout_contains_banner=no
+leased_path_exists=yes
+
+$ sed -n '1,120p' <treehouse-state.json after lease>
+{
+  "worktrees": [
+    {
+      "name": "1",
+      "path": "/Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVRQHS508TSFYHYAJN944WEG/.no-mistakes/evidence/fm/treehouse-lease-t4/.tmp-lease-e2e-55093/pool-root/.treehouse/repo-5f2bf8/1/repo",
+      "created_at": "2026-06-22T16:10:18.892955-07:00",
+      "leased": true,
+      "lease_holder": "secondmate-home",
+      "leased_at": "2026-06-22T16:10:18.892955-07:00"
+    }
+  ]
+}
+owner_pid_present_after_lease=no
+
+$ treehouse status
+stdout:
+1     leased       /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVRQHS508TSFYHYAJN944WEG/.no-mistakes/evidence/fm/treehouse-lease-t4/.tmp-lease-e2e-55093/pool-root/.treehouse/repo-5f2bf8/1/repo  (held by secondmate-home)
+stderr:
+<empty>
+
+$ SHELL=<true> treehouse get
+stdout:
+<empty>
+stderr:
+🌳 Setting up worktree...
+🌳 Entered worktree at /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVRQHS508TSFYHYAJN944WEG/.no-mistakes/evidence/fm/treehouse-lease-t4/.tmp-lease-e2e-55093/pool-root/.treehouse/repo-5f2bf8/2/repo. Type 'exit' to return.
+🌳 Worktree returned to pool.
+normal_get_path=/Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVRQHS508TSFYHYAJN944WEG/.no-mistakes/evidence/fm/treehouse-lease-t4/.tmp-lease-e2e-55093/pool-root/.treehouse/repo-5f2bf8/2/repo
+normal_get_reused_leased_path=no
+
+$ treehouse prune --yes
+stdout:
+🌳 Pruned 1 stale worktree and freed 625 B.
+2     625 B  /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVRQHS508TSFYHYAJN944WEG/.no-mistakes/evidence/fm/treehouse-lease-t4/.tmp-lease-e2e-55093/pool-root/.treehouse/repo-5f2bf8/2/repo
+stderr:
+<empty>
+leased_path_exists_after_prune=yes
+
+$ printf 'y\n' | treehouse destroy <leased-path>
+stdout:
+<empty>
+stderr:
+Destroy worktree /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVRQHS508TSFYHYAJN944WEG/.no-mistakes/evidence/fm/treehouse-lease-t4/.tmp-lease-e2e-55093/pool-root/.treehouse/repo-5f2bf8/1/repo? [y/N] worktree /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVRQHS508TSFYHYAJN944WEG/.no-mistakes/evidence/fm/treehouse-lease-t4/.tmp-lease-e2e-55093/pool-root/.treehouse/repo-5f2bf8/1/repo is in use by an agent. Use --force to override
+destroy_exit_code=1
+leased_path_exists_after_destroy_rejection=yes
+
+$ treehouse return <leased-path>
+stdout:
+<empty>
+stderr:
+🌳 Worktree returned to pool.
+
+$ treehouse status # after return
+stdout:
+1     available    /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVRQHS508TSFYHYAJN944WEG/.no-mistakes/evidence/fm/treehouse-lease-t4/.tmp-lease-e2e-55093/pool-root/.treehouse/repo-5f2bf8/1/repo
+stderr:
+<empty>
+
+$ SHELL=<true> treehouse get # after return
+stdout:
+<empty>
+stderr:
+🌳 Setting up worktree...
+🌳 Entered worktree at /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVRQHS508TSFYHYAJN944WEG/.no-mistakes/evidence/fm/treehouse-lease-t4/.tmp-lease-e2e-55093/pool-root/.treehouse/repo-5f2bf8/1/repo. Type 'exit' to return.
+🌳 Worktree returned to pool.
+reused_path_after_return=/Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVRQHS508TSFYHYAJN944WEG/.no-mistakes/evidence/fm/treehouse-lease-t4/.tmp-lease-e2e-55093/pool-root/.treehouse/repo-5f2bf8/1/repo
+released_worktree_reused=yes
+
+All manual lease E2E assertions passed.
