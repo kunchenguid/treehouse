@@ -23,7 +23,7 @@ type WorktreeEntry struct {
 	// LeaseHolder is an optional human-readable label for who holds the lease.
 	LeaseHolder string `json:"lease_holder,omitempty"`
 	// LeasedAt records when the lease was taken.
-	LeasedAt time.Time `json:"leased_at,omitempty"`
+	LeasedAt time.Time `json:"leased_at,omitempty,omitzero"`
 }
 
 type State struct {

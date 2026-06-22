@@ -1266,6 +1266,16 @@ func TestRelease_ClearsLease(t *testing.T) {
 	if state.Worktrees[0].Leased || state.Worktrees[0].LeaseHolder != "" || !state.Worktrees[0].LeasedAt.IsZero() {
 		t.Fatalf("expected lease to be cleared, got %#v", state.Worktrees[0])
 	}
+	data, err := os.ReadFile(stateFilePath(poolDir))
+	if err != nil {
+		t.Fatalf("reading state file failed: %v", err)
+	}
+	stateJSON := string(data)
+	for _, field := range []string{`"leased"`, `"lease_holder"`, `"leased_at"`} {
+		if strings.Contains(stateJSON, field) {
+			t.Fatalf("expected cleared lease field %s to be omitted from state file:\n%s", field, stateJSON)
+		}
+	}
 
 	// After release the worktree becomes available for reuse.
 	reused, err := Acquire(repoDir, poolDir, 4, nil)
