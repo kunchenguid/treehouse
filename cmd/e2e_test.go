@@ -575,6 +575,39 @@ func TestReturnReleasesLease(t *testing.T) {
 	}
 }
 
+func TestReturnExplicitPathFromOutsideRepoReleasesLease(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	leaseOut, leaseErr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease")
+	if code != 0 {
+		t.Fatalf("get --lease failed (code %d): %s", code, leaseErr)
+	}
+	leasedPath := strings.TrimSpace(leaseOut)
+	if leasedPath == "" {
+		t.Fatal("could not capture leased worktree path")
+	}
+
+	outsideDir := t.TempDir()
+	_, returnErr, code := runTreehouseFromDir(t, repoDir, outsideDir, homeDir, nil, "return", leasedPath)
+	if code != 0 {
+		t.Fatalf("return from outside repo failed (code %d): %s", code, returnErr)
+	}
+	if !strings.Contains(returnErr, "Worktree returned to pool") {
+		t.Fatalf("expected return confirmation, got: %s", returnErr)
+	}
+
+	statusOut, statusErr, code := runTreehouse(t, repoDir, homeDir, nil, "status")
+	if code != 0 {
+		t.Fatalf("status failed (code %d): %s", code, statusErr)
+	}
+	if strings.Contains(statusOut, "leased") || strings.Contains(statusOut, "in-use") {
+		t.Fatalf("expected status to show lease released, got:\n%s", statusOut)
+	}
+	if !strings.Contains(statusOut, "available") {
+		t.Fatalf("expected returned worktree to be available, got:\n%s", statusOut)
+	}
+}
+
 func TestGetReusesWorktree(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	env := []string{"SHELL=" + exitShellBin}

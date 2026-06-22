@@ -24,7 +24,12 @@ var returnCmd = &cobra.Command{
 			return err
 		}
 
-		repoRoot, err := git.FindRepoRoot()
+		var repoRoot string
+		if len(args) > 0 {
+			repoRoot, err = git.FindMainRepoRootFrom(wtPath)
+		} else {
+			repoRoot, err = git.FindRepoRoot()
+		}
 		if err != nil {
 			return fmt.Errorf("not in a git repository: %w", err)
 		}
