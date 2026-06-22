@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kunchenguid/treehouse/internal/git"
@@ -355,7 +356,10 @@ func cwdInWorktree(cwd, worktreePath string) bool {
 	if err != nil {
 		return false
 	}
-	return rel == "." || !filepath.IsAbs(rel) && len(rel) >= 1 && rel[0] != '.'
+	// The cwd is inside the worktree when rel is "." (the worktree root itself)
+	// or any path that does not escape the root via "..". This deliberately
+	// accepts dot-prefixed subdirectories such as .venv/bin or .cache/tmp.
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 func nextName(state State) string {
