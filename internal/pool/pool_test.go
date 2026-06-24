@@ -2119,13 +2119,32 @@ func startCwdHolder(t *testing.T, dir string) *exec.Cmd {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(ready); err == nil {
-			return cmd
+			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	if _, err := os.Stat(ready); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatal("cwd holder did not become ready")
+	}
+
+	pid := int32(cmd.Process.Pid)
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		procs, err := process.FindProcessesInWorktree(dir)
+		if err == nil {
+			for _, proc := range procs {
+				if proc.PID == pid {
+					return cmd
+				}
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 	_ = cmd.Process.Kill()
 	_ = cmd.Wait()
-	t.Fatal("cwd holder did not become ready")
+	t.Fatalf("cwd holder pid %d did not appear in process scan for %s", pid, dir)
 	return nil
 }
 
