@@ -49,6 +49,8 @@ const (
 // processes to exit after SIGTERM before escalating, matching `get`/`return`.
 const destroyGracePeriod = 2 * time.Second
 
+var findProcessesInWorktree = process.FindProcessesInWorktree
+
 type destroyReservation struct {
 	worktree               WorktreeEntry
 	originalOwnerPID       int32
@@ -264,13 +266,13 @@ func classifyForDestroy(wt WorktreeEntry, defaultRef string) DestroyTarget {
 		target.addClass(DestroyLeased, detail)
 	}
 
-	procs, procErr := process.FindProcessesInWorktree(wt.Path)
+	procs, procErr := findProcessesInWorktree(wt.Path)
 	if ownerAlive(wt) || len(procs) > 0 {
 		target.Processes = procs
 		target.addClass(DestroyInUse, "")
 	}
 	if procErr != nil {
-		target.addClass(DestroyUnverified, "cannot check processes: "+procErr.Error())
+		target.addClass(DestroyInUse, "cannot check processes: "+procErr.Error())
 	}
 
 	if orphaned, detail := backingRepositoryMissing(wt.Path); orphaned {
@@ -441,7 +443,7 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 					skips = append(skips, DestroySkip{Target: current})
 					continue
 				}
-				survivors, err := process.FindProcessesInWorktree(path)
+				survivors, err := findProcessesInWorktree(path)
 				if err != nil {
 					restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
 					current.Detail = "could not verify worktree processes stopped: " + err.Error()
@@ -509,8 +511,16 @@ func restoreOriginalOwnerReservation(wt *WorktreeEntry, reservation destroyReser
 // once the caller has opted in.
 func removeManagedWorktree(repoRoot, path string) error {
 	orphaned, _ := backingRepositoryMissing(path)
-	if !orphaned && repoRoot != "" {
-		if err := git.RemoveWorktree(repoRoot, path); err != nil {
+	if !orphaned {
+		removeRepoRoot := repoRoot
+		if removeRepoRoot == "" {
+			resolvedRoot, err := git.FindMainRepoRootFrom(path)
+			if err != nil {
+				return fmt.Errorf("cannot resolve repository for worktree removal: %w", err)
+			}
+			removeRepoRoot = resolvedRoot
+		}
+		if err := git.RemoveWorktree(removeRepoRoot, path); err != nil {
 			return fmt.Errorf("git refused to remove worktree: %w", err)
 		}
 	}

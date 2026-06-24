@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/treehouse/internal/process"
 )
 
 func setupRepo(t *testing.T) (repoDir, poolDir string) {
@@ -446,6 +449,36 @@ func TestDestroyWorktree_WithoutIncludeInUseSkipsInUseWorktree(t *testing.T) {
 	}
 }
 
+func TestDestroyWorktree_ProcessScanFailureRequiresIncludeInUse(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath := acquireDisposable(t, repoDir, poolDir)
+	oldFindProcesses := findProcessesInWorktree
+	findProcessesInWorktree = func(string) ([]process.ProcessInfo, error) {
+		return nil, errors.New("scan failed")
+	}
+	t.Cleanup(func() {
+		findProcessesInWorktree = oldFindProcesses
+	})
+
+	result, err := DestroyWorktree(poolDir, wtPath, DestroyOptions{IncludeUnlanded: true})
+	if err != nil {
+		t.Fatalf("DestroyWorktree failed: %v", err)
+	}
+	if len(result.Destroyed) != 0 {
+		t.Fatalf("expected process-scan failure to skip, got destroyed %#v", result.Destroyed)
+	}
+	if !hasDestroySkip(result.Skipped, wtPath, DestroyInUse, IncludeInUseFlag) {
+		t.Fatalf("expected process-scan failure to require %s, got %#v", IncludeInUseFlag, result.Skipped)
+	}
+	if !strings.Contains(result.Skipped[0].Target.Detail, "cannot check processes: scan failed") {
+		t.Fatalf("expected process-scan failure detail, got %#v", result.Skipped)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected worktree to remain on disk: %v", err)
+	}
+}
+
 func TestDestroyWorktree_IncludeInUseSkipsSurvivingProcess(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
@@ -818,6 +851,49 @@ func TestExecuteDestroy_KeepsStateWhenRemovalFails(t *testing.T) {
 	}
 	if len(state.Worktrees) != 1 || state.Worktrees[0].Path != wtPath || state.Worktrees[0].Destroying {
 		t.Fatalf("expected failed removal state entry to remain available, got %#v", state.Worktrees)
+	}
+}
+
+func TestExecuteDestroy_ReResolvesRepoRootWhenMissing(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath := acquireDisposable(t, repoDir, poolDir)
+	defaultRef, err := resolvePruneDefaultRef(repoDir)
+	if err != nil {
+		t.Fatalf("resolvePruneDefaultRef failed: %v", err)
+	}
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	planned := classifyForDestroy(state.Worktrees[0], defaultRef)
+	measureDestroySize(&planned)
+
+	destroyed, skipped, err := executeDestroy(poolDir, []DestroyTarget{planned}, "", defaultRef, true, DestroyOptions{})
+	if err != nil {
+		t.Fatalf("executeDestroy failed: %v", err)
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("expected no skips, got %#v", skipped)
+	}
+	if len(destroyed) != 1 || destroyed[0].Path != wtPath {
+		t.Fatalf("expected destroyed worktree %s, got %#v", wtPath, destroyed)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("expected worktree removed from disk, got err %v", err)
+	}
+
+	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd.Dir = repoDir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git worktree list failed: %v", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		listedPath, ok := strings.CutPrefix(line, "worktree ")
+		if ok && filepath.Clean(filepath.FromSlash(listedPath)) == filepath.Clean(wtPath) {
+			t.Fatalf("expected git worktree registration removed, got:\n%s", out)
+		}
 	}
 }
 

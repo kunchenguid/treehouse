@@ -160,7 +160,7 @@ func resolveDestroyPoolFromTarget(targetPath string) (string, error) {
 		return candidate, nil
 	}
 
-	repoRoot, err := git.FindRepoRootFrom(abs)
+	repoRoot, err := git.FindMainRepoRootFrom(abs)
 	if err != nil {
 		return "", fmt.Errorf("cannot resolve a treehouse pool from %s: not a pool directory or git repository", targetPath)
 	}

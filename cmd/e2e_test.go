@@ -974,6 +974,54 @@ func TestDestroyAllRemovesPoolAndIsScopedToIt(t *testing.T) {
 	}
 }
 
+func TestDestroyAllFromManagedWorktreeSubdirUsesMainRepoPool(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	env := []string{"SHELL=" + exitShellBin}
+
+	if err := os.WriteFile(filepath.Join(repoDir, "treehouse.toml"), []byte("root = \"../treehouse-pool\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repoDir, "add", "treehouse.toml")
+	gitCmd(t, repoDir, "commit", "-m", "configure treehouse root")
+	gitCmd(t, repoDir, "push", "origin", "main")
+
+	leaseOut, leaseErr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease")
+	if code != 0 {
+		t.Fatalf("get --lease failed (code %d): %s", code, leaseErr)
+	}
+	leasedPath := strings.TrimSpace(leaseOut)
+	if leasedPath == "" {
+		t.Fatal("could not capture leased worktree path")
+	}
+
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get failed (code %d): %s", code, getErr)
+	}
+	disposablePath := extractWorktreePath(getErr, homeDir)
+	if disposablePath == "" {
+		t.Fatal("could not extract disposable worktree path")
+	}
+
+	subdir := filepath.Join(leasedPath, "nested")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, errOut, code := runTreehouseFromDir(t, repoDir, subdir, homeDir, nil, "destroy", ".", "--all", "--yes")
+	if code != 0 {
+		t.Fatalf("destroy . --all --yes failed (code %d): %s", code, errOut)
+	}
+	if !strings.Contains(out, "Destroyed 1 worktree") {
+		t.Fatalf("expected disposable worktree destroyed from managed subdir, got stdout:\n%s", out)
+	}
+	if _, err := os.Stat(disposablePath); !os.IsNotExist(err) {
+		t.Fatalf("expected disposable worktree removed, got err %v", err)
+	}
+	if _, err := os.Stat(leasedPath); err != nil {
+		t.Fatalf("expected leased worktree preserved: %v", err)
+	}
+}
+
 func TestDestroyAllRequiresPoolTarget(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 
