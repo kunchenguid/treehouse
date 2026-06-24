@@ -49,6 +49,12 @@ const (
 // processes to exit after SIGTERM before escalating, matching `get`/`return`.
 const destroyGracePeriod = 2 * time.Second
 
+type destroyReservation struct {
+	worktree               WorktreeEntry
+	originalOwnerPID       int32
+	originalOwnerStartedAt int64
+}
+
 // DestroyTarget describes one worktree considered for destruction.
 type DestroyTarget struct {
 	Name      string
@@ -344,7 +350,7 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 		plannedByPath[t.Path] = t
 	}
 
-	var reserved []WorktreeEntry
+	var reserved []destroyReservation
 	var skips []DestroySkip
 	if err := WithStateLock(poolDir, func() error {
 		state, err := ReadState(poolDir)
@@ -370,11 +376,11 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 				skips = append(skips, skip)
 				continue
 			}
-			state.Worktrees[i].Destroying = true
-			if err := reserveOwner(&state.Worktrees[i]); err != nil {
+			reservation, err := reserveDestroyReservation(&state.Worktrees[i])
+			if err != nil {
 				return err
 			}
-			reserved = append(reserved, state.Worktrees[i])
+			reserved = append(reserved, reservation)
 			plannedByPath[current.Path] = current
 		}
 		return WriteState(poolDir, state)
@@ -383,7 +389,7 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 	}
 
 	for _, wt := range reserved {
-		hooks.Run(opts.PreDestroy, wt.Path, os.Stdout, os.Stderr)
+		hooks.Run(opts.PreDestroy, wt.worktree.Path, os.Stdout, os.Stderr)
 	}
 
 	var destroyed []DestroyTarget
@@ -397,7 +403,7 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 		for _, reservation := range reserved {
 			idx := -1
 			for i := range state.Worktrees {
-				if state.Worktrees[i].Path == reservation.Path {
+				if state.Worktrees[i].Path == reservation.worktree.Path {
 					idx = i
 					break
 				}
@@ -405,9 +411,9 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 			if idx == -1 {
 				continue
 			}
-			if !sameDestroyReservation(state.Worktrees[idx], reservation) {
+			if !sameDestroyReservation(state.Worktrees[idx], reservation.worktree) {
 				// Re-acquired during the pre-destroy hook; never remove it.
-				superseded := plannedByPath[reservation.Path]
+				superseded := plannedByPath[reservation.worktree.Path]
 				superseded.Detail = "re-acquired during pre-destroy hook"
 				skips = append(skips, DestroySkip{Target: superseded})
 				continue
@@ -415,7 +421,7 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 
 			path := state.Worktrees[idx].Path
 			currentEntry := state.Worktrees[idx]
-			clearReservation(&currentEntry)
+			restoreOriginalOwnerReservation(&currentEntry, reservation)
 			current := classifyForDestroy(currentEntry, defaultRef)
 			measureDestroySize(&current)
 			if planned, ok := plannedByPath[path]; ok && current.Bytes == 0 {
@@ -423,27 +429,27 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 			}
 			ok, skip := opts.allows(current, allowLeased)
 			if !ok {
-				clearReservation(&state.Worktrees[idx])
+				restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
 				skips = append(skips, skip)
 				continue
 			}
 
 			if current.hasClass(DestroyInUse) {
 				if _, err := process.TerminateWorktreeProcesses(path, destroyGracePeriod); err != nil {
-					clearReservation(&state.Worktrees[idx])
+					restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
 					current.Detail = "could not terminate worktree processes: " + err.Error()
 					skips = append(skips, DestroySkip{Target: current})
 					continue
 				}
 				survivors, err := process.FindProcessesInWorktree(path)
 				if err != nil {
-					clearReservation(&state.Worktrees[idx])
+					restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
 					current.Detail = "could not verify worktree processes stopped: " + err.Error()
 					skips = append(skips, DestroySkip{Target: current})
 					continue
 				}
 				if len(survivors) > 0 {
-					clearReservation(&state.Worktrees[idx])
+					restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
 					current.Processes = survivors
 					current.Detail = "worktree processes still running after termination"
 					skips = append(skips, DestroySkip{Target: current})
@@ -452,7 +458,7 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 			}
 
 			if err := removeManagedWorktree(repoRoot, path); err != nil {
-				clearReservation(&state.Worktrees[idx])
+				restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
 				current.Detail = err.Error()
 				skips = append(skips, DestroySkip{Target: current})
 				continue
@@ -476,6 +482,25 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 	sortDestroyTargets(destroyed)
 	sortDestroySkips(skips)
 	return destroyed, skips, nil
+}
+
+func reserveDestroyReservation(wt *WorktreeEntry) (destroyReservation, error) {
+	reservation := destroyReservation{
+		originalOwnerPID:       wt.OwnerPID,
+		originalOwnerStartedAt: wt.OwnerStartedAt,
+	}
+	wt.Destroying = true
+	if err := reserveOwner(wt); err != nil {
+		return destroyReservation{}, err
+	}
+	reservation.worktree = *wt
+	return reservation, nil
+}
+
+func restoreOriginalOwnerReservation(wt *WorktreeEntry, reservation destroyReservation) {
+	wt.Destroying = false
+	wt.OwnerPID = reservation.originalOwnerPID
+	wt.OwnerStartedAt = reservation.originalOwnerStartedAt
 }
 
 // removeManagedWorktree deletes a worktree's git registration (when its backing

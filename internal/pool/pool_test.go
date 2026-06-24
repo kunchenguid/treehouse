@@ -690,6 +690,49 @@ func TestDestroyWorktree_FinalSafetySkipsHookDirty(t *testing.T) {
 	}
 }
 
+func TestDestroyWorktree_FinalSafetySkipRestoresOriginalOwnerReservation(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	original := state.Worktrees[0]
+	if original.OwnerPID == 0 || original.OwnerStartedAt == 0 {
+		t.Fatalf("expected acquired worktree to have owner reservation, got %#v", original)
+	}
+
+	scratch := filepath.Join(wtPath, "hook-wip.txt")
+	hook := "echo wip > " + quoteForShell(scratch)
+
+	result, err := DestroyWorktree(poolDir, wtPath, DestroyOptions{IncludeInUse: true, PreDestroy: []string{hook}})
+	if err != nil {
+		t.Fatalf("DestroyWorktree failed: %v", err)
+	}
+	if len(result.Destroyed) != 0 {
+		t.Fatalf("expected hook-dirtied worktree to be preserved, got destroyed %#v", result.Destroyed)
+	}
+	if !hasDestroySkip(result.Skipped, wtPath, DestroyInUse, IncludeUnlandedFlag) {
+		t.Fatalf("expected hook-dirtied skip with %s, got %#v", IncludeUnlandedFlag, result.Skipped)
+	}
+
+	state, err = ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if len(state.Worktrees) != 1 || state.Worktrees[0].Path != wtPath || state.Worktrees[0].Destroying {
+		t.Fatalf("expected hook-dirtied state entry to remain, got %#v", state.Worktrees)
+	}
+	if state.Worktrees[0].OwnerPID != original.OwnerPID || state.Worktrees[0].OwnerStartedAt != original.OwnerStartedAt {
+		t.Fatalf("expected original owner reservation restored, got %#v want pid=%d started=%d",
+			state.Worktrees[0], original.OwnerPID, original.OwnerStartedAt)
+	}
+}
+
 func TestExecuteDestroy_ReclassifiesBeforeReservation(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
@@ -775,6 +818,56 @@ func TestExecuteDestroy_KeepsStateWhenRemovalFails(t *testing.T) {
 	}
 	if len(state.Worktrees) != 1 || state.Worktrees[0].Path != wtPath || state.Worktrees[0].Destroying {
 		t.Fatalf("expected failed removal state entry to remain available, got %#v", state.Worktrees)
+	}
+}
+
+func TestExecuteDestroy_RemovalFailureRestoresOriginalOwnerReservation(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	defaultRef, err := resolvePruneDefaultRef(repoDir)
+	if err != nil {
+		t.Fatalf("resolvePruneDefaultRef failed: %v", err)
+	}
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	original := state.Worktrees[0]
+	if original.OwnerPID == 0 || original.OwnerStartedAt == 0 {
+		t.Fatalf("expected acquired worktree to have owner reservation, got %#v", original)
+	}
+	planned := classifyForDestroy(original, defaultRef)
+	measureDestroySize(&planned)
+
+	badRepoRoot := filepath.Join(t.TempDir(), "not-a-repo")
+	if err := os.MkdirAll(badRepoRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	destroyed, skipped, err := executeDestroy(poolDir, []DestroyTarget{planned}, badRepoRoot, defaultRef, true, DestroyOptions{IncludeInUse: true})
+	if err != nil {
+		t.Fatalf("executeDestroy failed: %v", err)
+	}
+	if len(destroyed) != 0 {
+		t.Fatalf("expected failed removal to skip, got destroyed %#v", destroyed)
+	}
+	if !hasDestroySkipFlags(skipped, wtPath, DestroyInUse) {
+		t.Fatalf("expected failed removal skip without include flags, got %#v", skipped)
+	}
+
+	state, err = ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState failed: %v", err)
+	}
+	if len(state.Worktrees) != 1 || state.Worktrees[0].Path != wtPath || state.Worktrees[0].Destroying {
+		t.Fatalf("expected failed removal state entry to remain, got %#v", state.Worktrees)
+	}
+	if state.Worktrees[0].OwnerPID != original.OwnerPID || state.Worktrees[0].OwnerStartedAt != original.OwnerStartedAt {
+		t.Fatalf("expected original owner reservation restored, got %#v want pid=%d started=%d",
+			state.Worktrees[0], original.OwnerPID, original.OwnerStartedAt)
 	}
 }
 
