@@ -34,6 +34,14 @@ func stateFilePath(poolDir string) string {
 	return filepath.Join(poolDir, "treehouse-state.json")
 }
 
+// IsPoolDir reports whether dir is a managed pool directory (it holds a
+// treehouse state file). It lets callers resolve a pool from a path without
+// knowing treehouse's internal state-file layout.
+func IsPoolDir(dir string) bool {
+	_, err := os.Stat(stateFilePath(dir))
+	return err == nil
+}
+
 func lockFilePath(poolDir string) string {
 	return filepath.Join(poolDir, "treehouse-state.lock")
 }

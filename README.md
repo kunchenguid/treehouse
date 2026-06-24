@@ -150,7 +150,8 @@ The default treehouse root is `~/.treehouse/`.
 | `treehouse return [path]`  | Release any lease, terminate lingering worktree processes, and return it to the pool |
 | `treehouse prune`          | Dry-run removal of stale idle worktrees in the current repo pool |
 | `treehouse prune --all`    | Dry-run removal of stale idle worktrees across every managed pool |
-| `treehouse destroy [path]` | Remove a worktree from the pool                      |
+| `treehouse destroy <path>` | Dry-run removal of one worktree (safe by default; `--yes` to execute) |
+| `treehouse destroy <pool> --all` | Dry-run removal of every disposable worktree in that pool |
 | `treehouse init`           | Create a default `treehouse.toml` config file        |
 | `treehouse update`         | Update treehouse to the latest version               |
 
@@ -166,8 +167,11 @@ The default treehouse root is `~/.treehouse/`.
 | `prune`   | `--global` | Alias for `--all` |
 | `prune`   | `--prune-orphans` | Include backing-repository-missing orphans in prune candidates |
 | `prune`   | `--verbose`, `-v` | Show detailed skip diagnostics |
-| `destroy` | `--force` | Force destroy even if in-use or leased |
-| `destroy` | `--all`   | Destroy all worktrees in the pool |
+| `destroy` | `--all`   | Remove all worktrees in the named pool (requires a pool path) |
+| `destroy` | `--yes`   | Execute the removal instead of doing a dry run |
+| `destroy` | `--include-unlanded` | Also remove dirty or unmerged worktrees (irreversible data loss) |
+| `destroy` | `--include-in-use` | Also remove worktrees with a running process (terminated cleanly first) |
+| `destroy` | `--include-leased` | Also remove a leased worktree; only when the exact path is named, never via `--all` |
 
 ### Leasing a worktree (no subshell)
 
@@ -184,7 +188,7 @@ path=$(treehouse get --lease)
 It acquires a worktree exactly like `get`, but instead of opening a subshell it marks the worktree **leased** in treehouse's persistent state and prints only the worktree's absolute path to stdout (every human-facing message goes to stderr, so command substitution stays clean).
 
 A leased worktree is never handed out by a later `get` and never removed by `prune`, regardless of whether any process runs inside it, until the lease is explicitly released.
-It also requires `--force` to `destroy`.
+A bulk `treehouse destroy <pool> --all` never removes it either; only naming its exact path with `treehouse destroy <path> --include-leased --yes` will.
 
 Pass `--lease-holder <label>` (or set `$TREEHOUSE_LEASE_HOLDER`) to record who holds the lease; `treehouse status` then shows it next to the `leased` state.
 
@@ -213,6 +217,42 @@ Plain `treehouse prune` and `treehouse prune --all` never delete those orphans.
 Pass `--prune-orphans` to include true backing-repository-missing orphans in the dry run, then add `--yes` to delete them.
 Treehouse cannot verify orphan contents after the backing git metadata is gone, so each orphan candidate is marked `content could not be verified`.
 Use `--verbose` to show the underlying git diagnostic details for skipped worktrees.
+
+### Destroying worktrees
+
+`treehouse destroy` is the deliberate tool for removing a worktree even though it still has unlanded work, but it is safe by default and holds itself to the same bar as `prune`.
+
+Targets are narrow and explicit:
+
+- `treehouse destroy <worktree-path>` removes exactly one worktree.
+- `treehouse destroy <pool-path> --all` removes worktrees in THAT pool only. The pool path can be the pool directory, a worktree inside it, or the repository (`.` works from inside a repo).
+
+There is no cross-pool or global destroy: `--all` without a pool path is an error, so a stray command can never reach beyond the pool you named.
+
+Destroy is a dry run by default.
+It prints a risk-revealing preview - a status tag (`[disposable]`, `[leased]`, `[in-use:<pid>]`, `[unmerged]`, `[dirty]`, or `[unverified]`), the path, and the size of each target - and removes nothing.
+Pass `--yes` to execute.
+It never prints a blind "all worktrees destroyed"; the summary always reports exactly what was destroyed and what was skipped.
+
+A bare `treehouse destroy <pool> --all --yes` removes only the genuinely disposable set (merged, clean, idle, unleased - the same set `prune` would take) and SKIPS everything else, telling you which flag would include it.
+Each risky class is its own opt-in, so removing risky worktrees can never be a reflexive `--yes`:
+
+- `--include-unlanded` also removes worktrees with uncommitted changes or a HEAD not merged into the default branch (irreversible data loss).
+- `--include-in-use` also removes worktrees with a running process; their processes are terminated cleanly first and their pids are shown in the preview.
+- `--include-leased` also removes a leased worktree, but only when you name the exact worktree path. Leased worktrees are NEVER removed by `--all`; combining `--include-leased` with `--all` is rejected.
+
+A single named worktree that is skipped for lack of a flag makes the command exit non-zero, so scripts notice that nothing happened.
+
+#### Migrating from `--force`
+
+The old blunt `treehouse destroy --force` flag has been removed.
+It overrode every protection at once - in-use, unmerged, dirty, and leased - which is what made it dangerous.
+Replace it with the specific `--include-*` flag(s) for the risk you actually intend to override, plus `--yes`:
+
+| Old | New |
+| --- | --- |
+| `treehouse destroy <path> --force` | `treehouse destroy <path> --yes` (add `--include-unlanded` / `--include-in-use` / `--include-leased` as needed) |
+| `treehouse destroy --all --force` | `treehouse destroy <pool> --all --yes` (add `--include-unlanded` / `--include-in-use` for the risky ones; leased homes are never included) |
 
 ## Configuration
 
@@ -250,7 +290,7 @@ pre_destroy = ["./scripts/teardown.sh"]
 
 - `post_create` runs after a worktree is provisioned or reset and right before `treehouse get` hands it to you.
   For `treehouse get --lease`, stdout from `post_create` is routed to stderr so stdout remains the leased path.
-- `pre_destroy` runs before a worktree is removed by `treehouse destroy`, `treehouse destroy --all`, or prune deletion commands such as `treehouse prune --yes` and `treehouse prune --prune-orphans --yes`.
+- `pre_destroy` runs before a worktree is removed by `treehouse destroy <path> --yes`, `treehouse destroy <pool> --all --yes`, or prune deletion commands such as `treehouse prune --yes` and `treehouse prune --prune-orphans --yes`.
 
 Commands in each list run sequentially in the worktree directory, via the OS shell (`/bin/sh -c` on Linux/macOS, `%COMSPEC% /c` on Windows).
 If a command exits non-zero, treehouse logs the command, exit code, and stderr, then continues with the remaining commands.

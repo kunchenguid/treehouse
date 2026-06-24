@@ -300,13 +300,34 @@ func TestHookLockProbe(t *testing.T) {
 	}
 }
 
-func TestDestroy_RunsPreDestroyHook(t *testing.T) {
-	repoDir, poolDir := setupRepo(t)
-
+// acquireDisposable acquires a worktree and returns it to the pool so it is
+// merged, clean, idle, and unleased: the disposable class destroy removes with
+// no opt-in flags.
+func acquireDisposable(t *testing.T, repoDir, poolDir string) string {
+	t.Helper()
 	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
 	if err != nil {
 		t.Fatalf("Acquire failed: %v", err)
 	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+	return wtPath
+}
+
+func hasDestroySkip(skips []DestroySkip, path string, class DestroyClass, neededFlag string) bool {
+	for _, s := range skips {
+		if s.Target.Path == path && s.Target.Class == class && s.NeededFlag == neededFlag {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDestroyWorktree_RunsPreDestroyHook(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath := acquireDisposable(t, repoDir, poolDir)
 
 	// Capture the location to verify after destroy. We write a sentinel into
 	// the *parent* of the worktree, since the worktree itself is removed.
@@ -316,31 +337,36 @@ func TestDestroy_RunsPreDestroyHook(t *testing.T) {
 	// Hook writes to an absolute path so it survives worktree removal.
 	hook := "echo bye > " + quoteForShell(sentinel)
 
-	if err := Destroy(repoDir, poolDir, wtPath, true, []string{hook}); err != nil {
-		t.Fatalf("Destroy failed: %v", err)
+	result, err := DestroyWorktree(poolDir, wtPath, DestroyOptions{PreDestroy: []string{hook}})
+	if err != nil {
+		t.Fatalf("DestroyWorktree failed: %v", err)
+	}
+	if len(result.Destroyed) != 1 {
+		t.Fatalf("expected 1 destroyed worktree, got %#v", result)
 	}
 
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("expected pre_destroy hook to create %s: %v", sentinel, err)
 	}
 	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
-		t.Fatalf("expected worktree dir to be removed after Destroy")
+		t.Fatalf("expected worktree dir to be removed after destroy")
 	}
 }
 
-func TestDestroy_DoesNotAllowHookAcquireToReusePendingDestroyWorktree(t *testing.T) {
+func TestDestroyWorktree_DoesNotReusePendingDestroyWorktreeInHook(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
-	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
-	if err != nil {
-		t.Fatalf("Acquire failed: %v", err)
-	}
+	wtPath := acquireDisposable(t, repoDir, poolDir)
 
 	sentinel := filepath.Join(t.TempDir(), "acquired.txt")
 	hook := quoteForShell(os.Args[0]) + " -test.run=TestAcquireDuringHookProbe -- " + quoteForShell(repoDir) + " " + quoteForShell(poolDir) + " " + quoteForShell(sentinel)
 
-	if err := Destroy(repoDir, poolDir, wtPath, true, []string{hook}); err != nil {
-		t.Fatalf("Destroy failed: %v", err)
+	result, err := DestroyWorktree(poolDir, wtPath, DestroyOptions{PreDestroy: []string{hook}})
+	if err != nil {
+		t.Fatalf("DestroyWorktree failed: %v", err)
+	}
+	if len(result.Destroyed) != 1 {
+		t.Fatalf("expected original worktree destroyed, got %#v", result)
 	}
 
 	acquiredData, err := os.ReadFile(sentinel)
@@ -356,7 +382,7 @@ func TestDestroy_DoesNotAllowHookAcquireToReusePendingDestroyWorktree(t *testing
 	}
 }
 
-func TestDestroy_NonForceRejectsReservedWorktree(t *testing.T) {
+func TestDestroyWorktree_WithoutIncludeInUseSkipsInUseWorktree(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
 	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
@@ -364,34 +390,101 @@ func TestDestroy_NonForceRejectsReservedWorktree(t *testing.T) {
 		t.Fatalf("Acquire failed: %v", err)
 	}
 
-	err = Destroy(repoDir, poolDir, wtPath, false, nil)
-	if err == nil {
-		t.Fatal("expected non-force Destroy to reject reserved worktree")
+	result, err := DestroyWorktree(poolDir, wtPath, DestroyOptions{})
+	if err != nil {
+		t.Fatalf("DestroyWorktree failed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "is in use") {
-		t.Fatalf("expected in-use error, got %v", err)
+	if len(result.Destroyed) != 0 {
+		t.Fatalf("expected in-use worktree to be skipped, got destroyed %#v", result.Destroyed)
+	}
+	if !hasDestroySkip(result.Skipped, wtPath, DestroyInUse, IncludeInUseFlag) {
+		t.Fatalf("expected in-use skip with %s, got %#v", IncludeInUseFlag, result.Skipped)
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("expected reserved worktree to remain on disk: %v", err)
 	}
+
+	// Opting in removes it.
+	result, err = DestroyWorktree(poolDir, wtPath, DestroyOptions{IncludeInUse: true})
+	if err != nil {
+		t.Fatalf("DestroyWorktree --include-in-use failed: %v", err)
+	}
+	if len(result.Destroyed) != 1 {
+		t.Fatalf("expected in-use worktree destroyed with --include-in-use, got %#v", result)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("expected worktree removed, stat err: %v", err)
+	}
 }
 
-func TestDestroy_PreservesSupersededReservationAfterHook(t *testing.T) {
+func TestDestroyWorktree_DirtyRequiresIncludeUnlanded(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
-	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	wtPath := acquireDisposable(t, repoDir, poolDir)
+	if err := os.WriteFile(filepath.Join(wtPath, "scratch.txt"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := DestroyWorktree(poolDir, wtPath, DestroyOptions{})
 	if err != nil {
-		t.Fatalf("Acquire failed: %v", err)
+		t.Fatalf("DestroyWorktree failed: %v", err)
 	}
-	if err := Release(poolDir, wtPath); err != nil {
-		t.Fatalf("Release failed: %v", err)
+	if len(result.Destroyed) != 0 {
+		t.Fatalf("expected dirty worktree skipped, got %#v", result.Destroyed)
 	}
+	if !hasDestroySkip(result.Skipped, wtPath, DestroyDirty, IncludeUnlandedFlag) {
+		t.Fatalf("expected dirty skip with %s, got %#v", IncludeUnlandedFlag, result.Skipped)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected dirty worktree to remain on disk: %v", err)
+	}
+
+	result, err = DestroyWorktree(poolDir, wtPath, DestroyOptions{IncludeUnlanded: true})
+	if err != nil {
+		t.Fatalf("DestroyWorktree --include-unlanded failed: %v", err)
+	}
+	if len(result.Destroyed) != 1 {
+		t.Fatalf("expected dirty worktree destroyed with --include-unlanded, got %#v", result)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("expected dirty worktree removed, stat err: %v", err)
+	}
+}
+
+func TestDestroyWorktree_DryRunPlansWithoutRemoving(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath := acquireDisposable(t, repoDir, poolDir)
+
+	result, err := DestroyWorktree(poolDir, wtPath, DestroyOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("DestroyWorktree dry run failed: %v", err)
+	}
+	if len(result.Planned) != 1 || result.Planned[0].Path != wtPath || result.Planned[0].Class != DestroyDisposable {
+		t.Fatalf("expected disposable worktree planned, got %#v", result.Planned)
+	}
+	if len(result.Destroyed) != 0 {
+		t.Fatalf("dry run must not destroy anything, got %#v", result.Destroyed)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("dry run removed worktree %s: %v", wtPath, err)
+	}
+}
+
+func TestDestroyWorktree_PreservesSupersededReservationAfterHook(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath := acquireDisposable(t, repoDir, poolDir)
 
 	sentinel := filepath.Join(wtPath, "superseded.txt")
 	hook := quoteForShell(os.Args[0]) + " -test.run=TestSupersedeDestroyReservationProbe -- " + quoteForShell(poolDir) + " " + quoteForShell(wtPath) + " " + quoteForShell(sentinel)
 
-	if err := Destroy(repoDir, poolDir, wtPath, true, []string{hook}); err != nil {
-		t.Fatalf("Destroy failed: %v", err)
+	result, err := DestroyWorktree(poolDir, wtPath, DestroyOptions{PreDestroy: []string{hook}})
+	if err != nil {
+		t.Fatalf("DestroyWorktree failed: %v", err)
+	}
+	if len(result.Destroyed) != 0 {
+		t.Fatalf("expected superseded worktree to be preserved, got destroyed %#v", result.Destroyed)
 	}
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("expected superseded worktree to remain on disk: %v", err)
@@ -406,7 +499,7 @@ func TestDestroy_PreservesSupersededReservationAfterHook(t *testing.T) {
 	}
 }
 
-func TestDestroyAll_PreservesWorktreeAcquiredByHook(t *testing.T) {
+func TestDestroyPool_PreservesWorktreeAcquiredByHook(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
 	if _, err := Acquire(repoDir, poolDir, 4, nil); err != nil {
@@ -419,8 +512,10 @@ func TestDestroyAll_PreservesWorktreeAcquiredByHook(t *testing.T) {
 	sentinel := filepath.Join(t.TempDir(), "acquired.txt")
 	hook := quoteForShell(os.Args[0]) + " -test.run=TestAcquireDuringHookProbe -- " + quoteForShell(repoDir) + " " + quoteForShell(poolDir) + " " + quoteForShell(sentinel)
 
-	if err := DestroyAll(repoDir, poolDir, true, []string{hook}); err != nil {
-		t.Fatalf("DestroyAll failed: %v", err)
+	// The two worktrees are owner-reserved (in use), so the bulk destroy must opt
+	// in to remove them; the worktree the hook acquires must still be preserved.
+	if _, err := DestroyPool(poolDir, DestroyOptions{IncludeInUse: true, PreDestroy: []string{hook}}); err != nil {
+		t.Fatalf("DestroyPool failed: %v", err)
 	}
 
 	acquiredData, err := os.ReadFile(sentinel)
@@ -441,22 +536,16 @@ func TestDestroyAll_PreservesWorktreeAcquiredByHook(t *testing.T) {
 	}
 }
 
-func TestDestroyAll_PreservesSupersededReservationAfterHook(t *testing.T) {
+func TestDestroyPool_PreservesSupersededReservationAfterHook(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
-	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
-	if err != nil {
-		t.Fatalf("Acquire failed: %v", err)
-	}
-	if err := Release(poolDir, wtPath); err != nil {
-		t.Fatalf("Release failed: %v", err)
-	}
+	wtPath := acquireDisposable(t, repoDir, poolDir)
 
 	sentinel := filepath.Join(wtPath, "superseded.txt")
 	hook := quoteForShell(os.Args[0]) + " -test.run=TestSupersedeDestroyReservationProbe -- " + quoteForShell(poolDir) + " " + quoteForShell(wtPath) + " " + quoteForShell(sentinel)
 
-	if err := DestroyAll(repoDir, poolDir, true, []string{hook}); err != nil {
-		t.Fatalf("DestroyAll failed: %v", err)
+	if _, err := DestroyPool(poolDir, DestroyOptions{PreDestroy: []string{hook}}); err != nil {
+		t.Fatalf("DestroyPool failed: %v", err)
 	}
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("expected superseded worktree to remain on disk: %v", err)
@@ -471,7 +560,7 @@ func TestDestroyAll_PreservesSupersededReservationAfterHook(t *testing.T) {
 	}
 }
 
-func TestDestroyAll_NonForceRejectsReservedWorktree(t *testing.T) {
+func TestDestroyPool_WithoutIncludeInUseSkipsInUseWorktree(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
 	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
@@ -479,28 +568,25 @@ func TestDestroyAll_NonForceRejectsReservedWorktree(t *testing.T) {
 		t.Fatalf("Acquire failed: %v", err)
 	}
 
-	err = DestroyAll(repoDir, poolDir, false, nil)
-	if err == nil {
-		t.Fatal("expected non-force DestroyAll to reject reserved worktree")
+	result, err := DestroyPool(poolDir, DestroyOptions{})
+	if err != nil {
+		t.Fatalf("DestroyPool failed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "is in use") {
-		t.Fatalf("expected in-use error, got %v", err)
+	if len(result.Destroyed) != 0 {
+		t.Fatalf("expected in-use worktree to be skipped, got %#v", result.Destroyed)
+	}
+	if !hasDestroySkip(result.Skipped, wtPath, DestroyInUse, IncludeInUseFlag) {
+		t.Fatalf("expected in-use skip, got %#v", result.Skipped)
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("expected reserved worktree to remain on disk: %v", err)
 	}
 }
 
-func TestDestroyAll_NonForceRejectsLiveDestroyingWorktree(t *testing.T) {
+func TestDestroyPool_SkipsLiveDestroyingWorktree(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
-	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
-	if err != nil {
-		t.Fatalf("Acquire failed: %v", err)
-	}
-	if err := Release(poolDir, wtPath); err != nil {
-		t.Fatalf("Release failed: %v", err)
-	}
+	wtPath := acquireDisposable(t, repoDir, poolDir)
 
 	state, err := ReadState(poolDir)
 	if err != nil {
@@ -514,12 +600,12 @@ func TestDestroyAll_NonForceRejectsLiveDestroyingWorktree(t *testing.T) {
 		t.Fatalf("WriteState failed: %v", err)
 	}
 
-	err = DestroyAll(repoDir, poolDir, false, nil)
-	if err == nil {
-		t.Fatal("expected non-force DestroyAll to reject live destroying worktree")
+	result, err := DestroyPool(poolDir, DestroyOptions{})
+	if err != nil {
+		t.Fatalf("DestroyPool failed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "is in use") {
-		t.Fatalf("expected in-use error, got %v", err)
+	if len(result.Destroyed) != 0 {
+		t.Fatalf("expected live destroying worktree to be skipped, got %#v", result.Destroyed)
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("expected live destroying worktree to remain on disk: %v", err)
@@ -1351,7 +1437,7 @@ func TestHealState_PreservesLease(t *testing.T) {
 	_ = wtPath
 }
 
-func TestDestroy_NonForceRejectsLeasedWorktree(t *testing.T) {
+func TestDestroyWorktree_LeasedRequiresIncludeLeased(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
 	wtPath, err := AcquireLease(repoDir, poolDir, 4, nil, "home")
@@ -1359,23 +1445,65 @@ func TestDestroy_NonForceRejectsLeasedWorktree(t *testing.T) {
 		t.Fatalf("AcquireLease failed: %v", err)
 	}
 
-	err = Destroy(repoDir, poolDir, wtPath, false, nil)
-	if err == nil {
-		t.Fatal("expected non-force Destroy to reject leased worktree")
+	result, err := DestroyWorktree(poolDir, wtPath, DestroyOptions{})
+	if err != nil {
+		t.Fatalf("DestroyWorktree failed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "is in use") {
-		t.Fatalf("expected in-use error, got %v", err)
+	if len(result.Destroyed) != 0 {
+		t.Fatalf("expected leased worktree skipped without --include-leased, got %#v", result.Destroyed)
+	}
+	if !hasDestroySkip(result.Skipped, wtPath, DestroyLeased, IncludeLeasedFlag) {
+		t.Fatalf("expected leased skip with %s, got %#v", IncludeLeasedFlag, result.Skipped)
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("expected leased worktree to remain on disk: %v", err)
 	}
 
-	// --force overrides the lease.
-	if err := Destroy(repoDir, poolDir, wtPath, true, nil); err != nil {
-		t.Fatalf("force Destroy failed: %v", err)
+	// Naming the exact path with --include-leased removes it.
+	result, err = DestroyWorktree(poolDir, wtPath, DestroyOptions{IncludeLeased: true})
+	if err != nil {
+		t.Fatalf("DestroyWorktree --include-leased failed: %v", err)
+	}
+	if len(result.Destroyed) != 1 {
+		t.Fatalf("expected leased worktree destroyed with --include-leased, got %#v", result)
 	}
 	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
-		t.Fatalf("expected leased worktree to be removed after force destroy, stat err: %v", err)
+		t.Fatalf("expected leased worktree removed, stat err: %v", err)
+	}
+}
+
+func TestDestroyPool_NeverRemovesLeasedWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := AcquireLease(repoDir, poolDir, 4, nil, "secondmate")
+	if err != nil {
+		t.Fatalf("AcquireLease failed: %v", err)
+	}
+
+	// Even with every include flag set, a bulk pool destroy must never remove a
+	// leased worktree. This is the incident this redesign prevents.
+	result, err := DestroyPool(poolDir, DestroyOptions{
+		IncludeLeased:   true,
+		IncludeInUse:    true,
+		IncludeUnlanded: true,
+	})
+	if err != nil {
+		t.Fatalf("DestroyPool failed: %v", err)
+	}
+	if len(result.Destroyed) != 0 {
+		t.Fatalf("expected leased worktree preserved by bulk destroy, got %#v", result.Destroyed)
+	}
+	leasedSkipped := false
+	for _, s := range result.Skipped {
+		if s.Target.Path == wtPath && s.Target.Class == DestroyLeased && s.LeasedBulk {
+			leasedSkipped = true
+		}
+	}
+	if !leasedSkipped {
+		t.Fatalf("expected leased worktree reported as bulk-skipped, got %#v", result.Skipped)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected leased worktree to remain on disk: %v", err)
 	}
 }
 
