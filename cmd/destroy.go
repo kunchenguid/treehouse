@@ -181,6 +181,10 @@ func destroySingleExit(result pool.DestroyResult, opts pool.DestroyOptions) erro
 		if skip.LeasedBulk {
 			continue
 		}
+		if len(skip.NeededFlags) > 0 {
+			return fmt.Errorf("did not destroy %s (%s); re-run with %s",
+				skip.Target.Name, skip.Target.Class, strings.Join(skip.NeededFlags, " "))
+		}
 		if skip.NeededFlag != "" {
 			return fmt.Errorf("did not destroy %s (%s); re-run with %s",
 				skip.Target.Name, skip.Target.Class, skip.NeededFlag)
@@ -275,6 +279,9 @@ func destroySkipHint(s pool.DestroySkip) string {
 	if s.LeasedBulk {
 		return "leased: name the exact path with " + pool.IncludeLeasedFlag + " (never removed by --all)"
 	}
+	if len(s.NeededFlags) > 0 {
+		return "re-run with " + strings.Join(s.NeededFlags, " ") + " to include"
+	}
 	if s.NeededFlag != "" {
 		return "re-run with " + s.NeededFlag + " to include"
 	}
@@ -285,14 +292,23 @@ func destroySkipHint(s pool.DestroySkip) string {
 }
 
 func destroyTag(t pool.DestroyTarget) string {
-	if t.Class == pool.DestroyInUse && len(t.Processes) > 0 {
-		pids := make([]string, len(t.Processes))
-		for i, p := range t.Processes {
-			pids[i] = strconv.Itoa(int(p.PID))
-		}
-		return "[in-use:" + strings.Join(pids, ",") + "]"
+	classes := t.Classes
+	if len(classes) == 0 {
+		classes = []pool.DestroyClass{t.Class}
 	}
-	return "[" + string(t.Class) + "]"
+	parts := make([]string, 0, len(classes))
+	for _, class := range classes {
+		if class == pool.DestroyInUse && len(t.Processes) > 0 {
+			pids := make([]string, len(t.Processes))
+			for i, p := range t.Processes {
+				pids[i] = strconv.Itoa(int(p.PID))
+			}
+			parts = append(parts, "in-use:"+strings.Join(pids, ","))
+			continue
+		}
+		parts = append(parts, string(class))
+	}
+	return "[" + strings.Join(parts, ",") + "]"
 }
 
 func destroyExecuteFlags(opts pool.DestroyOptions) string {
