@@ -149,4 +149,3 @@ disk check: repo B scoped worktree preserved=yes
 $ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-b && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse status)
 1     available    ~/.treehouse/repo-b-69712f/1/repo-b
 (exit 0)
-
