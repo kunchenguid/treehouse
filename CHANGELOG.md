@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/kunchenguid/treehouse/compare/v1.8.0...v2.0.0) (2026-06-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cmd:** the `treehouse destroy --force` flag is removed. Replace it with the specific --include-unlanded / --include-in-use / --include-leased flag(s) for the risk you intend to override, plus --yes, and pass an explicit pool path to --all.
+
+### Features
+
+* **cmd:** make destroy safe by default ([#37](https://github.com/kunchenguid/treehouse/issues/37)) ([0190382](https://github.com/kunchenguid/treehouse/commit/0190382c6f3b95025667b5b01e688e779bf3c516))
+
 ## [1.8.0](https://github.com/kunchenguid/treehouse/compare/v1.7.0...v1.8.0) (2026-06-22)
 
 
