@@ -50,6 +50,7 @@ const (
 const destroyGracePeriod = 2 * time.Second
 
 var findProcessesInWorktree = process.FindProcessesInWorktree
+var terminateWorktreeProcesses = process.TerminateWorktreeProcesses
 
 type destroyReservation struct {
 	worktree               WorktreeEntry
@@ -441,7 +442,7 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 			}
 
 			if current.hasClass(DestroyInUse) {
-				if _, err := process.TerminateWorktreeProcesses(path, destroyGracePeriod); err != nil {
+				if _, err := terminateWorktreeProcesses(path, destroyGracePeriod); err != nil {
 					restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
 					current.Detail = "could not terminate worktree processes: " + err.Error()
 					skips = append(skips, DestroySkip{Target: current})

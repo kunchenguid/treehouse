@@ -622,7 +622,28 @@ func TestDestroyWorktree_LeasedProcessRequiresIncludeInUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AcquireLease failed: %v", err)
 	}
-	cmd := startCwdHolder(t, wtPath)
+
+	processRunning := true
+	fakeProcess := process.ProcessInfo{PID: 12345, Name: "cwd-holder"}
+	oldFindProcesses := findProcessesInWorktree
+	oldTerminateProcesses := terminateWorktreeProcesses
+	findProcessesInWorktree = func(path string) ([]process.ProcessInfo, error) {
+		if path == wtPath && processRunning {
+			return []process.ProcessInfo{fakeProcess}, nil
+		}
+		return nil, nil
+	}
+	terminateWorktreeProcesses = func(path string, _ time.Duration) ([]process.ProcessInfo, error) {
+		if path == wtPath && processRunning {
+			processRunning = false
+			return []process.ProcessInfo{fakeProcess}, nil
+		}
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		findProcessesInWorktree = oldFindProcesses
+		terminateWorktreeProcesses = oldTerminateProcesses
+	})
 
 	result, err := DestroyWorktree(poolDir, wtPath, DestroyOptions{IncludeLeased: true})
 	if err != nil {
@@ -642,7 +663,9 @@ func TestDestroyWorktree_LeasedProcessRequiresIncludeInUse(t *testing.T) {
 	if len(result.Destroyed) != 1 {
 		t.Fatalf("expected leased in-use worktree destroyed with both flags, got %#v", result)
 	}
-	waitForProcessExit(t, cmd, 5*time.Second)
+	if processRunning {
+		t.Fatal("expected destroy to terminate in-use process before removal")
+	}
 }
 
 func TestDestroyWorktree_DryRunPlansWithoutRemoving(t *testing.T) {
