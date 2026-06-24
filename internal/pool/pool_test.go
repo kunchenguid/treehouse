@@ -446,6 +446,40 @@ func TestDestroyWorktree_WithoutIncludeInUseSkipsInUseWorktree(t *testing.T) {
 	}
 }
 
+func TestDestroyWorktree_IncludeInUseSkipsSurvivingProcess(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath := acquireDisposable(t, repoDir, poolDir)
+
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(wtPath); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.Chdir(originalDir)
+	}()
+
+	result, err := DestroyWorktree(poolDir, wtPath, DestroyOptions{IncludeInUse: true})
+	if err != nil {
+		t.Fatalf("DestroyWorktree --include-in-use failed: %v", err)
+	}
+	if err := os.Chdir(originalDir); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Destroyed) != 0 {
+		t.Fatalf("expected surviving in-use worktree to be skipped, got destroyed %#v", result.Destroyed)
+	}
+	if !hasDestroySkipFlags(result.Skipped, wtPath, DestroyInUse) {
+		t.Fatalf("expected in-use skip without a missing flag, got %#v", result.Skipped)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected surviving in-use worktree to remain on disk: %v", err)
+	}
+}
+
 func TestDestroyWorktree_DirtyRequiresIncludeUnlanded(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 

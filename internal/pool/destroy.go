@@ -435,6 +435,20 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 					skips = append(skips, DestroySkip{Target: current})
 					continue
 				}
+				survivors, err := process.FindProcessesInWorktree(path)
+				if err != nil {
+					clearReservation(&state.Worktrees[idx])
+					current.Detail = "could not verify worktree processes stopped: " + err.Error()
+					skips = append(skips, DestroySkip{Target: current})
+					continue
+				}
+				if len(survivors) > 0 {
+					clearReservation(&state.Worktrees[idx])
+					current.Processes = survivors
+					current.Detail = "worktree processes still running after termination"
+					skips = append(skips, DestroySkip{Target: current})
+					continue
+				}
 			}
 
 			if err := removeManagedWorktree(repoRoot, path); err != nil {

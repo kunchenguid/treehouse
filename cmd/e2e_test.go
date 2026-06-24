@@ -869,6 +869,31 @@ func TestDestroySpecificWithYes(t *testing.T) {
 	}
 }
 
+func TestDestroySpecificSkipsWhenCallerStillInWorktree(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	env := []string{"SHELL=" + exitShellBin}
+
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get failed (code %d): %s", code, getErr)
+	}
+	wtPath := extractWorktreePath(getErr, homeDir)
+	if wtPath == "" {
+		t.Fatal("could not extract worktree path")
+	}
+
+	out, errOut, code := runTreehouseFromDir(t, repoDir, wtPath, homeDir, nil, "destroy", wtPath, "--include-in-use", "--yes")
+	if code == 0 {
+		t.Fatal("expected destroy from inside the target worktree to fail")
+	}
+	if !strings.Contains(out, "Skipped 1 worktree") || !strings.Contains(out+errOut, "worktree processes still running after termination") {
+		t.Fatalf("expected survivor-process skip, got stdout:\n%s\nstderr:\n%s", out, errOut)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected in-use worktree to remain on disk: %v", err)
+	}
+}
+
 func TestDestroyDirtyRequiresIncludeUnlanded(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	env := []string{"SHELL=" + exitShellBin}
