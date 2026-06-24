@@ -169,8 +169,8 @@ The default treehouse root is `~/.treehouse/`.
 | `prune`   | `--verbose`, `-v` | Show detailed skip diagnostics |
 | `destroy` | `--all`   | Remove all worktrees in the named pool (requires a pool path) |
 | `destroy` | `--yes`   | Execute the removal instead of doing a dry run |
-| `destroy` | `--include-unlanded` | Also remove dirty or unmerged worktrees (irreversible data loss) |
-| `destroy` | `--include-in-use` | Also remove worktrees with a running process (terminated cleanly first) |
+| `destroy` | `--include-unlanded` | Also remove dirty, unmerged, or unverified worktrees (irreversible data loss) |
+| `destroy` | `--include-in-use` | Also remove worktrees with a running process or owner reservation (processes are terminated cleanly first) |
 | `destroy` | `--include-leased` | Also remove a leased worktree; only when the exact path is named, never via `--all` |
 
 ### Leasing a worktree (no subshell)
@@ -224,24 +224,25 @@ Use `--verbose` to show the underlying git diagnostic details for skipped worktr
 
 Targets are narrow and explicit:
 
-- `treehouse destroy <worktree-path>` removes exactly one worktree.
-- `treehouse destroy <pool-path> --all` removes worktrees in THAT pool only. The pool path can be the pool directory, a worktree inside it, or the repository (`.` works from inside a repo).
+- `treehouse destroy <worktree-path>` targets exactly one worktree.
+- `treehouse destroy <pool-path> --all` targets worktrees in THAT pool only. The pool path can be the pool directory, a worktree inside it, or the repository (`.` works from inside a repo).
 
 There is no cross-pool or global destroy: `--all` without a pool path is an error, so a stray command can never reach beyond the pool you named.
 
 Destroy is a dry run by default.
-It prints a risk-revealing preview - a status tag (`[disposable]`, `[leased]`, `[in-use:<pid>]`, `[unmerged]`, `[dirty]`, or `[unverified]`), the path, and the size of each target - and removes nothing.
+It prints a risk-revealing preview - one or more status labels (`[disposable]`, `[leased]`, `[in-use:<pid>]`, `[unmerged]`, `[dirty]`, `[unverified]`, or a comma-separated combination such as `[leased,dirty]`), the path, and the size of each target - and removes nothing.
 Pass `--yes` to execute.
 It never prints a blind "all worktrees destroyed"; the summary always reports exactly what was destroyed and what was skipped.
 
 A bare `treehouse destroy <pool> --all --yes` removes only the genuinely disposable set (merged, clean, idle, unleased - the same set `prune` would take) and SKIPS everything else, telling you which flag would include it.
 Each risky class is its own opt-in, so removing risky worktrees can never be a reflexive `--yes`:
 
-- `--include-unlanded` also removes worktrees with uncommitted changes or a HEAD not merged into the default branch (irreversible data loss).
-- `--include-in-use` also removes worktrees with a running process; their processes are terminated cleanly first and their pids are shown in the preview.
+- `--include-unlanded` also removes worktrees with uncommitted changes, a HEAD not merged into the default branch, or contents treehouse cannot verify, such as a missing backing repository (irreversible data loss).
+- `--include-in-use` also removes worktrees with a running process or owner reservation; their processes are terminated cleanly first and their pids are shown in the preview.
 - `--include-leased` also removes a leased worktree, but only when you name the exact worktree path. Leased worktrees are NEVER removed by `--all`; combining `--include-leased` with `--all` is rejected.
 
 A single named worktree that is skipped for lack of a flag makes the command exit non-zero, so scripts notice that nothing happened.
+Bulk `--all` skips are normal and exit zero; inspect the summary to see what remains.
 
 #### Migrating from `--force`
 
@@ -252,7 +253,7 @@ Replace it with the specific `--include-*` flag(s) for the risk you actually int
 | Old | New |
 | --- | --- |
 | `treehouse destroy <path> --force` | `treehouse destroy <path> --yes` (add `--include-unlanded` / `--include-in-use` / `--include-leased` as needed) |
-| `treehouse destroy --all --force` | `treehouse destroy <pool> --all --yes` (add `--include-unlanded` / `--include-in-use` for the risky ones; leased homes are never included) |
+| `treehouse destroy --all --force` | `treehouse destroy <pool> --all --yes` (add `--include-unlanded` for dirty, unmerged, or unverified targets, and `--include-in-use` for in-use targets; leased homes are never included) |
 
 ## Configuration
 
@@ -281,6 +282,7 @@ If no config is found, the default pool size is 16.
 
 You can run commands automatically at worktree lifecycle points by adding a `[hooks]` section to the user-level config at `~/.config/treehouse/config.toml`.
 Hooks in repo-level `treehouse.toml` are ignored for safety.
+`treehouse destroy` always reads `pre_destroy` from the user-level config because it can target a pool by path.
 
 ```toml
 [hooks]

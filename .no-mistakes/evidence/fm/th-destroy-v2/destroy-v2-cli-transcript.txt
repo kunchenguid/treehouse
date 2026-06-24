@@ -1,0 +1,152 @@
+Treehouse destroy v2 CLI evidence
+binary: /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse
+repo A: /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a
+repo B: /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-b
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse destroy --all --yes)
+--all requires a pool path; name the pool to clear, e.g. 'treehouse destroy . --all'
+(exit 1)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse destroy /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a --all --force)
+unknown flag: --force
+(exit 1)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse get --lease --lease-holder secondmate-home)
+stdout:
+/Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/home/.treehouse/repo-a-6e5250/1/repo-a
+stderr:
+🌳 Setting up worktree...
+🌳 Leased worktree at ~/.treehouse/repo-a-6e5250/1/repo-a. Run 'treehouse return ~/.treehouse/repo-a-6e5250/1/repo-a' to release it.
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse destroy /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a --all --yes)
+🌳 Destroyed 0 worktrees in ~/.treehouse/repo-a-6e5250.
+🌳 Skipped 1 worktree:
+  1     [leased]  ~/.treehouse/repo-a-6e5250/1/repo-a  leased: name the exact path with --include-leased (never removed by --all)
+(exit 0)
+
+$ printf disk check: leased worktree after bulk destroy exists=%s\n yes
+disk check: leased worktree after bulk destroy exists=yes
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse destroy /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a --all --include-leased --yes)
+--include-leased cannot be combined with --all; name the exact worktree path instead (leased worktrees are never removed in bulk)
+(exit 1)
+
+$ printf disk check: leased worktree after rejected bulk include exists=%s\n yes
+disk check: leased worktree after rejected bulk include exists=yes
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse destroy /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/home/.treehouse/repo-a-6e5250/1/repo-a --include-leased --yes)
+🌳 Destroyed 1 worktree in ~/.treehouse/repo-a-6e5250/1/repo-a and freed 389 B.
+  1     [leased]  389 B  ~/.treehouse/repo-a-6e5250/1/repo-a  (held by secondmate-home)
+(exit 0)
+
+$ printf disk check: leased worktree after named destroy exists=%s\n no
+disk check: leased worktree after named destroy exists=no
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse get --lease --lease-holder disposable-demo)
+stdout:
+/Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/home/.treehouse/repo-a-6e5250/1/repo-a
+stderr:
+🌳 Setting up worktree...
+🌳 Leased worktree at ~/.treehouse/repo-a-6e5250/1/repo-a. Run 'treehouse return ~/.treehouse/repo-a-6e5250/1/repo-a' to release it.
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse return /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/home/.treehouse/repo-a-6e5250/1/repo-a)
+🌳 Worktree returned to pool.
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse destroy /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/home/.treehouse/repo-a-6e5250/1/repo-a)
+🌳 Dry run: would destroy 1 worktree in ~/.treehouse/repo-a-6e5250/1/repo-a and reclaim 389 B.
+  1     [disposable]  389 B  ~/.treehouse/repo-a-6e5250/1/repo-a
+🌳 Re-run with --yes to destroy this worktree.
+(exit 0)
+
+$ printf disk check: disposable worktree after dry run exists=%s\n yes
+disk check: disposable worktree after dry run exists=yes
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse destroy /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/home/.treehouse/repo-a-6e5250/1/repo-a --yes)
+🌳 Destroyed 1 worktree in ~/.treehouse/repo-a-6e5250/1/repo-a and freed 389 B.
+  1     [disposable]  389 B  ~/.treehouse/repo-a-6e5250/1/repo-a
+(exit 0)
+
+$ printf disk check: disposable worktree after --yes exists=%s\n no
+disk check: disposable worktree after --yes exists=no
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse get --lease --lease-holder dirty-demo)
+stdout:
+/Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/home/.treehouse/repo-a-6e5250/1/repo-a
+stderr:
+🌳 Setting up worktree...
+🌳 Leased worktree at ~/.treehouse/repo-a-6e5250/1/repo-a. Run 'treehouse return ~/.treehouse/repo-a-6e5250/1/repo-a' to release it.
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse return /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/home/.treehouse/repo-a-6e5250/1/repo-a)
+🌳 Worktree returned to pool.
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse destroy /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/home/.treehouse/repo-a-6e5250/1/repo-a --yes)
+🌳 Destroyed 0 worktrees in ~/.treehouse/repo-a-6e5250/1/repo-a.
+🌳 Skipped 1 worktree:
+  1     [dirty]  ~/.treehouse/repo-a-6e5250/1/repo-a  re-run with --include-unlanded to include
+did not destroy 1 (dirty); re-run with --include-unlanded
+(exit 1)
+
+$ printf disk check: dirty worktree after missing flag exists=%s\n yes
+disk check: dirty worktree after missing flag exists=yes
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse destroy /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/home/.treehouse/repo-a-6e5250/1/repo-a --include-unlanded --yes)
+🌳 Destroyed 1 worktree in ~/.treehouse/repo-a-6e5250/1/repo-a and freed 425 B.
+  1     [dirty]  425 B  ~/.treehouse/repo-a-6e5250/1/repo-a  (uncommitted changes)
+(exit 0)
+
+$ printf disk check: dirty worktree after --include-unlanded exists=%s\n no
+disk check: dirty worktree after --include-unlanded exists=no
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse get --lease --lease-holder scoped-a)
+stdout:
+/Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/home/.treehouse/repo-a-6e5250/1/repo-a
+stderr:
+🌳 Setting up worktree...
+🌳 Leased worktree at ~/.treehouse/repo-a-6e5250/1/repo-a. Run 'treehouse return ~/.treehouse/repo-a-6e5250/1/repo-a' to release it.
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse return /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/home/.treehouse/repo-a-6e5250/1/repo-a)
+🌳 Worktree returned to pool.
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-b && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse get --lease --lease-holder scoped-b)
+stdout:
+/Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/home/.treehouse/repo-b-69712f/1/repo-b
+stderr:
+🌳 Setting up worktree...
+🌳 Leased worktree at ~/.treehouse/repo-b-69712f/1/repo-b. Run 'treehouse return ~/.treehouse/repo-b-69712f/1/repo-b' to release it.
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-b && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse return /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/home/.treehouse/repo-b-69712f/1/repo-b)
+🌳 Worktree returned to pool.
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse destroy /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-a --all --yes)
+🌳 Destroyed 1 worktree in ~/.treehouse/repo-a-6e5250 and freed 389 B.
+  1     [disposable]  389 B  ~/.treehouse/repo-a-6e5250/1/repo-a
+(exit 0)
+
+$ printf disk check: repo A scoped worktree exists=%s\n no
+disk check: repo A scoped worktree exists=no
+(exit 0)
+
+$ printf disk check: repo B scoped worktree preserved=%s\n yes
+disk check: repo B scoped worktree preserved=yes
+(exit 0)
+
+$ (cd /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/repo-b && /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01KVWAAJ5Q1K6HK0XF52FN0NB8/.no-mistakes/tmp/destroy-v2-e2e/treehouse status)
+1     available    ~/.treehouse/repo-b-69712f/1/repo-b
+(exit 0)
+

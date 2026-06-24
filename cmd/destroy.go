@@ -26,15 +26,15 @@ var (
 )
 
 var destroyCmd = &cobra.Command{
-	Use:   "destroy [path]",
+	Use:   "destroy <path> [--all]",
 	Short: "Remove worktrees from the pool, safely by default",
 	Long: `Remove worktrees from the pool. Destroy is the deliberate tool for removing a
 worktree even though it still has unlanded work, but it is safe by default.
 
 Targets are narrow and explicit:
 
-  treehouse destroy <worktree-path>        Remove exactly one worktree.
-  treehouse destroy <pool-path> --all      Remove all worktrees in THAT pool.
+  treehouse destroy <worktree-path>        Target exactly one worktree.
+  treehouse destroy <pool-path> --all      Target all worktrees in THAT pool.
 
 There is no cross-pool or global destroy; --all without a pool path is an error.
 
@@ -45,12 +45,16 @@ A bare destroy removes only the genuinely disposable set (merged, clean, idle,
 unleased) and SKIPS everything else, telling you which flag would include it.
 Each risky class is opt-in:
 
-  --include-unlanded   Also remove dirty or unmerged worktrees (DATA LOSS).
-  --include-in-use     Also remove worktrees with a running process (terminated
-                       cleanly first).
+  --include-unlanded   Also remove dirty, unmerged, or unverified worktrees
+                       (DATA LOSS).
+  --include-in-use     Also remove worktrees with a running process or owner
+                       reservation (processes terminated cleanly first).
   --include-leased     Also remove a leased worktree. Honored only when the exact
                        worktree path is named; leased worktrees are NEVER removed
                        by --all.
+
+Single-target skips for missing flags exit non-zero so scripts notice. Bulk
+--all skips are normal and exit zero.
 
 Migrating from the removed --force flag: replace it with the specific
 --include-* flag(s) for the risk you intend to override, plus --yes.`,
@@ -60,8 +64,8 @@ Migrating from the removed --force flag: replace it with the specific
 func init() {
 	destroyCmd.Flags().BoolVar(&destroyAll, "all", false, "Remove all worktrees in the named pool (requires a pool path)")
 	destroyCmd.Flags().BoolVar(&destroyYes, "yes", false, "Execute the removal instead of doing a dry run")
-	destroyCmd.Flags().BoolVar(&destroyIncludeUnlanded, "include-unlanded", false, "Also remove dirty or unmerged worktrees (irreversible data loss)")
-	destroyCmd.Flags().BoolVar(&destroyIncludeInUse, "include-in-use", false, "Also remove worktrees with a running process (terminated cleanly first)")
+	destroyCmd.Flags().BoolVar(&destroyIncludeUnlanded, "include-unlanded", false, "Also remove dirty, unmerged, or unverified worktrees (irreversible data loss)")
+	destroyCmd.Flags().BoolVar(&destroyIncludeInUse, "include-in-use", false, "Also remove worktrees with a running process or owner reservation (processes terminated cleanly first)")
 	destroyCmd.Flags().BoolVar(&destroyIncludeLeased, "include-leased", false, "Also remove a leased worktree; only when the exact path is named, never via --all")
 	rootCmd.AddCommand(destroyCmd)
 }

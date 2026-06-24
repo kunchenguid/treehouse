@@ -59,10 +59,14 @@ type destroyReservation struct {
 
 // DestroyTarget describes one worktree considered for destruction.
 type DestroyTarget struct {
-	Name      string
-	Path      string
-	Bytes     int64
-	Class     DestroyClass
+	Name  string
+	Path  string
+	Bytes int64
+	// Class is the first safety class assigned to the target, kept for simple
+	// callers and stable grouping.
+	Class DestroyClass
+	// Classes lists every safety class assigned to the target. A worktree can be
+	// leased and dirty, for example, and then requires every corresponding flag.
 	Classes   []DestroyClass
 	Processes []process.ProcessInfo
 	// Detail is an honest, user-facing diagnostic for non-disposable targets
@@ -70,8 +74,8 @@ type DestroyTarget struct {
 	Detail string
 }
 
-// DestroySkip records a worktree that was left in place and the opt-in flag that
-// would have authorized its removal.
+// DestroySkip records a worktree left in place and the opt-in flag or flags
+// that would have authorized its removal when a flag can authorize it.
 type DestroySkip struct {
 	Target DestroyTarget
 	// NeededFlag is the --include-* flag that would authorize removal, or empty
@@ -121,7 +125,7 @@ type DestroyOptions struct {
 
 // DestroyWorktree plans or removes a single named managed worktree. Because the
 // exact path is named, a leased worktree may be removed when IncludeLeased is
-// set. It returns an error only when the path is not managed by treehouse.
+// set. Missing opt-in flags are reported as skips, not errors.
 func DestroyWorktree(poolDir, worktreePath string, opts DestroyOptions) (DestroyResult, error) {
 	var target *WorktreeEntry
 	if err := WithStateLock(poolDir, func() error {
@@ -252,9 +256,9 @@ func (opts DestroyOptions) missingFlags(target DestroyTarget, allowLeased bool) 
 }
 
 // classifyForDestroy determines a managed worktree's destroy class using the
-// same safety primitives prune relies on (ownerAlive, process.IsWorktreeInUse,
-// backingRepositoryMissing, git.IsDirty, git.IsHeadMergedIntoRef against the ref
-// from resolvePruneDefaultRef).
+// same safety primitives prune relies on (ownerAlive,
+// process.FindProcessesInWorktree, backingRepositoryMissing, git.IsDirty,
+// git.IsHeadMergedIntoRef against the ref from resolvePruneDefaultRef).
 func classifyForDestroy(wt WorktreeEntry, defaultRef string) DestroyTarget {
 	target := DestroyTarget{Name: wt.Name, Path: wt.Path}
 
@@ -507,8 +511,8 @@ func restoreOriginalOwnerReservation(wt *WorktreeEntry, reservation destroyReser
 
 // removeManagedWorktree deletes a worktree's git registration (when its backing
 // repository is still present) and its numbered container directory. git removal
-// uses --force because destroy deliberately removes dirty or unmerged worktrees
-// once the caller has opted in.
+// uses --force because destroy deliberately removes dirty, unmerged, or
+// unverified worktrees once the caller has opted in.
 func removeManagedWorktree(repoRoot, path string) error {
 	orphaned, _ := backingRepositoryMissing(path)
 	if !orphaned {
