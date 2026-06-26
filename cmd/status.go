@@ -18,7 +18,7 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show the status of all worktrees in the pool",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		repoRoot, err := git.FindRepoRoot()
+		repoRoot, err := git.ResolveWorkDir("")
 		if err != nil {
 			return fmt.Errorf("not in a git repository: %w", err)
 		}

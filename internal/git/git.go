@@ -3,6 +3,7 @@ package git
 import (
 	"crypto/sha256"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,84 @@ func FindRepoRoot() (string, error) {
 
 func FindRepoRootFrom(dir string) (string, error) {
 	return runGit(dir, "rev-parse", "--show-toplevel")
+}
+
+// ResolveWorkDir returns a directory that git operations (worktree add, fetch,
+// default-branch resolution) can run from for the repository containing dir.
+// For a linked or main worktree it returns the working-tree root. For a bare
+// repository - including a gitdir-file parent such as the `.bare` layout, where
+// there is no working tree - it returns the common git dir, which git accepts as
+// the repository for `worktree add`. dir may be empty to mean the current
+// directory.
+func ResolveWorkDir(dir string) (string, error) {
+	if top, err := runGit(dir, "rev-parse", "--show-toplevel"); err == nil && top != "" {
+		return top, nil
+	}
+	return CommonGitDir(dir)
+}
+
+// CommonGitDir returns the absolute common git dir shared by every linked
+// worktree of the repository containing dir (e.g. `/path/repo/.git` or
+// `/path/proj/.bare`). It is the stable identity anchor for a repository: all
+// worktrees and the bare repo itself resolve to the same value. dir may be empty
+// to mean the current directory.
+func CommonGitDir(dir string) (string, error) {
+	if out, err := runGit(dir, "rev-parse", "--path-format=absolute", "--git-common-dir"); err == nil && out != "" {
+		return filepath.Clean(filepath.FromSlash(out)), nil
+	}
+	out, err := runGit(dir, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	cleaned := filepath.Clean(filepath.FromSlash(out))
+	if !filepath.IsAbs(cleaned) {
+		base := dir
+		if base == "" {
+			if cwd, err := os.Getwd(); err == nil {
+				base = cwd
+			}
+		}
+		cleaned = filepath.Join(base, cleaned)
+	}
+	return cleaned, nil
+}
+
+// RepoNameFromCommonDir derives a stable, human-readable pool-name component from
+// a repository's common git dir. A `.git` or `.bare` marker yields its parent
+// directory's name (the project name shared by every worktree); any other name
+// (a standalone bare repo such as `repo.git` or `repo`) yields its own basename
+// with a trailing `.git` stripped.
+func RepoNameFromCommonDir(commonDir string) string {
+	base := filepath.Base(commonDir)
+	if base == ".git" || base == ".bare" {
+		return filepath.Base(filepath.Dir(commonDir))
+	}
+	return strings.TrimSuffix(base, ".git")
+}
+
+// MainRootFromCommonDir returns the repository's main root from its common git
+// dir: the parent directory of a `.git`/`.bare` marker (the project dir shared by
+// every worktree), or the common dir itself for a standalone bare repo. It is the
+// stable, worktree-independent identity used as the pool-name hash input for
+// local-only repositories, and reproduces the old worktree-toplevel value for a
+// classic single-checkout repo so such repos keep their existing pool on upgrade.
+func MainRootFromCommonDir(commonDir string) string {
+	base := filepath.Base(commonDir)
+	if base == ".git" || base == ".bare" {
+		return filepath.Dir(commonDir)
+	}
+	return commonDir
+}
+
+// RepoName returns the stable repository name for the repo containing dir,
+// resolved from its common git dir. dir may be empty to mean the current
+// directory.
+func RepoName(dir string) (string, error) {
+	commonDir, err := CommonGitDir(dir)
+	if err != nil {
+		return "", err
+	}
+	return RepoNameFromCommonDir(commonDir), nil
 }
 
 // FindMainRepoRootFrom returns the main repository root for dir.
