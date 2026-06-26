@@ -126,7 +126,13 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		}
 
 		name := nextName(state)
-		repoName := filepath.Base(repoRoot)
+		// Use the stable repository name (shared across worktrees and the bare
+		// repo) for the inner directory; fall back to the basename if it cannot
+		// be resolved (e.g. repoRoot is a bare dir whose basename is already fine).
+		repoName, err := git.RepoName(repoRoot)
+		if err != nil || repoName == "" {
+			repoName = filepath.Base(repoRoot)
+		}
 		wtPath := filepath.Join(poolDir, name, repoName)
 
 		if err := os.MkdirAll(filepath.Dir(wtPath), 0755); err != nil {

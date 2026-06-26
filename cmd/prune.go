@@ -66,7 +66,7 @@ absolute.`,
 			return nil
 		}
 
-		repoRoot, err := git.FindRepoRoot()
+		repoRoot, err := git.ResolveWorkDir("")
 		if err != nil {
 			return fmt.Errorf("not in a git repository: %w", err)
 		}

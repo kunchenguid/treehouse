@@ -84,19 +84,29 @@ func loadUser() (Config, bool, error) {
 	return cfg, false, nil
 }
 
-func ResolvePoolDir(repoRoot string, root string) (string, error) {
-	// Use remote URL for the hash when available; fall back to the
-	// absolute repo path for purely-local repositories.
-	hashInput, err := git.GetRemoteURL(repoRoot)
+func ResolvePoolDir(repoDir string, root string) (string, error) {
+	// Identify the pool by the repository's common git dir, which is shared by
+	// every linked worktree (and the bare repo itself). This keeps all worktrees
+	// of one repository mapped to a single pool instead of one pool per checkout.
+	commonDir, err := git.CommonGitDir(repoDir)
 	if err != nil {
-		hashInput = repoRoot
+		return "", err
 	}
+	repoName := git.RepoNameFromCommonDir(commonDir)
 
-	repoName := filepath.Base(repoRoot)
-	shortHash := git.ShortHash(hashInput)
-	poolName := repoName + "-" + shortHash
+	// Use the remote URL for the hash when available; fall back to the main repo
+	// root for purely-local repositories. The main root is stable across worktrees
+	// and reproduces the pre-change worktree-toplevel value for a classic
+	// single-checkout repo, so such repos keep their existing pool on upgrade.
+	hashInput, err := git.GetRemoteURL(repoDir)
+	if err != nil || hashInput == "" {
+		hashInput = git.MainRootFromCommonDir(commonDir)
+	}
+	poolName := repoName + "-" + git.ShortHash(hashInput)
 
-	poolRoot, err := ResolvePoolRoot(repoRoot, root)
+	// Anchor the pool root on the passed-in repoDir (relative roots remain
+	// repo-context dependent, as before); only the pool name is repo-keyed.
+	poolRoot, err := ResolvePoolRoot(repoDir, root)
 	if err != nil {
 		return "", err
 	}
