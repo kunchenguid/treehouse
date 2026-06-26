@@ -1628,3 +1628,52 @@ func TestPruneUsesCurrentRemoteDefaultBranch(t *testing.T) {
 		t.Fatalf("worktree unmerged into current remote default was removed: %v", err)
 	}
 }
+
+func TestEnterByNameOpensSubshellWithoutChangingPool(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	// exit-shell exits immediately so both get and enter return at once.
+	env := []string{"SHELL=" + exitShellBin}
+
+	if _, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get"); code != 0 {
+		t.Fatalf("treehouse get failed (code %d): %s", code, getErr)
+	}
+
+	_, enterErr, code := runTreehouse(t, repoDir, homeDir, env, "enter", "1")
+	if code != 0 {
+		t.Fatalf("treehouse enter 1 failed (code %d): %s", code, enterErr)
+	}
+	if !strings.Contains(enterErr, "Entered worktree 1 at") {
+		t.Errorf("expected 'Entered worktree 1 at' in stderr: %s", enterErr)
+	}
+	if !strings.Contains(enterErr, "Pool state unchanged") {
+		t.Errorf("expected 'Pool state unchanged' in stderr: %s", enterErr)
+	}
+
+	// enter must not return the worktree to an acquired/leased state; it stays
+	// in the pool exactly as before.
+	statusOut, statusErr, code := runTreehouse(t, repoDir, homeDir, nil, "status")
+	if code != 0 {
+		t.Fatalf("treehouse status failed (code %d): %s", code, statusErr)
+	}
+	if !strings.Contains(statusOut, "1") {
+		t.Errorf("expected worktree 1 in status output: %s", statusOut)
+	}
+}
+
+func TestEnterUnknownNameFails(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	env := []string{"SHELL=" + exitShellBin}
+	if _, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get"); code != 0 {
+		t.Fatalf("treehouse get failed (code %d): %s", code, getErr)
+	}
+
+	_, enterErr, code := runTreehouse(t, repoDir, homeDir, env, "enter", "999")
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for unknown worktree name, got 0: %s", enterErr)
+	}
+	if !strings.Contains(enterErr, "no worktree named") {
+		t.Errorf("expected 'no worktree named' error in stderr: %s", enterErr)
+	}
+}
