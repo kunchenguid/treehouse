@@ -133,7 +133,7 @@ The default treehouse root is `~/.treehouse/`.
 - **No daemon** — all operations are inline CLI commands. No background processes, no state to get corrupted.
 - **In-use detection** — treehouse scans running processes and short-lived owner reservations to determine which worktrees are in-use. Reservations are persisted only while `get`, `destroy`, and `prune` lifecycle work is running.
 - **Durable leases** — `treehouse get --lease` reserves a worktree as a persistent home without keeping a process inside it. The lease is recorded in treehouse's own state, so the worktree is never handed out by a later `get` and never removed by `prune` until you release it with `treehouse return`. Unlike process-based in-use detection, a lease survives with zero processes running inside the worktree.
-- **Dirty detection** - treehouse treats tracked changes and untracked files as dirty, even when repository config hides untracked files from normal `git status` output.
+- **Dirty detection** - treehouse treats tracked changes and untracked files as dirty, even when repository config hides untracked files from normal `git status` output. Files ignored by `.gitignore` are the one exception: they are not counted as dirty, so a worktree whose only leftover content is ignored (build output, `node_modules`, virtualenvs) can still be reused — but treehouse never deletes them either, because its reset runs `git clean` without `-x` and so respects `.gitignore`.
 - **Safe pruning** - By default, `treehouse prune` removes only idle managed worktrees whose HEAD is already merged into the default branch and whose working tree is clean.
   `treehouse prune --all` applies the same safety checks across every managed pool under the user-level treehouse root.
   Backing-repository-missing orphans are reported by default; `--prune-orphans` includes them as unverified prune candidates, and `--yes` is required before deletion.
@@ -194,6 +194,30 @@ Pass `--lease-holder <label>` (or set `$TREEHOUSE_LEASE_HOLDER`) to record who h
 
 Release a lease with `treehouse return <path>`, which clears the lease, terminates any lingering processes, resets the worktree, and returns it to the pool.
 When you pass an explicit path, `treehouse return` can run from outside the repository because it resolves the managed pool from that worktree path.
+
+### Recovering an interrupted worktree
+
+If a `treehouse get` subshell ends abnormally — you close the terminal, the machine crashes, or the process is OOM-killed — the usual return cleanup never runs, so nothing resets or removes the worktree. It is left exactly as you had it.
+
+The short-lived owner reservation that marked the worktree in-use becomes stale, and treehouse clears it automatically on the next command (self-healing), so the worktree counts as idle again. As long as it has **uncommitted changes** (tracked or untracked), it stays protected: `get` will not hand it to another agent, `prune` will not delete it, and `destroy` will not remove it without `--include-unlanded`.
+
+To pick up where you left off, find it with `treehouse status` (it shows as `dirty`, with its path) and `cd` into it:
+
+```sh
+$ treehouse status
+2     dirty        ~/.treehouse/myproject-a1b2c3/2/myproject
+$ cd ~/.treehouse/myproject-a1b2c3/2/myproject
+$ git status      # your uncommitted changes are intact
+```
+
+When you are done, `treehouse return <path>` resets the worktree and returns it to the pool.
+
+**Caveat:** "protected" means git reports the worktree as dirty. Two kinds of leftover work do *not* count as dirty, so they leave a non-leased worktree eligible for reuse:
+
+- **Committed work with a clean tree** — a later `get` resets it with `git reset --hard`, moving HEAD off your commit (recoverable via `git reflog`, but not obvious).
+- **Changes only in `.gitignore`d files** — git reports the tree as clean, so a later `get` can reuse the worktree. The reset won't delete the ignored files (`git clean -fd` respects `.gitignore`), but the worktree may be handed to another agent and is no longer isolated.
+
+To hold a worktree durably across crashes — whatever its state — acquire it with `treehouse get --lease` and release it with `treehouse return <path>`.
 
 ### Pruning stale worktrees and orphans
 
