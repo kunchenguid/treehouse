@@ -23,12 +23,19 @@ already in use.
 
 Unlike 'get', enter does not acquire, reset, or return the worktree: it
 drops you into the directory and leaves all pool state untouched when you
-exit. Use it to attach to a worktree another agent is already using.`,
+exit. Use it to attach to a worktree another agent is already using.
+
+Pass --print-path to print only the worktree's absolute path to stdout
+instead of opening a subshell. A shell can wrap this to change its own
+directory, e.g. 'cd "$(treehouse enter --print-path 1)"'.`,
 	Args: cobra.ExactArgs(1),
 	RunE: enterRunE,
 }
 
+var enterPrintPath bool
+
 func init() {
+	enterCmd.Flags().BoolVar(&enterPrintPath, "print-path", false, "Print the worktree's absolute path to stdout instead of opening a subshell")
 	rootCmd.AddCommand(enterCmd)
 }
 
@@ -71,6 +78,13 @@ func enterRunE(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("no worktree named %q: the pool is empty. Run 'treehouse get' to create one", name)
 		}
 		return fmt.Errorf("no worktree named %q in pool (available: %s). Run 'treehouse status' for details", name, strings.Join(names, ", "))
+	}
+
+	if enterPrintPath {
+		// Only the absolute path goes to stdout so callers can capture it with
+		// command substitution, e.g. cd "$(treehouse enter --print-path 1)".
+		fmt.Fprintln(os.Stdout, target.Path)
+		return nil
 	}
 
 	fmt.Fprintf(os.Stderr, "🌳 Entered worktree %s at %s. Type 'exit' to leave.\n", target.Name, ui.PrettyPath(target.Path))

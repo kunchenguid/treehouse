@@ -1677,3 +1677,29 @@ func TestEnterUnknownNameFails(t *testing.T) {
 		t.Errorf("expected 'no worktree named' error in stderr: %s", enterErr)
 	}
 }
+
+func TestEnterPrintPathPrintsOnlyPathToStdout(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	env := []string{"SHELL=" + exitShellBin}
+	if _, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get"); code != 0 {
+		t.Fatalf("treehouse get failed (code %d): %s", code, getErr)
+	}
+
+	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, env, "enter", "--print-path", "1")
+	if code != 0 {
+		t.Fatalf("treehouse enter --print-path 1 failed (code %d): %s", code, stderr)
+	}
+
+	path := strings.TrimSpace(stdout)
+	if path == "" {
+		t.Fatalf("expected worktree path on stdout, got empty (stderr: %s)", stderr)
+	}
+	// Stdout must be exactly the path (one line) so command substitution is clean.
+	if strings.ContainsAny(path, "\n") || strings.Contains(stdout, "🌳") {
+		t.Errorf("expected only the bare path on stdout, got: %q", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(path, "README.md")); err != nil {
+		t.Errorf("printed path is not a valid worktree: %s (%v)", path, err)
+	}
+}

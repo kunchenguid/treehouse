@@ -162,6 +162,7 @@ The default treehouse root is `~/.treehouse/`.
 | --------- | --------- | --------------------------------- |
 | `get`     | `--lease` | Durably lease the worktree without opening a subshell; print only its path to stdout |
 | `get`     | `--lease-holder` | Optional label recorded as the lease holder (defaults to `$TREEHOUSE_LEASE_HOLDER`) |
+| `enter`   | `--print-path` | Print only the worktree's absolute path to stdout instead of opening a subshell (for `cd "$(treehouse enter --print-path 1)"`) |
 | `return`  | `--force` | Clean, reset, and return without prompting |
 | `prune`   | `--yes`   | Delete listed prune candidates instead of doing a dry run |
 | `prune`   | `--all`   | Sweep every managed pool under the user-level treehouse root |
