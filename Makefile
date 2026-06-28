@@ -1,4 +1,4 @@
-.PHONY: build test fmt lint dist install clean demo
+.PHONY: build test fmt lint dist install install-skill clean demo
 
 VERSION ?= dev
 LDFLAGS := -X main.version=$(VERSION)
@@ -27,6 +27,10 @@ dist:
 
 install: build
 	cp treehouse $(GOPATH)/bin/ 2>/dev/null || cp treehouse /usr/local/bin/
+
+install-skill:
+	mkdir -p $(HOME)/.claude/skills/treehouse
+	cp skills/treehouse/SKILL.md $(HOME)/.claude/skills/treehouse/SKILL.md
 
 demo: build
 	vhs demo.tape

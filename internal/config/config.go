@@ -13,11 +13,44 @@ type Config struct {
 	MaxTrees int    `toml:"max_trees"`
 	Root     string `toml:"root"`
 	Hooks    Hooks  `toml:"hooks,omitempty"`
+	Herdr    Herdr  `toml:"herdr,omitempty"`
 }
 
 type Hooks struct {
 	PostCreate []string `toml:"post_create,omitempty"`
 	PreDestroy []string `toml:"pre_destroy,omitempty"`
+}
+
+// Herdr configures how treehouse behaves when it runs inside the herdr terminal
+// multiplexer (https://herdr.dev). Like Hooks, it is honored only from the
+// user-level config: it controls how treehouse drives the user's live herdr
+// session, so a cloned repository must never be able to set it.
+type Herdr struct {
+	// Enabled toggles opening each acquired worktree in its own herdr pane when
+	// treehouse runs inside herdr. Nil means the built-in default (enabled).
+	Enabled *bool `toml:"enabled,omitempty"`
+	// Split is the direction a new worktree pane opens: "right" (default) or
+	// "down".
+	Split string `toml:"split,omitempty"`
+	// Focus moves focus to the new worktree pane. Nil means the built-in default
+	// (focus the new pane).
+	Focus *bool `toml:"focus,omitempty"`
+}
+
+// IsEnabled reports whether herdr-native worktree panes are enabled, defaulting
+// to true when unset.
+func (h Herdr) IsEnabled() bool { return h.Enabled == nil || *h.Enabled }
+
+// FocusNewPane reports whether a freshly opened worktree pane should take focus,
+// defaulting to true when unset.
+func (h Herdr) FocusNewPane() bool { return h.Focus == nil || *h.Focus }
+
+// SplitDirection returns the validated split direction, defaulting to "right".
+func (h Herdr) SplitDirection() string {
+	if h.Split == "down" {
+		return "down"
+	}
+	return "right"
 }
 
 func DefaultConfig() Config {
@@ -36,7 +69,10 @@ func Load(repoRoot string) (Config, error) {
 		if _, err := toml.DecodeFile(repoPath, &cfg); err != nil {
 			return cfg, err
 		}
+		// Hooks and herdr settings drive command execution and the user's live
+		// herdr session, so they are never honored from repo-level config.
 		cfg.Hooks = Hooks{}
+		cfg.Herdr = Herdr{}
 	}
 
 	userCfg, hasUserConfig, err := loadUser()
@@ -48,6 +84,7 @@ func Load(repoRoot string) (Config, error) {
 			cfg = userCfg
 		} else {
 			cfg.Hooks = userCfg.Hooks
+			cfg.Herdr = userCfg.Herdr
 		}
 	}
 

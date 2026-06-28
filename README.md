@@ -139,6 +139,35 @@ The default treehouse root is `~/.treehouse/`.
   Backing-repository-missing orphans are reported by default; `--prune-orphans` includes them as unverified prune candidates, and `--yes` is required before deletion.
   It is a dry run unless you pass `--yes`.
 
+## Using treehouse inside herdr
+
+[herdr](https://herdr.dev) is a terminal-native multiplexer for AI coding agents: workspaces, tabs, and panes, each running its own shell, agent, server, or log stream.
+treehouse and herdr are complementary.
+treehouse gives each agent an isolated, pre-warmed worktree; herdr gives each agent a pane and the ability to coordinate with its siblings.
+
+When treehouse runs inside herdr (the `HERDR_ENV=1` environment variable is set) and the `herdr` CLI is on `PATH`, `treehouse get` becomes herdr-native:
+
+- It acquires a worktree, leases it, and opens it in its own herdr pane instead of nesting a subshell inside your current pane.
+- That pane runs the worktree session directly, so exiting it still returns the worktree to the pool, exactly like the classic subshell.
+- It exports `TREEHOUSE_HERDR=1` into the pane and prints a one-line pointer to the `/herdr` skill, so the agent that lands there knows it can split panes, spawn sibling agents, and watch servers and logs through herdr.
+- `treehouse status` shows herdr-held worktrees as `leased` with `(held by herdr)`.
+
+This degrades gracefully.
+Outside herdr, or when the `herdr` CLI is absent, treehouse behaves exactly as before.
+Pass `--no-herdr` (or set `TREEHOUSE_NO_HERDR=1`) to force the classic in-place subshell even inside herdr.
+
+Behavior is configurable from the user-level config only, so a cloned repository can never drive your herdr session:
+
+```toml
+[herdr]
+enabled = true     # set false to always use the classic subshell
+split = "right"    # direction new worktree panes open: "right" or "down"
+focus = true       # move focus to the new worktree pane
+```
+
+treehouse also ships a companion agent skill at `skills/treehouse/` that teaches agents to use treehouse and routes them to the `/herdr` skill for pane and agent coordination.
+Install it with `make install-skill`.
+
 ## CLI Reference
 
 | Command                    | Description                                          |
@@ -161,6 +190,8 @@ The default treehouse root is `~/.treehouse/`.
 | --------- | --------- | --------------------------------- |
 | `get`     | `--lease` | Durably lease the worktree without opening a subshell; print only its path to stdout |
 | `get`     | `--lease-holder` | Optional label recorded as the lease holder (defaults to `$TREEHOUSE_LEASE_HOLDER`) |
+| `get`     | `--no-herdr` | Force a classic in-place subshell even when running inside herdr |
+| `get`     | `--no-focus` | When opening a worktree in a herdr pane, do not move focus to the new pane |
 | `return`  | `--force` | Clean, reset, and return without prompting |
 | `prune`   | `--yes`   | Delete listed prune candidates instead of doing a dry run |
 | `prune`   | `--all`   | Sweep every managed pool under the user-level treehouse root |
