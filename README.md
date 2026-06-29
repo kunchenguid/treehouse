@@ -302,6 +302,8 @@ A failing hook does not fail the overall `get`, `destroy`, or `prune` operation.
 
 - **`TREEHOUSE_DIR`** — `treehouse get` exports this into the subshell, set to the worktree path it drops you into, and `treehouse return` reads it to know which worktree to return when no path is given. You usually don't set it yourself; reference it from your own scripts inside the subshell to target the worktree you're currently in. (Lifecycle hooks run before the subshell is spawned, so they do not see this variable.)
 
+- **`TREEHOUSE_LEASE_HOLDER`** — default lease holder label recorded by `treehouse get --lease` when `--lease-holder` is not passed on the command line; `treehouse status` then shows it next to the `leased` state.
+
 - **`TREEHOUSE_NO_UPDATE_CHECK`** — set to `1` to skip the background update check treehouse runs on startup. Useful in CI, automation, or air-gapped environments where you don't want treehouse reaching out for new releases.
 
 ## Development
