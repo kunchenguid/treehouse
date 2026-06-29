@@ -13,6 +13,7 @@ import (
 var (
 	treehouseBin      string
 	exitShellBin      string
+	dirtyShellBin     string
 	dirtyMainShellBin string
 )
 
@@ -59,6 +60,36 @@ func TestMain(m *testing.M) {
 	buildShell.Stderr = os.Stderr
 	if err := buildShell.Run(); err != nil {
 		panic("failed to build exit-shell: " + err.Error())
+	}
+
+	dirtyShellBin = filepath.Join(buildDir, "dirty-shell")
+	if runtime.GOOS == "windows" {
+		dirtyShellBin += ".exe"
+	}
+	dirtySrcDir := filepath.Join(buildDir, "dirty-shell-src")
+	if err := os.MkdirAll(dirtySrcDir, 0o755); err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirtySrcDir, "go.mod"), []byte("module dirty-shell\n\ngo 1.21\n"), 0o644); err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirtySrcDir, "main.go"), []byte(`package main
+
+import "os"
+
+func main() {
+	if err := os.WriteFile("branch-dirty.txt", []byte("dirty\n"), 0o644); err != nil {
+		os.Exit(1)
+	}
+}
+`), 0o644); err != nil {
+		panic(err)
+	}
+	buildDirtyShell := exec.Command("go", "build", "-o", dirtyShellBin, ".")
+	buildDirtyShell.Dir = dirtySrcDir
+	buildDirtyShell.Stderr = os.Stderr
+	if err := buildDirtyShell.Run(); err != nil {
+		panic("failed to build dirty-shell: " + err.Error())
 	}
 
 	dirtyMainShellBin = filepath.Join(buildDir, "dirty-main-shell")
@@ -179,10 +210,18 @@ func runTreehouse(t *testing.T, repoDir, homeDir string, extraEnv []string, args
 
 func runTreehouseFromDir(t *testing.T, repoDir, workDir, homeDir string, extraEnv []string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
+	return runTreehouseFromDirWithInput(t, repoDir, workDir, homeDir, extraEnv, "", args...)
+}
+
+func runTreehouseFromDirWithInput(t *testing.T, repoDir, workDir, homeDir string, extraEnv []string, stdin string, args ...string) (stdout, stderr string, exitCode int) {
+	t.Helper()
 
 	cmd := exec.Command(treehouseBin, args...)
 	cmd.Dir = workDir
 	cmd.Env = buildEnv(homeDir, extraEnv...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
@@ -474,6 +513,58 @@ func TestGetLeasePrintsOnlyPathToStdout(t *testing.T) {
 	}
 }
 
+func TestGetLeaseBranchCreatesBranchAndPrintsOnlyPathToStdout(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	wantCommit := gitCmd(t, repoDir, "rev-parse", "origin/main")
+
+	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease", "-b", "agent-home")
+	if code != 0 {
+		t.Fatalf("treehouse get --lease -b failed (code %d): %s", code, stderr)
+	}
+
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected exactly one stdout line, got %d:\n%q", len(lines), stdout)
+	}
+	wtPath := lines[0]
+	if !filepath.IsAbs(wtPath) {
+		t.Fatalf("expected an absolute path on stdout, got %q", wtPath)
+	}
+	if strings.Contains(stdout, "🌳") || strings.Contains(stdout, "Leased worktree") {
+		t.Fatalf("stdout must contain only the path, got:\n%q", stdout)
+	}
+
+	branch := gitCmd(t, wtPath, "symbolic-ref", "--short", "HEAD")
+	if branch != "agent-home" {
+		t.Fatalf("expected worktree to be on branch agent-home, got %q", branch)
+	}
+	gotCommit := gitCmd(t, wtPath, "rev-parse", "HEAD")
+	if gotCommit != wantCommit {
+		t.Fatalf("expected branch at %s, got %s", wantCommit, gotCommit)
+	}
+}
+
+func TestGetBranchRejectsExistingBranchBeforeAcquire(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	gitCmd(t, repoDir, "branch", "agent-home")
+
+	_, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease", "-b", "agent-home")
+	if code == 0 {
+		t.Fatal("expected treehouse get --lease -b existing branch to fail")
+	}
+	if !strings.Contains(stderr, "branch \"agent-home\" already exists") {
+		t.Fatalf("expected existing branch error, got:\n%s", stderr)
+	}
+
+	statusOut, statusErr, code := runTreehouse(t, repoDir, homeDir, nil, "status")
+	if code != 0 {
+		t.Fatalf("status failed (code %d): %s", code, statusErr)
+	}
+	if strings.Contains(statusOut, "leased") || strings.Contains(statusOut, "in-use") || strings.Contains(statusOut, "available") {
+		t.Fatalf("expected no acquired worktrees after branch rejection, got:\n%s", statusOut)
+	}
+}
+
 func TestGetLeaseRecordsHolder(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 
@@ -726,6 +817,31 @@ func TestGetDetachesWorktreeWhenLeavingDirty(t *testing.T) {
 	}
 	if out, err := gitCmdResult(t, repoDir, "checkout", "main"); err != nil {
 		t.Fatalf("expected main repo to checkout main after dirty worktree exit, got: %v\n%s", err, out)
+	}
+}
+
+func TestGetBranchLeavesDirtyWorktreeOnBranch(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	env := []string{"SHELL=" + dirtyShellBin}
+	_, getErr, code := runTreehouseFromDirWithInput(t, repoDir, repoDir, homeDir, env, "n\n", "get", "-b", "agent-work")
+	if code != 0 {
+		t.Fatalf("get -b failed (code %d): %s", code, getErr)
+	}
+	wtPath := extractWorktreePath(getErr, homeDir)
+	if wtPath == "" {
+		t.Fatal("could not extract worktree path")
+	}
+	if !strings.Contains(getErr, "Worktree left dirty") {
+		t.Fatalf("expected get to leave dirty worktree for this regression, got: %s", getErr)
+	}
+
+	branch := gitCmd(t, wtPath, "symbolic-ref", "--short", "HEAD")
+	if branch != "agent-work" {
+		t.Fatalf("expected dirty worktree to remain on branch agent-work, got %q", branch)
+	}
+	if status := gitCmd(t, wtPath, "status", "--porcelain"); !strings.Contains(status, "branch-dirty.txt") {
+		t.Fatalf("expected dirty shell output to remain, got status:\n%s", status)
 	}
 }
 

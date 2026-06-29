@@ -20,6 +20,7 @@ import (
 var (
 	getLease       bool
 	getLeaseHolder string
+	getBranch      string
 )
 
 var getCmd = &cobra.Command{
@@ -38,6 +39,7 @@ running inside it, until you release it with 'treehouse return <path>'.`,
 func init() {
 	getCmd.Flags().BoolVar(&getLease, "lease", false, "Durably lease a worktree without opening a subshell; print only its path to stdout")
 	getCmd.Flags().StringVar(&getLeaseHolder, "lease-holder", "", "Optional label recorded as the lease holder (defaults to $TREEHOUSE_LEASE_HOLDER)")
+	getCmd.Flags().StringVarP(&getBranch, "branch", "b", "", "Create and check out a new branch in the acquired worktree")
 	rootCmd.AddCommand(getCmd)
 }
 
@@ -61,6 +63,10 @@ func getRunE(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: failed to update .gitignore: %v\n", err)
 	}
 
+	if err := git.ValidateNewBranch(repoRoot, getBranch); err != nil {
+		return err
+	}
+
 	if getLease {
 		return getLeaseRunE(repoRoot, poolDir, cfg)
 	}
@@ -68,6 +74,14 @@ func getRunE(cmd *cobra.Command, args []string) error {
 	wtPath, err := pool.Acquire(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate)
 	if err != nil {
 		return err
+	}
+	if getBranch != "" {
+		if err := git.CreateBranchInWorktree(wtPath, getBranch); err != nil {
+			if releaseErr := pool.Release(poolDir, wtPath); releaseErr != nil {
+				return fmt.Errorf("create branch %q: %w; additionally failed to return worktree: %v", getBranch, err, releaseErr)
+			}
+			return fmt.Errorf("create branch %q: %w", getBranch, err)
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "🌳 Entered worktree at %s. Type 'exit' to return.\n", ui.PrettyPath(wtPath))
@@ -77,9 +91,10 @@ func getRunE(cmd *cobra.Command, args []string) error {
 	}
 	_, err = shell.Spawn(wtPath, env)
 
-	// Subshell exited — handle return
-	if err := git.DetachWorktree(wtPath); err != nil {
-		fmt.Fprintf(os.Stderr, "🌳 Warning: failed to detach worktree HEAD: %v\n", err)
+	if getBranch == "" {
+		if err := git.DetachWorktree(wtPath); err != nil {
+			fmt.Fprintf(os.Stderr, "🌳 Warning: failed to detach worktree HEAD: %v\n", err)
+		}
 	}
 
 	dirty, _ := git.IsDirty(wtPath)
@@ -90,6 +105,12 @@ func getRunE(cmd *cobra.Command, args []string) error {
 		if promptErr != nil || !ok {
 			fmt.Fprintln(os.Stderr, "🌳 Worktree left dirty. Use 'treehouse return --force' to clean it later.")
 			return nil
+		}
+	}
+
+	if getBranch != "" {
+		if err := git.DetachWorktree(wtPath); err != nil {
+			fmt.Fprintf(os.Stderr, "🌳 Warning: failed to detach worktree HEAD: %v\n", err)
 		}
 	}
 
@@ -117,6 +138,14 @@ func getLeaseRunE(repoRoot, poolDir string, cfg config.Config) error {
 	wtPath, err := pool.AcquireLease(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate, holder)
 	if err != nil {
 		return err
+	}
+	if getBranch != "" {
+		if err := git.CreateBranchInWorktree(wtPath, getBranch); err != nil {
+			if releaseErr := pool.Release(poolDir, wtPath); releaseErr != nil {
+				return fmt.Errorf("create branch %q: %w; additionally failed to release lease: %v", getBranch, err, releaseErr)
+			}
+			return fmt.Errorf("create branch %q: %w", getBranch, err)
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "🌳 Leased worktree at %s. Run 'treehouse return %s' to release it.\n",

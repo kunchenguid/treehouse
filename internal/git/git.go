@@ -153,6 +153,34 @@ func RemoveCleanWorktree(repoRoot, path string) error {
 	return err
 }
 
+// ValidateNewBranch checks that branch can be created as a new local branch.
+func ValidateNewBranch(repoRoot, branch string) error {
+	if branch == "" {
+		return nil
+	}
+	if _, err := runGit(repoRoot, "check-ref-format", "--branch", branch); err != nil {
+		return fmt.Errorf("invalid branch name %q: %w", branch, err)
+	}
+	if refExists(repoRoot, "refs/heads/"+branch) {
+		return fmt.Errorf("branch %q already exists", branch)
+	}
+	return nil
+}
+
+// CreateBranchInWorktree creates branch at the worktree's current HEAD and
+// checks it out in that worktree.
+func CreateBranchInWorktree(worktreePath, branch string) error {
+	repoRoot, err := FindMainRepoRootFrom(worktreePath)
+	if err != nil {
+		return err
+	}
+	if err := ValidateNewBranch(repoRoot, branch); err != nil {
+		return err
+	}
+	_, err = runGit(worktreePath, "checkout", "-b", branch)
+	return err
+}
+
 func Fetch(repoRoot string) error {
 	if !HasRemote(repoRoot, "origin") {
 		return nil
