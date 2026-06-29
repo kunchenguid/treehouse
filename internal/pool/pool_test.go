@@ -2206,6 +2206,47 @@ func TestHoldCwdProbe(t *testing.T) {
 	select {}
 }
 
+func TestCwdInWorktree(t *testing.T) {
+	worktree := t.TempDir()
+	worktree, err := filepath.EvalSymlinks(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create the subdirectories the test cases cd into.
+	for _, sub := range []string{"src/foo", ".venv/bin", ".cache/tmp"} {
+		if err := os.MkdirAll(filepath.Join(worktree, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sibling := filepath.Join(filepath.Dir(worktree), "sibling")
+	if err := os.MkdirAll(sibling, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		cwd  string
+		want bool
+	}{
+		{"worktree root", worktree, true},
+		{"regular subdir", filepath.Join(worktree, "src", "foo"), true},
+		{"dot-prefixed subdir .venv/bin", filepath.Join(worktree, ".venv", "bin"), true},
+		{"dot-prefixed subdir .cache/tmp", filepath.Join(worktree, ".cache", "tmp"), true},
+		{"parent of worktree (rel starts with ..)", filepath.Dir(worktree), false},
+		{"sibling dir", sibling, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cwdInWorktree(tc.cwd, worktree); got != tc.want {
+				t.Fatalf("cwdInWorktree(%q, %q) = %v, want %v", tc.cwd, worktree, got, tc.want)
+			}
+		})
+	}
+}
+
 // quoteForShell wraps a path so it survives splitting by /bin/sh or cmd.exe.
 // Tests only use temp-dir paths which don't contain quotes, so simple quoting
 // is sufficient.
