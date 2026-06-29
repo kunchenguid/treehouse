@@ -11,3 +11,15 @@ max_trees = 16
 # [hooks]
 # post_create = ["./scripts/setup-venv.sh"]
 # pre_destroy = ["./scripts/teardown.sh"]
+
+# herdr integration (https://herdr.dev).
+# Honored only from the user-level config (~/.config/treehouse/config.toml),
+# like hooks, because it controls how treehouse drives your live herdr session.
+# When treehouse runs inside herdr (HERDR_ENV=1) and the herdr CLI is present,
+# `treehouse get` opens each worktree in its own herdr pane and routes the agent
+# there to the /herdr skill. The worktree still returns to the pool when you
+# exit that pane.
+# [herdr]
+# enabled = true     # set false to force the classic in-place subshell
+# split = "right"    # direction new worktree panes open: "right" or "down"
+# focus = true       # move focus to the new worktree pane

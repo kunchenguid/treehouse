@@ -33,7 +33,9 @@ so that multiple AI coding agents can work on the same repo in parallel.`,
 		if version == "dev" || os.Getenv("TREEHOUSE_NO_UPDATE_CHECK") == "1" {
 			return
 		}
-		if cmd.Name() == "update" {
+		// Skip for the update command and internal hidden commands (e.g. the
+		// herdr __hold holder), which should stay silent.
+		if cmd.Name() == "update" || cmd.Hidden {
 			return
 		}
 

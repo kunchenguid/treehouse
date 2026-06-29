@@ -14,7 +14,9 @@ Treehouse is a Go CLI tool that manages a pool of git worktrees for parallel AI 
 - `internal/git/` - git operations (shells out to `git` binary)
 - `internal/process/` - in-use detection and lingering process termination for worktrees
 - `internal/shell/` - subshell spawning
+- `internal/herdr/` - herdr runtime detection and herdr-native worktree pane spawning
 - `internal/ui/` - Y/n confirmation prompts
+- `skills/treehouse/` - companion agent skill (routes agents to the `/herdr` skill)
 
 ## Building
 
@@ -51,6 +53,7 @@ make test
   It still does not infer long-term usage from processes.
 - Git operations shell out to `git` (go-git has incomplete worktree support)
 - Self-healing: stale state entries are auto-removed
+- herdr integration (`internal/herdr/`): when `HERDR_ENV=1` and the `herdr` CLI is on PATH, interactive `get` (see `getHerdrRunE`) leases the worktree and opens it in a dedicated herdr pane via `herdr agent start ... -- <self> __hold <wt> <pool>`. The hidden `__hold` command runs the holder inside that pane, so exit-to-return still works even though the outer `get` exits immediately. The worktree is protected by the durable LEASE (holder `herdr`), NOT an owner reservation, precisely because the outer process does not stay alive; `__hold` calls `pool.Release` (which clears the lease) when its shell exits. Any failure to spawn the pane releases the lease and falls back to the classic in-place subshell (`errHerdrFallback`), so behavior outside herdr is byte-for-byte unchanged. `SpawnHold` is bounded by a 10s timeout (`exec.CommandContext`) so an unresponsive herdr server triggers the fallback instead of blocking `treehouse get` forever (the `spawnTimeout` var is shrinkable in tests). `holdAndReturn` is the shared hold/return core for both the classic path and `__hold`, and adds `TREEHOUSE_HERDR=1` plus a `/herdr` routing line whenever `HERDR_ENV=1`. The `[herdr]` config (enabled/split/focus) is user-level only, like hooks, because it drives the user's live herdr session. `get --lease` stays a pure stdout path-printer and only adds the routing line to stderr. The package shells out only (no syscalls), so it builds on Windows even though herdr is unix-only; tests force `TREEHOUSE_NO_HERDR=1` via `buildEnv` so the suite is deterministic when run from inside a herdr session.
 
 ## Windows Compatibility
 
@@ -78,6 +81,12 @@ max_trees = 16
 [hooks]
 post_create = ["./scripts/setup-venv.sh"]
 pre_destroy = ["./scripts/teardown.sh"]
+
+# User-level config only (drives the user's live herdr session):
+[herdr]
+enabled = true
+split = "right"   # or "down"
+focus = true
 ```
 
-Hooks are ignored in repo-level config for safety.
+Hooks and the `[herdr]` section are ignored in repo-level config for safety.
