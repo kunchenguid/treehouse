@@ -101,6 +101,66 @@ func TestRemoveCleanWorktreeRejectsDirtyWorktree(t *testing.T) {
 	}
 }
 
+func TestValidateNewBranchRejectsInvalidName(t *testing.T) {
+	repoDir := setupGitTestRepo(t)
+
+	if err := ValidateNewBranch(repoDir, "bad name"); err == nil {
+		t.Fatal("expected invalid branch name to be rejected")
+	}
+}
+
+func TestValidateNewBranchRejectsExistingBranch(t *testing.T) {
+	repoDir := setupGitTestRepo(t)
+	mustGit(t, repoDir, "branch", "agent-home")
+
+	err := ValidateNewBranch(repoDir, "agent-home")
+	if err == nil {
+		t.Fatal("expected existing branch to be rejected")
+	}
+	if !strings.Contains(err.Error(), "branch \"agent-home\" already exists") {
+		t.Fatalf("expected existing branch error, got %v", err)
+	}
+}
+
+func TestCreateBranchInWorktreeCreatesBranchAtCurrentHead(t *testing.T) {
+	base := t.TempDir()
+	repoDir := setupGitTestRepoInDir(t, filepath.Join(base, "repo"))
+	wtPath := filepath.Join(base, "worktree")
+	mustGit(t, repoDir, "worktree", "add", "--detach", wtPath, "main")
+	want := mustGitOutput(t, wtPath, "rev-parse", "HEAD")
+
+	if err := CreateBranchInWorktree(wtPath, "agent-home"); err != nil {
+		t.Fatalf("CreateBranchInWorktree failed: %v", err)
+	}
+
+	branch := mustGitOutput(t, wtPath, "symbolic-ref", "--short", "HEAD")
+	if branch != "agent-home" {
+		t.Fatalf("expected branch agent-home, got %q", branch)
+	}
+	got := mustGitOutput(t, wtPath, "rev-parse", "HEAD")
+	if got != want {
+		t.Fatalf("expected branch at %s, got %s", want, got)
+	}
+}
+
+func setupGitTestRepo(t *testing.T) string {
+	t.Helper()
+	return setupGitTestRepoInDir(t, filepath.Join(t.TempDir(), "repo"))
+}
+
+func setupGitTestRepoInDir(t *testing.T, repoDir string) string {
+	t.Helper()
+	mustGit(t, "", "init", "--initial-branch=main", repoDir)
+	mustGit(t, repoDir, "config", "user.email", "test@test.com")
+	mustGit(t, repoDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repoDir, "add", ".")
+	mustGit(t, repoDir, "commit", "-m", "initial")
+	return repoDir
+}
+
 func mustGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
@@ -111,4 +171,17 @@ func mustGit(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
 	}
+}
+
+func mustGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
