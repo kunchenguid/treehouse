@@ -329,6 +329,25 @@ Commands in each list run sequentially in the worktree directory, via the OS she
 If a command exits non-zero, treehouse logs the command, exit code, and stderr, then continues with the remaining commands.
 A failing hook does not fail the overall `get`, `destroy`, or `prune` operation.
 
+### herdr
+
+When treehouse runs inside [herdr](https://herdr.dev), `treehouse get` can open each acquired worktree in its own herdr pane.
+This is configured by a `[herdr]` section in the user-level config at `~/.config/treehouse/config.toml`.
+A `[herdr]` section in repo-level `treehouse.toml` is ignored for safety, because it drives your live herdr session.
+
+```toml
+[herdr]
+enabled = true     # set false to always use the classic subshell
+split = "right"    # direction new worktree panes open: "right" or "down"
+focus = true       # move focus to the new worktree pane
+```
+
+- `enabled` turns herdr-native panes on or off; when false, `treehouse get` always uses the classic in-place subshell.
+- `split` sets the direction a new worktree pane opens, either `"right"` or `"down"`.
+- `focus` moves focus to the new worktree pane when true.
+
+See [Using treehouse inside herdr](#using-treehouse-inside-herdr) for the full behavior, including graceful fallback and the `--no-herdr` flag.
+
 ## Development
 
 ```sh
