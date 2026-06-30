@@ -515,10 +515,11 @@ func TestGoInteractiveListsGlobalWorktreesAndOpensSelection(t *testing.T) {
 	if !strings.Contains(goOut, "myrepo") || !strings.Contains(goOut, "otherrepo") {
 		t.Fatalf("expected interactive list to include project names before locations, got stdout:\n%s", goOut)
 	}
+	otherStatusIndex := strings.Index(goOut, "[available]")
 	otherProjectIndex := strings.Index(goOut, "otherrepo")
 	otherLocationIndex := strings.Index(goOut, filepath.Base(wtPathB))
-	if otherProjectIndex < 0 || otherLocationIndex < 0 || otherProjectIndex > otherLocationIndex {
-		t.Fatalf("expected project name otherrepo before location %s, got stdout:\n%s", filepath.Base(wtPathB), goOut)
+	if otherStatusIndex < 0 || otherProjectIndex < 0 || otherLocationIndex < 0 || otherStatusIndex > otherProjectIndex || otherProjectIndex > otherLocationIndex {
+		t.Fatalf("expected status, project otherrepo, then location %s, got stdout:\n%s", filepath.Base(wtPathB), goOut)
 	}
 	selectedBase := filepath.Base(wtPathA)
 	if strings.Index(goOut, filepath.Base(wtPathB)) < strings.Index(goOut, filepath.Base(wtPathA)) {
