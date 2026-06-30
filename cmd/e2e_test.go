@@ -479,9 +479,30 @@ func TestGoTargetFromAnywhereOpensExistingWorktree(t *testing.T) {
 	_ = wtPathA
 }
 
+func TestTruncateTableCell(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		width int
+		want  string
+	}{
+		{name: "short", value: "jira", width: 20, want: "jira"},
+		{name: "exact", value: "12345678901234567890", width: 20, want: "12345678901234567890"},
+		{name: "long", value: "very-long-project-name", width: 20, want: "very-long-project..."},
+		{name: "small width", value: "abcdef", width: 3, want: "abcdef"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := truncateTableCell(tt.value, tt.width); got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
 func TestGoInteractiveListsGlobalWorktreesAndOpensSelection(t *testing.T) {
 	repoA, homeDir := setupTestRepo(t)
-	repoB := setupTestRepoWithHome(t, homeDir, "otherrepo")
+	repoB := setupTestRepoWithHome(t, homeDir, "otherrepo-with-a-very-long-name")
 	env := []string{"SHELL=" + exitShellBin}
 
 	_, getErrA, code := runTreehouse(t, repoA, homeDir, env, "get")
@@ -515,10 +536,13 @@ func TestGoInteractiveListsGlobalWorktreesAndOpensSelection(t *testing.T) {
 	if !strings.Contains(goOut, "#   Status       Project               Location") || !strings.Contains(goOut, "--  -----------  --------------------  --------") {
 		t.Fatalf("expected interactive list to render as a table, got stdout:\n%s", goOut)
 	}
-	if !strings.Contains(goOut, "myrepo") || !strings.Contains(goOut, "otherrepo") {
+	if !strings.Contains(goOut, "myrepo") || !strings.Contains(goOut, "otherrepo-with-a-...") {
 		t.Fatalf("expected interactive list to include project names before locations, got stdout:\n%s", goOut)
 	}
-	otherRowIndex := strings.Index(goOut, "[available]  otherrepo")
+	if strings.Contains(goOut, "otherrepo-with-a-very-long-name  ") {
+		t.Fatalf("expected long project name to be truncated, got stdout:\n%s", goOut)
+	}
+	otherRowIndex := strings.Index(goOut, "[available]  otherrepo-with-a-...")
 	otherLocationIndex := strings.Index(goOut, filepath.Base(wtPathB))
 	if otherRowIndex < 0 || otherLocationIndex < 0 || otherRowIndex > otherLocationIndex {
 		t.Fatalf("expected table row with status, project otherrepo, then location %s, got stdout:\n%s", filepath.Base(wtPathB), goOut)

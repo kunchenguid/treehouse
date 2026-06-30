@@ -72,6 +72,13 @@ func goRunE(cmd *cobra.Command, args []string) error {
 	return err
 }
 
+func truncateTableCell(value string, width int) string {
+	if width <= 3 || len(value) <= width {
+		return value
+	}
+	return value[:width-3] + "..."
+}
+
 func promptNavigationWorktree(w io.Writer, r io.Reader, worktrees []pool.NavigationWorktree) (pool.NavigationWorktree, error) {
 	fmt.Fprintln(w, "🌳 Treehouse worktrees:")
 	fmt.Fprintln(w, "#   Status       Project               Location")
@@ -85,7 +92,7 @@ func promptNavigationWorktree(w io.Writer, r io.Reader, worktrees []pool.Navigat
 		if wt.Status == pool.StatusLeased && wt.LeaseHolder != "" {
 			location += fmt.Sprintf("  (held by %s)", wt.LeaseHolder)
 		}
-		fmt.Fprintf(w, "%-2d  [%-9s]  %-20s  %s\n", i+1, status, wt.Project, location)
+		fmt.Fprintf(w, "%-2d  [%-9s]  %-20s  %s\n", i+1, status, truncateTableCell(wt.Project, 20), location)
 	}
 	fmt.Fprint(w, "Choose a worktree: ")
 
