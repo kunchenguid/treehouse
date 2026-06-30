@@ -146,6 +146,7 @@ The default treehouse root is `~/.treehouse/`.
 | `treehouse`                | Get a worktree and open a subshell (alias for `get`) |
 | `treehouse get`            | Acquire a worktree from the pool                     |
 | `treehouse get --lease`    | Durably lease a worktree without a subshell; print its path |
+| `treehouse go [target]`    | Open a shell in an existing managed worktree from any directory |
 | `treehouse status`         | Show pool status (highlights leased and current worktrees) |
 | `treehouse return [path]`  | Release any lease, terminate lingering worktree processes, and return it to the pool |
 | `treehouse prune`          | Dry-run removal of stale idle worktrees in the current repo pool |
@@ -172,6 +173,23 @@ The default treehouse root is `~/.treehouse/`.
 | `destroy` | `--include-unlanded` | Also remove dirty, unmerged, or unverified worktrees (irreversible data loss) |
 | `destroy` | `--include-in-use` | Also remove worktrees with a running process or owner reservation (processes are terminated cleanly first) |
 | `destroy` | `--include-leased` | Also remove a leased worktree; only when the exact path is named, never via `--all` |
+
+### Navigating to an existing worktree
+
+Use `treehouse go` from any directory to list every existing managed worktree under the user-level treehouse root, choose one, and open a shell there.
+
+```sh
+treehouse go
+```
+
+Use a target to skip the prompt. The target resolves by exact path, worktree directory name, Treehouse state name, or a unique path substring.
+
+```sh
+treehouse go tree-3
+treehouse go my-feature-session
+```
+
+The command only opens a shell in an existing worktree. It does not acquire a new worktree or return the selected worktree to the pool when the shell exits.
 
 ### Leasing a worktree (no subshell)
 
