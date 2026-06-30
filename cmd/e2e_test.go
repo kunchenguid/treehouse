@@ -512,14 +512,16 @@ func TestGoInteractiveListsGlobalWorktreesAndOpensSelection(t *testing.T) {
 			t.Fatalf("expected interactive list to include %s, got stdout:\n%s", filepath.Base(wtPath), goOut)
 		}
 	}
+	if !strings.Contains(goOut, "#   Status       Project               Location") || !strings.Contains(goOut, "--  -----------  --------------------  --------") {
+		t.Fatalf("expected interactive list to render as a table, got stdout:\n%s", goOut)
+	}
 	if !strings.Contains(goOut, "myrepo") || !strings.Contains(goOut, "otherrepo") {
 		t.Fatalf("expected interactive list to include project names before locations, got stdout:\n%s", goOut)
 	}
-	otherStatusIndex := strings.Index(goOut, "[available]")
-	otherProjectIndex := strings.Index(goOut, "otherrepo")
+	otherRowIndex := strings.Index(goOut, "[available]  otherrepo")
 	otherLocationIndex := strings.Index(goOut, filepath.Base(wtPathB))
-	if otherStatusIndex < 0 || otherProjectIndex < 0 || otherLocationIndex < 0 || otherStatusIndex > otherProjectIndex || otherProjectIndex > otherLocationIndex {
-		t.Fatalf("expected status, project otherrepo, then location %s, got stdout:\n%s", filepath.Base(wtPathB), goOut)
+	if otherRowIndex < 0 || otherLocationIndex < 0 || otherRowIndex > otherLocationIndex {
+		t.Fatalf("expected table row with status, project otherrepo, then location %s, got stdout:\n%s", filepath.Base(wtPathB), goOut)
 	}
 	selectedBase := filepath.Base(wtPathA)
 	if strings.Index(goOut, filepath.Base(wtPathB)) < strings.Index(goOut, filepath.Base(wtPathA)) {
