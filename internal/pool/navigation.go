@@ -11,6 +11,7 @@ import (
 // treehouse go.
 type NavigationWorktree struct {
 	PoolDir     string
+	Project     string
 	Name        string
 	Path        string
 	Status      string
@@ -31,9 +32,11 @@ func ListNavigationWorktrees(poolRoot string) ([]NavigationWorktree, error) {
 		if err != nil {
 			return nil, err
 		}
+		project := navigationProjectName(poolDir)
 		for _, wt := range worktrees {
 			result = append(result, NavigationWorktree{
 				PoolDir:     poolDir,
+				Project:     project,
 				Name:        wt.Name,
 				Path:        wt.Path,
 				Status:      wt.Status,
@@ -102,6 +105,23 @@ func navigationMatches(worktrees []NavigationWorktree, match func(NavigationWork
 		}
 	}
 	return matches
+}
+
+func navigationProjectName(poolDir string) string {
+	name := filepath.Base(poolDir)
+	if len(name) > 7 && name[len(name)-7] == '-' && isLowerHex(name[len(name)-6:]) {
+		return name[:len(name)-7]
+	}
+	return name
+}
+
+func isLowerHex(s string) bool {
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func cleanPathEqual(path, target string) bool {

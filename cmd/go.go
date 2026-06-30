@@ -75,7 +75,10 @@ func goRunE(cmd *cobra.Command, args []string) error {
 func promptNavigationWorktree(w io.Writer, r io.Reader, worktrees []pool.NavigationWorktree) (pool.NavigationWorktree, error) {
 	fmt.Fprintln(w, "🌳 Treehouse worktrees:")
 	for i, wt := range worktrees {
-		line := fmt.Sprintf("%d) %-4s  %-11s  %s", i+1, wt.Name, wt.Status, ui.PrettyPath(wt.Path))
+		line := fmt.Sprintf("%d) %-20s  %s", i+1, wt.Project, ui.PrettyPath(wt.Path))
+		if wt.Status != "" {
+			line += fmt.Sprintf("  [%s]", wt.Status)
+		}
 		if wt.Status == pool.StatusLeased && wt.LeaseHolder != "" {
 			line += fmt.Sprintf("  (held by %s)", wt.LeaseHolder)
 		}

@@ -9,8 +9,8 @@ import (
 
 func TestListNavigationWorktreesAcrossPools(t *testing.T) {
 	poolRoot := t.TempDir()
-	poolA := filepath.Join(poolRoot, "repo-a")
-	poolB := filepath.Join(poolRoot, "repo-b")
+	poolA := filepath.Join(poolRoot, "repo-a-123abc")
+	poolB := filepath.Join(poolRoot, "repo-b-456def")
 	wtA := filepath.Join(poolA, "tree-1")
 	wtB := filepath.Join(poolB, "tree-2")
 	for _, dir := range []string{wtA, wtB} {
@@ -34,6 +34,9 @@ func TestListNavigationWorktreesAcrossPools(t *testing.T) {
 	}
 	if worktrees[0].Path != wtA || worktrees[1].Path != wtB {
 		t.Fatalf("expected worktrees sorted by path, got %#v", worktrees)
+	}
+	if worktrees[0].Project != "repo-a" || worktrees[1].Project != "repo-b" {
+		t.Fatalf("expected project labels from pool dirs, got %#v", worktrees)
 	}
 	if worktrees[1].Status != StatusLeased || worktrees[1].LeaseHolder != "agent" {
 		t.Fatalf("expected leased status with holder, got %#v", worktrees[1])
