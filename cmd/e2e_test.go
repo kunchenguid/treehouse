@@ -179,10 +179,18 @@ func runTreehouse(t *testing.T, repoDir, homeDir string, extraEnv []string, args
 
 func runTreehouseFromDir(t *testing.T, repoDir, workDir, homeDir string, extraEnv []string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
+	return runTreehouseFromDirWithInput(t, repoDir, workDir, homeDir, extraEnv, "", args...)
+}
+
+func runTreehouseFromDirWithInput(t *testing.T, repoDir, workDir, homeDir string, extraEnv []string, stdin string, args ...string) (stdout, stderr string, exitCode int) {
+	t.Helper()
 
 	cmd := exec.Command(treehouseBin, args...)
 	cmd.Dir = workDir
 	cmd.Env = buildEnv(homeDir, extraEnv...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
@@ -431,6 +439,106 @@ func TestGetAndStatus(t *testing.T) {
 	}
 	if !strings.Contains(statusOut, "available") {
 		t.Errorf("expected 'available' in status output: %s", statusOut)
+	}
+}
+
+func TestGoTargetFromAnywhereOpensExistingWorktree(t *testing.T) {
+	repoA, homeDir := setupTestRepo(t)
+	repoB := setupTestRepoWithHome(t, homeDir, "otherrepo")
+	env := []string{"SHELL=" + exitShellBin}
+
+	_, getErrA, code := runTreehouse(t, repoA, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("repo A get failed (code %d): %s", code, getErrA)
+	}
+	wtPathA := extractWorktreePath(getErrA, homeDir)
+	if wtPathA == "" {
+		t.Fatal("could not extract repo A worktree path")
+	}
+
+	_, getErrB, code := runTreehouse(t, repoB, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("repo B get failed (code %d): %s", code, getErrB)
+	}
+	wtPathB := extractWorktreePath(getErrB, homeDir)
+	if wtPathB == "" {
+		t.Fatal("could not extract repo B worktree path")
+	}
+
+	outsideDir := t.TempDir()
+	goOut, goErr, code := runTreehouseFromDir(t, repoA, outsideDir, homeDir, env, "go", filepath.Base(wtPathB))
+	if code != 0 {
+		t.Fatalf("treehouse go target failed from outside a repo (code %d): stdout:\n%s\nstderr:\n%s", code, goOut, goErr)
+	}
+	if !strings.Contains(goErr, "Entered worktree at") || !strings.Contains(goErr, filepath.Base(wtPathB)) {
+		t.Fatalf("expected go to enter repo B worktree, stdout:\n%s\nstderr:\n%s", goOut, goErr)
+	}
+	if strings.Contains(goErr, "Worktree returned to pool") {
+		t.Fatalf("treehouse go should not return an existing worktree to the pool, got stderr:\n%s", goErr)
+	}
+	_ = wtPathA
+}
+
+func TestGoInteractiveListsGlobalWorktreesAndOpensSelection(t *testing.T) {
+	repoA, homeDir := setupTestRepo(t)
+	repoB := setupTestRepoWithHome(t, homeDir, "otherrepo")
+	env := []string{"SHELL=" + exitShellBin}
+
+	_, getErrA, code := runTreehouse(t, repoA, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("repo A get failed (code %d): %s", code, getErrA)
+	}
+	wtPathA := extractWorktreePath(getErrA, homeDir)
+	if wtPathA == "" {
+		t.Fatal("could not extract repo A worktree path")
+	}
+
+	_, getErrB, code := runTreehouse(t, repoB, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("repo B get failed (code %d): %s", code, getErrB)
+	}
+	wtPathB := extractWorktreePath(getErrB, homeDir)
+	if wtPathB == "" {
+		t.Fatal("could not extract repo B worktree path")
+	}
+
+	outsideDir := t.TempDir()
+	goOut, goErr, code := runTreehouseFromDirWithInput(t, repoA, outsideDir, homeDir, env, "1\n", "go")
+	if code != 0 {
+		t.Fatalf("treehouse go interactive failed from outside a repo (code %d): stdout:\n%s\nstderr:\n%s", code, goOut, goErr)
+	}
+	for _, wtPath := range []string{wtPathA, wtPathB} {
+		if !strings.Contains(goOut, filepath.Base(wtPath)) {
+			t.Fatalf("expected interactive list to include %s, got stdout:\n%s", filepath.Base(wtPath), goOut)
+		}
+	}
+	selectedBase := filepath.Base(wtPathA)
+	if strings.Index(goOut, filepath.Base(wtPathB)) < strings.Index(goOut, filepath.Base(wtPathA)) {
+		selectedBase = filepath.Base(wtPathB)
+	}
+	if !strings.Contains(goErr, selectedBase) {
+		t.Fatalf("expected selected worktree %s in stderr, got:\n%s", selectedBase, goErr)
+	}
+}
+
+func TestGoErrorsWhenNoWorktreesOrNoTargetMatch(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	outsideDir := t.TempDir()
+	env := []string{"SHELL=" + exitShellBin}
+
+	_, goErr, code := runTreehouseFromDir(t, repoDir, outsideDir, homeDir, env, "go")
+	if code == 0 || !strings.Contains(goErr, "no Treehouse worktrees found") {
+		t.Fatalf("expected empty go error, code %d stderr:\n%s", code, goErr)
+	}
+
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get failed (code %d): %s", code, getErr)
+	}
+
+	_, goErr, code = runTreehouseFromDir(t, repoDir, outsideDir, homeDir, env, "go", "missing-target")
+	if code == 0 || !strings.Contains(goErr, "no worktree matches") {
+		t.Fatalf("expected no-match go error, code %d stderr:\n%s", code, goErr)
 	}
 }
 
