@@ -136,6 +136,7 @@ The default treehouse root is `~/.treehouse/`.
 - **Durable leases** - `treehouse get --lease` reserves a worktree as a persistent home without keeping a process inside it. Each acquisition gets an immutable random lease identity, and the lease is recorded in treehouse's own state. The worktree is never handed out by a later `get` and never removed by `prune` until you release it with `treehouse return`. Unlike process-based in-use detection, a lease survives with zero processes running inside the worktree.
 - **State recovery** - treehouse writes pool state atomically via a temp file and replacement.
   If an existing state file is empty or truncated, treehouse warns, rebuilds entries from worktrees still on disk, and marks those entries leased until you verify them with `treehouse status`.
+- **Gitignored file seeding** — commit a `.worktreeinclude` file using `.gitignore` syntax to copy matching gitignored files from the main checkout on every acquire. Tracked files are never copied; `!` patterns exclude matches.
 - **Dirty detection** - treehouse treats tracked changes and untracked files as dirty, even when repository config hides untracked files from normal `git status` output.
 - **Safe pruning** - By default, `treehouse prune` removes only idle managed worktrees whose HEAD is already merged into the default branch and whose working tree is clean.
   `treehouse prune --all` applies the same safety checks across every managed pool under the user-level treehouse root.

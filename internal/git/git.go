@@ -1,8 +1,10 @@
 package git
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -140,6 +142,74 @@ func isAncestor(repoRoot, a, b string) bool {
 func AddWorktree(repoRoot, path, branch string) error {
 	_, err := runGit(repoRoot, "worktree", "add", "--detach", path, branchRef(repoRoot, branch))
 	return err
+}
+
+// SeedWorktree copies files selected by .worktreeinclude that are also ignored by git.
+func SeedWorktree(repoRoot, worktreePath string) error {
+	manifest := filepath.Join(repoRoot, ".worktreeinclude")
+	if _, err := os.Stat(manifest); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+
+	candidates, err := gitOutput(repoRoot, nil, "ls-files", "-z", "--others", "--ignored", "--exclude-from=.worktreeinclude")
+	if err != nil || len(candidates) == 0 {
+		return err
+	}
+	ignored, err := gitOutput(repoRoot, candidates, "check-ignore", "-z", "--stdin")
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil
+		}
+		return err
+	}
+	manifestData, err := os.ReadFile(manifest)
+	if err != nil {
+		return err
+	}
+
+	for _, name := range bytes.Split(bytes.TrimSuffix(ignored, []byte{0}), []byte{0}) {
+		rel := filepath.FromSlash(string(name))
+		if excludedIncludeSubtree(filepath.ToSlash(rel), string(manifestData)) {
+			continue
+		}
+		src := filepath.Join(repoRoot, rel)
+		dst := filepath.Join(worktreePath, rel)
+		info, err := os.Stat(src)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(src)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(dst, data, info.Mode().Perm()); err != nil {
+			return err
+		}
+		if err := os.Chmod(dst, info.Mode().Perm()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Git does not descend into an excluded directory to apply a negation within
+// it. For an include manifest, !dir/ means the useful thing: omit that subtree.
+func excludedIncludeSubtree(name, manifest string) bool {
+	for _, line := range strings.Split(manifest, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.HasPrefix(line, "!") && strings.HasSuffix(line, "/") {
+			dir := strings.TrimPrefix(strings.TrimSuffix(line[1:], "/"), "/")
+			if name == dir || strings.HasPrefix(name, dir+"/") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func RemoveWorktree(repoRoot, path string) error {
@@ -298,4 +368,12 @@ func runGit(dir string, args ...string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func gitOutput(dir string, stdin []byte, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Stdin = bytes.NewReader(stdin)
+	out, err := cmd.Output()
+	return out, err
 }
