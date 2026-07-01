@@ -95,6 +95,64 @@ func TestAcquire_RunsPostCreateHookInWorktree(t *testing.T) {
 	}
 }
 
+func TestAcquire_SeedsWorktreeIncludeOnCreateAndReuse(t *testing.T) {
+	repoDir, poolDir := setupLocalRepo(t)
+	write := func(name, contents string) {
+		t.Helper()
+		path := filepath.Join(repoDir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".gitignore", ".env\nlocal/\ntracked.env\n")
+	write(".worktreeinclude", ".env\nlocal/\n!local/archive/\ntracked.env\n")
+	write(".env", "first\n")
+	write("local/config.txt", "config\n")
+	write("local/archive/old.txt", "old\n")
+	write("tracked.env", "committed\n")
+	runGit(t, repoDir, "add", "-f", ".gitignore", ".worktreeinclude", "tracked.env")
+	runGit(t, repoDir, "commit", "-m", "add worktree include")
+	write("tracked.env", "uncommitted\n")
+
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFileContents(t, filepath.Join(wtPath, ".env"), "first\n")
+	assertFileContents(t, filepath.Join(wtPath, "local", "config.txt"), "config\n")
+	assertFileContents(t, filepath.Join(wtPath, "tracked.env"), "committed\n")
+	if _, err := os.Stat(filepath.Join(wtPath, "local", "archive", "old.txt")); !os.IsNotExist(err) {
+		t.Fatalf("excluded file exists: %v", err)
+	}
+
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatal(err)
+	}
+	write(".env", "second\n")
+	reused, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused != wtPath {
+		t.Fatalf("got worktree %s, want reused %s", reused, wtPath)
+	}
+	assertFileContents(t, filepath.Join(reused, ".env"), "second\n")
+}
+
+func assertFileContents(t *testing.T, path, want string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Fatalf("%s = %q, want %q", path, got, want)
+	}
+}
+
 func TestAcquire_HookFailureDoesNotFailAcquire(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 

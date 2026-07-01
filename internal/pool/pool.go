@@ -109,6 +109,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			if err := git.ResetWorktree(wt.Path, branch); err != nil {
 				continue
 			}
+			if err := git.SeedWorktree(repoRoot, wt.Path); err != nil {
+				return fmt.Errorf("seed worktree: %w", err)
+			}
 			if err := markAcquired(&state.Worktrees[i], opts); err != nil {
 				return err
 			}
@@ -135,6 +138,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 
 		if err := git.AddWorktree(repoRoot, wtPath, branch); err != nil {
 			return fmt.Errorf("failed to create worktree: %w", err)
+		}
+		if err := git.SeedWorktree(repoRoot, wtPath); err != nil {
+			return fmt.Errorf("seed worktree: %w", err)
 		}
 
 		entry := WorktreeEntry{
