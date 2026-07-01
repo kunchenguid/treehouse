@@ -2213,3 +2213,58 @@ func quoteForShell(p string) string {
 	// Double-quote works in both sh and cmd.exe for paths without quotes.
 	return `"` + p + `"`
 }
+
+func TestAcquire_CopiesWorktreeIncludesOnCreate(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	if err := os.WriteFile(filepath.Join(repoDir, ".env"), []byte("SECRET=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".worktreeinclude"), []byte(".env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(wtPath, ".env")); err != nil {
+		t.Fatalf("expected .env copied into new worktree: %v", err)
+	}
+}
+
+func TestAcquire_CopiesWorktreeIncludesOnReuse(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	// Create and return a worktree so it sits idle in the pool.
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("first Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	// Now add .worktreeinclude + the file to the repo.
+	if err := os.WriteFile(filepath.Join(repoDir, ".env"), []byte("SECRET=2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".worktreeinclude"), []byte(".env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reuse the idle worktree.
+	wtPath2, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("second Acquire failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wtPath2, ".env"))
+	if err != nil {
+		t.Fatalf("expected .env copied into reused worktree: %v", err)
+	}
+	if string(data) != "SECRET=2\n" {
+		t.Fatalf("unexpected .env content: %q", data)
+	}
+}

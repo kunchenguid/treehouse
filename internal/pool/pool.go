@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/kunchenguid/treehouse/internal/config"
 	"github.com/kunchenguid/treehouse/internal/git"
 	"github.com/kunchenguid/treehouse/internal/hooks"
 	"github.com/kunchenguid/treehouse/internal/process"
@@ -158,6 +159,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		return "", err
 	}
 	if runPostCreate {
+		if err := config.CopyWorktreeIncludes(repoRoot, acquired); err != nil {
+			fmt.Fprintf(os.Stderr, "🌳 Warning: failed to copy .worktreeinclude files: %v\n", err)
+		}
 		hooks.Run(postCreate, acquired, opts.hookStdout, opts.hookStderr)
 	}
 
