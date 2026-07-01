@@ -142,6 +142,15 @@ func AddWorktree(repoRoot, path, branch string) error {
 	return err
 }
 
+// PruneWorktrees removes git worktree bookkeeping for worktrees whose
+// directories no longer exist. It is safe by design: git only deletes
+// registrations for already-missing directories and never touches live
+// worktrees or their data.
+func PruneWorktrees(repoRoot string) error {
+	_, err := runGit(repoRoot, "worktree", "prune")
+	return err
+}
+
 func RemoveWorktree(repoRoot, path string) error {
 	_, err := runGit(repoRoot, "worktree", "remove", "--force", path)
 	return err
