@@ -109,9 +109,10 @@ func TestAcquire_SeedsWorktreeIncludeOnCreateAndReuse(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(".gitignore", ".env\nlocal/\ntracked.env\n")
-	write(".worktreeinclude", ".env\nlocal/\n!local/archive/\ntracked.env\n")
+	write(".gitignore", ".env*\nlocal/\ntracked.env\n")
+	write(".worktreeinclude", ".env*\n!.env.local\nlocal/\n!local/archive/\ntracked.env\n")
 	write(".env", "first\n")
+	write(".env.local", "local\n")
 	write("local/config.txt", "config\n")
 	write("local/archive/old.txt", "old\n")
 	write("tracked.env", "committed\n")
@@ -124,6 +125,9 @@ func TestAcquire_SeedsWorktreeIncludeOnCreateAndReuse(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFileContents(t, filepath.Join(wtPath, ".env"), "first\n")
+	if _, err := os.Stat(filepath.Join(wtPath, ".env.local")); !os.IsNotExist(err) {
+		t.Fatalf("file negation was not honored: %v", err)
+	}
 	assertFileContents(t, filepath.Join(wtPath, "local", "config.txt"), "config\n")
 	assertFileContents(t, filepath.Join(wtPath, "tracked.env"), "committed\n")
 	if _, err := os.Stat(filepath.Join(wtPath, "local", "archive", "old.txt")); !os.IsNotExist(err) {
