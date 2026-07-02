@@ -136,7 +136,6 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		if err := git.AddWorktree(repoRoot, wtPath, branch); err != nil {
 			return fmt.Errorf("failed to create worktree: %w", err)
 		}
-
 		entry := WorktreeEntry{
 			Name:      name,
 			Path:      wtPath,
@@ -158,6 +157,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		return "", err
 	}
 	if runPostCreate {
+		if err := git.SeedWorktree(repoRoot, acquired); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: .worktreeinclude: %v\n", err)
+		}
 		hooks.Run(postCreate, acquired, opts.hookStdout, opts.hookStderr)
 	}
 
