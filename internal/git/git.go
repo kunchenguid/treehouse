@@ -197,8 +197,8 @@ func SeedWorktree(repoRoot, worktreePath string) error {
 	return nil
 }
 
-// Git does not descend into an excluded directory to apply a negation within
-// it. For an include manifest, !dir/ means the useful thing: omit that subtree.
+// excludedIncludeSubtree handles !dir/ because Git does not descend into an
+// excluded directory to apply its negation. File negations are handled by Git.
 func excludedIncludeSubtree(name, manifest string) bool {
 	for _, line := range strings.Split(manifest, "\n") {
 		line = strings.TrimSuffix(line, "\r")
