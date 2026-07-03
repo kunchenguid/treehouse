@@ -8,8 +8,11 @@ import (
 	"strings"
 )
 
-func FindRepoRoot() (string, error) {
-	return runGit("", "rev-parse", "--show-toplevel")
+// FindMainRepoRoot returns the main repository root for the current working
+// directory. Inside a linked worktree it resolves back to the owning
+// repository, so pool resolution is stable no matter where a command runs.
+func FindMainRepoRoot() (string, error) {
+	return FindMainRepoRootFrom("")
 }
 
 func FindRepoRootFrom(dir string) (string, error) {

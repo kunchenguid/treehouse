@@ -16,7 +16,7 @@ var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Create a default treehouse.toml config file",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		repoRoot, err := git.FindRepoRoot()
+		repoRoot, err := git.FindMainRepoRoot()
 		if err != nil {
 			return fmt.Errorf("not in a git repository: %w", err)
 		}

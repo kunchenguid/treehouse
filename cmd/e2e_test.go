@@ -1628,3 +1628,90 @@ func TestPruneUsesCurrentRemoteDefaultBranch(t *testing.T) {
 		t.Fatalf("worktree unmerged into current remote default was removed: %v", err)
 	}
 }
+
+// setupLocalOnlyRepo creates a repo with no remotes. Without a remote, the
+// pool name is hashed from the repo path, so pool resolution is sensitive to
+// which repo root a command resolves.
+func setupLocalOnlyRepo(t *testing.T) (repoDir, homeDir string) {
+	t.Helper()
+
+	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	homeDir = filepath.Join(base, "home")
+	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	repoDir = filepath.Join(base, "myrepo")
+	gitCmd(t, "", "init", "--initial-branch=main", repoDir)
+	gitCmd(t, repoDir, "config", "user.email", "test@test.com")
+	gitCmd(t, repoDir, "config", "user.name", "Test")
+
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repoDir, "add", ".")
+	gitCmd(t, repoDir, "commit", "-m", "initial commit")
+
+	return repoDir, homeDir
+}
+
+func TestCommandsInsideWorktreeUseMainRepoPool(t *testing.T) {
+	repoDir, homeDir := setupLocalOnlyRepo(t)
+
+	leaseOut, leaseErr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease")
+	if code != 0 {
+		t.Fatalf("get --lease failed (code %d): %s", code, leaseErr)
+	}
+	wtPath := strings.TrimSpace(leaseOut)
+	if wtPath == "" {
+		t.Fatal("could not capture leased worktree path")
+	}
+
+	// status inside the worktree must resolve the main repo's pool, not hash
+	// the worktree path into a fresh empty pool.
+	statusOut, statusErr, code := runTreehouseFromDir(t, repoDir, wtPath, homeDir, nil, "status")
+	if code != 0 {
+		t.Fatalf("status inside worktree failed (code %d): %s", code, statusErr)
+	}
+	if strings.Contains(statusErr, "No worktrees in pool") {
+		t.Fatalf("status inside worktree resolved an empty pool, stderr:\n%s", statusErr)
+	}
+	if !strings.Contains(statusOut, "leased") {
+		t.Fatalf("expected leased worktree in status output, got:\n%s", statusOut)
+	}
+
+	// get inside the worktree must acquire from the same pool.
+	env := []string{"SHELL=" + exitShellBin}
+	_, getErr, code := runTreehouseFromDir(t, repoDir, wtPath, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get inside worktree failed (code %d): %s", code, getErr)
+	}
+	secondPath := extractWorktreePath(getErr, homeDir)
+	if secondPath == "" {
+		t.Fatal("could not extract worktree path")
+	}
+	poolDir := filepath.Dir(filepath.Dir(wtPath))
+	if filepath.Dir(filepath.Dir(secondPath)) != poolDir {
+		t.Fatalf("expected worktree in pool %s, got %s", poolDir, secondPath)
+	}
+
+	// No ghost pool directory may appear next to the real one.
+	entries, err := os.ReadDir(filepath.Join(homeDir, ".treehouse"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pools []string
+	for _, e := range entries {
+		if e.IsDir() {
+			pools = append(pools, e.Name())
+		}
+	}
+	if len(pools) != 1 {
+		t.Fatalf("expected exactly one pool directory, got %v", pools)
+	}
+}
