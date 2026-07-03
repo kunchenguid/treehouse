@@ -372,6 +372,27 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 	return result, err
 }
 
+// Current returns the managed worktree in poolDir that contains dir, or nil if
+// dir is not inside any managed worktree. The returned status reflects the
+// worktree's live state (available, in-use, dirty, leased, or "you're here"),
+// matching what List reports. It never creates poolDir: when poolDir is not a
+// managed pool it returns (nil, nil) without side effects.
+func Current(poolDir, dir string) (*WorktreeStatus, error) {
+	if !IsPoolDir(poolDir) {
+		return nil, nil
+	}
+	worktrees, err := List(poolDir)
+	if err != nil {
+		return nil, err
+	}
+	for i := range worktrees {
+		if cwdInWorktree(dir, worktrees[i].Path) {
+			return &worktrees[i], nil
+		}
+	}
+	return nil, nil
+}
+
 func FindByPath(poolDir, path string) (*WorktreeEntry, error) {
 	state, err := ReadState(poolDir)
 	if err != nil {
