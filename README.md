@@ -130,9 +130,12 @@ The default treehouse root is `~/.treehouse/`.
 ```
 
 - **Detached HEAD** — worktrees use detached HEAD mode, reset to whichever of the local or remote default branch is further ahead, avoiding branch name conflicts entirely.
-- **No daemon** — all operations are inline CLI commands. No background processes, no state to get corrupted.
+- **No daemon** - all operations are inline CLI commands.
+  Pool state is a small on-disk file, written under a lock by each command.
 - **In-use detection** — treehouse scans running processes and short-lived owner reservations to determine which worktrees are in-use. Reservations are persisted only while `get`, `destroy`, and `prune` lifecycle work is running.
 - **Durable leases** — `treehouse get --lease` reserves a worktree as a persistent home without keeping a process inside it. The lease is recorded in treehouse's own state, so the worktree is never handed out by a later `get` and never removed by `prune` until you release it with `treehouse return`. Unlike process-based in-use detection, a lease survives with zero processes running inside the worktree.
+- **State recovery** - treehouse writes pool state atomically via a temp file and replacement.
+  If an existing state file is empty or truncated, treehouse warns, rebuilds entries from worktrees still on disk, and marks those entries leased until you verify them with `treehouse status`.
 - **Dirty detection** - treehouse treats tracked changes and untracked files as dirty, even when repository config hides untracked files from normal `git status` output.
 - **Safe pruning** - By default, `treehouse prune` removes only idle managed worktrees whose HEAD is already merged into the default branch and whose working tree is clean.
   `treehouse prune --all` applies the same safety checks across every managed pool under the user-level treehouse root.
@@ -194,6 +197,17 @@ Pass `--lease-holder <label>` (or set `$TREEHOUSE_LEASE_HOLDER`) to record who h
 
 Release a lease with `treehouse return <path>`, which clears the lease, terminates any lingering processes, resets the worktree, and returns it to the pool.
 When you pass an explicit path, `treehouse return` can run from outside the repository because it resolves the managed pool from that worktree path.
+
+### Recovering a damaged pool state file
+
+Treehouse writes `treehouse-state.json` atomically, so a crash mid-write should leave the previous state file intact.
+If an existing state file is empty or truncated, commands do not fail just because the JSON cannot be parsed.
+They print a warning, rebuild the pool entries from worktree directories still on disk, and mark every recovered entry as `leased` because treehouse cannot know whether it was idle, in-use, or durably leased.
+
+Run `treehouse status` to inspect recovered entries.
+After verifying a worktree is safe to reuse, run `treehouse return <path>` to clear the safety lease.
+To delete one instead, name its exact path with `treehouse destroy <path> --include-leased --yes`.
+Bulk `destroy --all` and prune leave recovered entries alone.
 
 ### Pruning stale worktrees and orphans
 

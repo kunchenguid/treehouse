@@ -1,0 +1,59 @@
+Manual CLI evidence for treehouse-state-atomicity-b4
+Scenario: a pool state file is truncated after a leased worktree exists.
+Expected: status recovers with a warning, recovered worktree is leased, get refuses to hand it out while max_trees=1, and return clears it after human verification.
+
+
+$ treehouse get --lease --lease-holder before-crash
+[stdout]
+<worktree>/.no-mistakes/tmp-treehouse-state-e2e/pools/.treehouse/repo-abcb2f/1/repo
+[stderr]
+🌳 Setting up worktree...
+🌳 Leased worktree at <worktree>/.no-mistakes/tmp-treehouse-state-e2e/pools/.treehouse/repo-abcb2f/1/repo. Run 'treehouse return <worktree>/.no-mistakes/tmp-treehouse-state-e2e/pools/.treehouse/repo-abcb2f/1/repo' to release it.
+[exit 0]
+
+$ truncate treehouse-state.json to zero bytes, simulating a crashed write
+state file after truncate: 0 bytes
+
+$ treehouse status
+[stdout]
+1     leased       <worktree>/.no-mistakes/tmp-treehouse-state-e2e/pools/.treehouse/repo-abcb2f/1/repo  (held by recovered: state file was corrupt or truncated; verify before reuse)
+[stderr]
+treehouse: WARNING: state file <worktree>/.no-mistakes/tmp-treehouse-state-e2e/pools/.treehouse/repo-abcb2f/treehouse-state.json is corrupt or truncated (unexpected end of JSON input); recovering from worktrees found on disk. They are marked leased until verified - see `treehouse status`, then `treehouse return` or `treehouse destroy --include-leased`.
+[exit 0]
+
+$ sed -n 1,80p treehouse-state.json
+{
+  "worktrees": [
+    {
+      "name": "1",
+      "path": "<worktree>/.no-mistakes/tmp-treehouse-state-e2e/pools/.treehouse/repo-abcb2f/1/repo",
+      "created_at": "2026-07-06T10:49:50.829789-07:00",
+      "leased": true,
+      "lease_holder": "recovered: state file was corrupt or truncated; verify before reuse",
+      "leased_at": "2026-07-06T10:49:50.829789-07:00"
+    }
+  ]
+}
+$ treehouse get --lease --lease-holder after-recovery
+[stdout]
+<empty>
+[stderr]
+🌳 Setting up worktree...
+all 1 worktrees are in use or dirty (max_trees = 1). Run 'treehouse status' to see details, or increase max_trees in treehouse.toml
+[exit 1]
+
+$ treehouse return <recovered-worktree-path>
+[stdout]
+<empty>
+[stderr]
+🌳 Worktree returned to pool.
+[exit 0]
+
+$ treehouse status after return
+[stdout]
+1     available    <worktree>/.no-mistakes/tmp-treehouse-state-e2e/pools/.treehouse/repo-abcb2f/1/repo
+[stderr]
+<empty>
+[exit 0]
+
+Evidence complete. Throwaway workspace removed after capture.
