@@ -54,7 +54,9 @@ func lockFilePath(poolDir string) string {
 // pool command. Instead ReadState logs a loud warning and reconstructs a
 // conservative state from the worktree directories still present on disk (see
 // recoverCorruptState), so on-disk worktrees are never silently handed out,
-// pruned, or destroyed while their real reservation state is unknown.
+// pruned, or destroyed while their real reservation state is unknown. If that
+// scan cannot complete, ReadState fails closed rather than returning an
+// incomplete state.
 func ReadState(poolDir string) (State, error) {
 	data, err := os.ReadFile(stateFilePath(poolDir))
 	if err != nil {
@@ -65,7 +67,7 @@ func ReadState(poolDir string) (State, error) {
 	}
 	var s State
 	if err := json.Unmarshal(data, &s); err != nil {
-		return recoverCorruptState(poolDir, err), nil
+		return recoverCorruptState(poolDir, err)
 	}
 	return s, nil
 }
@@ -83,12 +85,10 @@ const recoveredLeaseHolder = "recovered: state file was corrupt or truncated; ve
 // --include-leased. A human clears the false lease with `treehouse status` to
 // see it and `treehouse return` (or `treehouse destroy --include-leased`) once
 // verified.
-func recoverCorruptState(poolDir string, parseErr error) State {
-	fmt.Fprintf(os.Stderr, "treehouse: WARNING: state file %s is corrupt or truncated (%v); recovering from worktrees found on disk. They are marked leased until verified - see `treehouse status`, then `treehouse return` or `treehouse destroy --include-leased`.\n", stateFilePath(poolDir), parseErr)
-
+func recoverCorruptState(poolDir string, parseErr error) (State, error) {
 	slots, err := os.ReadDir(poolDir)
 	if err != nil {
-		return State{}
+		return State{}, fmt.Errorf("state file %s is corrupt or truncated (%v), and recovery could not scan pool directory: %w", stateFilePath(poolDir), parseErr, err)
 	}
 
 	var recovered []WorktreeEntry
@@ -99,7 +99,7 @@ func recoverCorruptState(poolDir string, parseErr error) State {
 		slotDir := filepath.Join(poolDir, slot.Name())
 		nested, err := os.ReadDir(slotDir)
 		if err != nil {
-			continue
+			return State{}, fmt.Errorf("state file %s is corrupt or truncated (%v), and recovery could not scan %s: %w", stateFilePath(poolDir), parseErr, slotDir, err)
 		}
 		for _, n := range nested {
 			if !n.IsDir() {
@@ -107,19 +107,24 @@ func recoverCorruptState(poolDir string, parseErr error) State {
 			}
 			wtPath := filepath.Join(slotDir, n.Name())
 			if _, err := os.Stat(filepath.Join(wtPath, ".git")); err != nil {
+				if !os.IsNotExist(err) {
+					return State{}, fmt.Errorf("state file %s is corrupt or truncated (%v), and recovery could not inspect %s: %w", stateFilePath(poolDir), parseErr, wtPath, err)
+				}
 				continue
 			}
+			now := time.Now()
 			recovered = append(recovered, WorktreeEntry{
 				Name:        slot.Name(),
 				Path:        wtPath,
-				CreatedAt:   time.Now(),
+				CreatedAt:   now,
 				Leased:      true,
 				LeaseHolder: recoveredLeaseHolder,
-				LeasedAt:    time.Now(),
+				LeasedAt:    now,
 			})
 		}
 	}
-	return State{Worktrees: recovered}
+	fmt.Fprintf(os.Stderr, "treehouse: WARNING: state file %s is corrupt or truncated (%v); recovering from worktrees found on disk. They are marked leased until verified - see `treehouse status`, then `treehouse return` or `treehouse destroy --include-leased`.\n", stateFilePath(poolDir), parseErr)
+	return State{Worktrees: recovered}, nil
 }
 
 // WriteState persists the pool state file atomically: it writes to a temp file
