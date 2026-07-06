@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -122,9 +123,8 @@ func recoverCorruptState(poolDir string, parseErr error) State {
 }
 
 // WriteState persists the pool state file atomically: it writes to a temp file
-// in the same directory, fsyncs it, and renames it into place, so a crash
-// mid-write can never leave a truncated or empty state file behind (rename is
-// atomic on POSIX, and os.Rename on Windows replaces the destination too).
+// in the same directory, fsyncs it, commits it with the platform's replacement
+// primitive, and syncs the parent directory where the platform supports that.
 func WriteState(poolDir string, s State) error {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
@@ -135,11 +135,15 @@ func WriteState(poolDir string, s State) error {
 
 func atomicWriteFile(path string, data []byte, perm os.FileMode) (err error) {
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	fileMode, targetExists, err := replacementFileMode(path, perm)
 	if err != nil {
 		return err
 	}
-	tmpPath := tmp.Name()
+
+	tmp, tmpPath, err := createTempStateFile(dir, filepath.Base(path), fileMode)
+	if err != nil {
+		return err
+	}
 	defer func() {
 		if err != nil {
 			os.Remove(tmpPath)
@@ -150,6 +154,12 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) (err error) {
 		tmp.Close()
 		return err
 	}
+	if targetExists {
+		if err = tmp.Chmod(fileMode); err != nil {
+			tmp.Close()
+			return err
+		}
+	}
 	if err = tmp.Sync(); err != nil {
 		tmp.Close()
 		return err
@@ -157,13 +167,40 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) (err error) {
 	if err = tmp.Close(); err != nil {
 		return err
 	}
-	if err = os.Chmod(tmpPath, perm); err != nil {
-		return err
-	}
-	if err = os.Rename(tmpPath, path); err != nil {
+	if err = commitStateFile(tmpPath, path, targetExists); err != nil {
 		return err
 	}
 	return nil
+}
+
+func replacementFileMode(path string, perm os.FileMode) (os.FileMode, bool, error) {
+	info, err := os.Stat(path)
+	if err == nil {
+		return info.Mode().Perm(), true, nil
+	}
+	if os.IsNotExist(err) {
+		return perm.Perm(), false, nil
+	}
+	return 0, false, err
+}
+
+func createTempStateFile(dir, base string, perm os.FileMode) (*os.File, string, error) {
+	for range 100 {
+		var suffix [8]byte
+		if _, err := rand.Read(suffix[:]); err != nil {
+			return nil, "", err
+		}
+		path := filepath.Join(dir, fmt.Sprintf("%s.tmp-%x", base, suffix))
+		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
+		if err == nil {
+			return f, path, nil
+		}
+		if os.IsExist(err) {
+			continue
+		}
+		return nil, "", err
+	}
+	return nil, "", fmt.Errorf("creating temporary state file: too many name collisions")
 }
 
 func WithStateLock(poolDir string, fn func() error) error {
