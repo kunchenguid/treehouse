@@ -49,6 +49,7 @@ make test
 - Global prune loads user-level config and hooks only because it can run without a repository context
 - State file tracks pool membership, temporary owner/destroy reservations, and explicit durable leases.
   It still does not infer long-term usage from processes.
+- `WriteState` is atomic: it writes to a temp file in the pool directory, fsyncs it, then renames it over `treehouse-state.json` (atomic on POSIX; `os.Rename` replaces the destination on Windows too), so a crash mid-write can never leave a truncated or empty state file. `ReadState` treats a state file that exists but fails to parse (empty or truncated) as recoverable rather than a hard failure: it prints a loud warning to stderr and rebuilds a `State` by scanning the pool directory for worktree subdirectories still on disk (`recoverCorruptState` in `internal/pool/state.go`). Since the real reservation (owner vs. lease vs. idle) is unknowable from disk alone, every recovered entry is marked `Leased` with a `recoveredLeaseHolder` placeholder, so `Acquire`/`prune` skip it and `destroy` only removes it via a single named `--include-leased` target - a human clears it with `treehouse status` then `treehouse return` (or `destroy --include-leased`) once verified
 - Git operations shell out to `git` (go-git has incomplete worktree support)
 - Self-healing: stale state entries are auto-removed
 

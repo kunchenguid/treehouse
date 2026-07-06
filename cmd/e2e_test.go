@@ -1389,7 +1389,15 @@ func TestPruneAllDoesNotDeleteOriginUnreachableWithPruneOrphans(t *testing.T) {
 	}
 }
 
-func TestPruneAllYesDoesNotPartiallyDeleteBeforePlanningAllPools(t *testing.T) {
+// TestPruneAllYesRecoversCorruptPoolWithoutDeletingItsWorktree covers the
+// treehouse-state-atomicity-b4 incident: a corrupt/truncated state file in one
+// pool (e.g. from a crash mid-write) must not brick `prune --all` for every
+// other pool, and the corrupt pool's own on-disk worktree must never be
+// silently deleted since its real reservation state is unknown. ReadState
+// recovers it as a leased worktree, which prune treats like any other
+// leased worktree: skipped, silently, pending human verification via
+// `treehouse status`.
+func TestPruneAllYesRecoversCorruptPoolWithoutDeletingItsWorktree(t *testing.T) {
 	repoA, homeDir := setupTestRepo(t)
 	repoB := setupTestRepoWithHome(t, homeDir, "zzrepo")
 	env := []string{"SHELL=" + exitShellBin}
@@ -1419,16 +1427,17 @@ func TestPruneAllYesDoesNotPartiallyDeleteBeforePlanningAllPools(t *testing.T) {
 
 	outsideDir := t.TempDir()
 	_, pruneErr, code := runTreehouseFromDir(t, repoA, outsideDir, homeDir, nil, "prune", "--all", "--yes")
-	if code == 0 {
-		t.Fatal("expected prune --all --yes to fail")
+	if code != 0 {
+		t.Fatalf("prune --all --yes should recover from the corrupt pool rather than fail (code %d): %s", code, pruneErr)
 	}
-	if !strings.Contains(pruneErr, "unexpected end of JSON input") {
-		t.Fatalf("expected corrupt state error, got stderr:\n%s", pruneErr)
+	if !strings.Contains(pruneErr, "corrupt or truncated") {
+		t.Fatalf("expected a recovery warning for the corrupt pool, got stderr:\n%s", pruneErr)
 	}
-	for _, wtPath := range []string{wtPathA, wtPathB} {
-		if _, err := os.Stat(wtPath); err != nil {
-			t.Fatalf("expected worktree to remain at %s: %v", wtPath, err)
-		}
+	if _, err := os.Stat(wtPathA); !os.IsNotExist(err) {
+		t.Fatalf("expected repo A's stale worktree to be pruned normally, stat err: %v", err)
+	}
+	if _, err := os.Stat(wtPathB); err != nil {
+		t.Fatalf("expected repo B's worktree to remain (its pool's state was corrupt): %v", err)
 	}
 }
 
