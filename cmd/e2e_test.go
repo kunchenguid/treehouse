@@ -201,7 +201,11 @@ func runTreehouseFromDir(t *testing.T, repoDir, workDir, homeDir string, extraEn
 }
 
 // buildEnv constructs an environment for a treehouse subprocess, overriding
-// HOME/USERPROFILE to the test homeDir and suppressing update checks.
+// HOME/USERPROFILE to the test homeDir, suppressing update checks, and forcing
+// classic in-place subshell behavior. The herdr opt-out keeps these tests
+// deterministic even when the suite is run from inside a herdr session (where
+// HERDR_ENV=1 and the herdr CLI would otherwise be inherited); tests that need
+// herdr behavior can override it via extra.
 func buildEnv(homeDir string, extra ...string) []string {
 	skip := map[string]bool{
 		"HOME":          true,
@@ -232,6 +236,7 @@ func buildEnv(homeDir string, extra ...string) []string {
 		env = append(env, "HOME="+homeDir)
 	}
 	env = append(env, "TREEHOUSE_NO_UPDATE_CHECK=1")
+	env = append(env, "TREEHOUSE_NO_HERDR=1")
 	env = append(env, extra...)
 	return env
 }
