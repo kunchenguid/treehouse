@@ -89,7 +89,7 @@ func resolveReturnPoolDir(wtPath string, explicitPath bool) (string, error) {
 	if explicitPath {
 		repoRoot, err = git.FindMainRepoRootFrom(wtPath)
 	} else {
-		repoRoot, err = git.FindRepoRoot()
+		repoRoot, err = git.FindMainRepoRoot()
 	}
 	if err != nil {
 		if explicitPath {
