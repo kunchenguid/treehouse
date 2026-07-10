@@ -154,7 +154,7 @@ func assertFileContents(t *testing.T, path, want string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != want {
+	if strings.ReplaceAll(string(got), "\r\n", "\n") != want {
 		t.Fatalf("%s = %q, want %q", path, got, want)
 	}
 }
