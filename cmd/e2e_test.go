@@ -1637,3 +1637,78 @@ func TestPruneUsesCurrentRemoteDefaultBranch(t *testing.T) {
 		t.Fatalf("worktree unmerged into current remote default was removed: %v", err)
 	}
 }
+
+func TestEnterByNameOpensSubshellWithoutChangingPool(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	// exit-shell exits immediately so both get and enter return at once.
+	env := []string{"SHELL=" + exitShellBin}
+
+	if _, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get"); code != 0 {
+		t.Fatalf("treehouse get failed (code %d): %s", code, getErr)
+	}
+
+	_, enterErr, code := runTreehouse(t, repoDir, homeDir, env, "enter", "1")
+	if code != 0 {
+		t.Fatalf("treehouse enter 1 failed (code %d): %s", code, enterErr)
+	}
+	if !strings.Contains(enterErr, "Entered worktree 1 at") {
+		t.Errorf("expected 'Entered worktree 1 at' in stderr: %s", enterErr)
+	}
+	if !strings.Contains(enterErr, "Pool state unchanged") {
+		t.Errorf("expected 'Pool state unchanged' in stderr: %s", enterErr)
+	}
+
+	// enter must not return the worktree to an acquired/leased state; it stays
+	// in the pool exactly as before.
+	statusOut, statusErr, code := runTreehouse(t, repoDir, homeDir, nil, "status")
+	if code != 0 {
+		t.Fatalf("treehouse status failed (code %d): %s", code, statusErr)
+	}
+	if !strings.Contains(statusOut, "1") {
+		t.Errorf("expected worktree 1 in status output: %s", statusOut)
+	}
+}
+
+func TestEnterUnknownNameFails(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	env := []string{"SHELL=" + exitShellBin}
+	if _, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get"); code != 0 {
+		t.Fatalf("treehouse get failed (code %d): %s", code, getErr)
+	}
+
+	_, enterErr, code := runTreehouse(t, repoDir, homeDir, env, "enter", "999")
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for unknown worktree name, got 0: %s", enterErr)
+	}
+	if !strings.Contains(enterErr, "no worktree named") {
+		t.Errorf("expected 'no worktree named' error in stderr: %s", enterErr)
+	}
+}
+
+func TestEnterPrintPathPrintsOnlyPathToStdout(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	env := []string{"SHELL=" + exitShellBin}
+	if _, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get"); code != 0 {
+		t.Fatalf("treehouse get failed (code %d): %s", code, getErr)
+	}
+
+	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, env, "enter", "--print-path", "1")
+	if code != 0 {
+		t.Fatalf("treehouse enter --print-path 1 failed (code %d): %s", code, stderr)
+	}
+
+	path := strings.TrimSpace(stdout)
+	if path == "" {
+		t.Fatalf("expected worktree path on stdout, got empty (stderr: %s)", stderr)
+	}
+	// Stdout must be exactly the path (one line) so command substitution is clean.
+	if strings.ContainsAny(path, "\n") || strings.Contains(stdout, "🌳") {
+		t.Errorf("expected only the bare path on stdout, got: %q", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(path, "README.md")); err != nil {
+		t.Errorf("printed path is not a valid worktree: %s (%v)", path, err)
+	}
+}
