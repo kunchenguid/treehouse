@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Treehouse Vision</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #f6f8fa;
+      color: #1f2328;
+      font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(900px, calc(100% - 40px));
+      margin: 40px auto;
+      padding: 48px 56px;
+      background: #fff;
+      border: 1px solid #d0d7de;
+      border-radius: 8px;
+      box-shadow: 0 1px 2px rgba(31, 35, 40, 0.04);
+    }
+    h1, h2 { line-height: 1.25; }
+    h1 { margin: 0 0 24px; padding-bottom: 10px; border-bottom: 1px solid #d8dee4; font-size: 2em; }
+    h2 { margin: 32px 0 16px; padding-bottom: 8px; border-bottom: 1px solid #d8dee4; font-size: 1.5em; }
+    p { margin: 0 0 16px; }
+    code { padding: 0.2em 0.4em; background: #eff1f3; border-radius: 6px; font: 85% ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .evidence {
+      display: inline-block;
+      margin-bottom: 20px;
+      padding: 4px 10px;
+      color: #1a7f37;
+      background: #dafbe1;
+      border: 1px solid #aceebb;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    @media (max-width: 640px) { main { margin: 0; width: 100%; padding: 28px 22px; border: 0; border-radius: 0; } }
+  </style>
+</head>
+<body>
+  <main>
+    <span class="evidence">Rendered acceptance evidence</span>
+    <h1>Vision</h1>
+    <p><code>treehouse</code> exists to make parallel coding-agent work routine by giving each task a fast, isolated, reusable Git worktree without making people or orchestration systems manage worktrees themselves.<br>It serves interactive users and automated callers, and owns the worktree lifecycle rather than agent orchestration or the user's development workflow.</p>
+
+    <h2>Isolation and reuse</h2>
+    <p>Each acquisition must receive a worktree that no other acquisition can claim until it is returned.<br>Dirty, in-use, leased, changing, or unverifiable worktrees must not be silently recycled.<br>An explicit guest operation may attach to an existing worktree, but it must not change ownership or lifecycle state.</p>
+    <p>Pooling makes isolation fast, but a reused worktree must meet the same correctness bar as a new one.<br>Treehouse isolates working directories and lifecycle ownership; it is not a security sandbox.</p>
+
+    <h2>Safe lifecycle operations</h2>
+    <p>Treehouse should delete or reset user work only when the scope is clear and the required facts can be verified against current Git, process, and lifecycle state.<br>Under uncertainty, leave the worktree in place with an actionable explanation, and verify the safety facts again at deletion time.</p>
+    <p>Destructive commands should preview their effect by default, require explicit intent to act, and gate independent risks separately.<br>Blanket force options, ambiguous targets, and global delete-everything paths should be resisted.<br>Safe broad cleanup may inspect many pools, but leases and unverified work must remain protected.</p>
+    <p>Backward compatibility matters, but it does not justify preserving an interface that can erase work too easily.<br>When safety requires a breaking change, make the risk and migration path plain.</p>
+
+    <h2>Ownership and interface</h2>
+    <p>A live process, a short lifecycle reservation, and a durable lease represent different facts and should not be inferred from one another.<br>Unknown ownership after a crash or state failure should be quarantined until a person explicitly releases it.<br>Recovery should preserve work first, then restore reuse.</p>
+    <p>Users and callers should be able to see which worktree they have, whether it is available, why it was skipped, and what action is safe next without reading internal state.<br>Human-facing interfaces that operate on a worktree should use the 🌳 tree emoji as consistent Treehouse branding and a small bit of delight.<br>Machine-facing commands should keep captured data separate from diagnostics and use exit status honestly.</p>
+
+    <h2>Scope and evaluation</h2>
+    <p>Treehouse should remain a focused local CLI primitive that composes with Git, shells, coding agents, terminal tools, and automation.<br>Integrations are welcome when they preserve the same lifecycle guarantees, remain optional, and degrade cleanly when the other tool is absent.<br>No particular agent, model, shell, multiplexer, or hosted service should be required.</p>
+    <p>Repository configuration must not cause repository-controlled code to execute automatically.<br>User-approved executable customization belongs at the user trust boundary, and core behavior should remain portable across supported operating systems.</p>
+    <p>A change aligns when it measurably reduces the time or coordination needed to obtain an isolated environment, makes ownership and cleanup easier to understand, or strengthens recovery without weakening these guarantees.<br>Core lifecycle, concurrency, and destructive changes need realistic end-to-end and failure validation.<br>Changes should be resisted when they turn Treehouse into a general Git workflow manager, absorb agent-orchestration policy, make a daemon or hosted service necessary, trade safety for convenience, or expand scope without improving isolated parallel work.</p>
+  </main>
+</body>
+</html>
