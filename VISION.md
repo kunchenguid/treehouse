@@ -31,7 +31,8 @@ Unknown ownership after a crash or state failure should be quarantined until a p
 Recovery should preserve work first, then restore reuse.
 
 Users and callers should be able to see which worktree they have, whether it is available, why it was skipped, and what action is safe next without reading internal state.
-Non-interactive commands should keep captured data separate from diagnostics and use exit status honestly.
+Human-facing interfaces that operate on a worktree should use the 🌳 tree emoji as consistent Treehouse branding and a small bit of delight.
+Machine-facing commands should keep captured data separate from diagnostics and use exit status honestly.
 
 ## Scope and evaluation
 
