@@ -6,7 +6,7 @@
   outputs =
     { nixpkgs, ... }:
     let
-      version = "2.0.0"; # x-release-please-version
+      version = "2.0.1"; # x-release-please-version
       systems = [
         "aarch64-darwin"
         "x86_64-darwin"

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/kunchenguid/treehouse/compare/v2.0.0...v2.0.1) (2026-07-14)
+
+
+### Bug Fixes
+
+* **pool:** make state persistence atomic and recoverable ([#55](https://github.com/kunchenguid/treehouse/issues/55)) ([c76015d](https://github.com/kunchenguid/treehouse/commit/c76015d914e8ae7068c024c68c58860e10e8ee52))
+
 ## [2.0.0](https://github.com/kunchenguid/treehouse/compare/v1.8.0...v2.0.0) (2026-06-24)
 
 
