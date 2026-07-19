@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/treehouse/internal/config"
+	"github.com/kunchenguid/treehouse/internal/git"
 	"github.com/kunchenguid/treehouse/internal/process"
 )
 
@@ -72,6 +74,109 @@ func runGit(t *testing.T, dir string, args ...string) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %s failed: %v", strings.Join(args, " "), err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// setupBarePoolLayout builds a bare clone with two linked worktrees, matching
+// the layout treehouse must support (no canonical single checkout).
+func setupBarePoolLayout(t *testing.T) (bareDir, wtMain, wtFeature string) {
+	t.Helper()
+	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	originDir := filepath.Join(base, "origin.git")
+	seedDir := filepath.Join(base, "seed")
+	projDir := filepath.Join(base, "proj")
+	bareDir = filepath.Join(projDir, ".bare")
+	wtMain = filepath.Join(projDir, "main")
+	wtFeature = filepath.Join(projDir, "feature")
+
+	runGit(t, "", "init", "--bare", "--initial-branch=main", originDir)
+	runGit(t, "", "init", "--initial-branch=main", seedDir)
+	runGit(t, seedDir, "config", "user.email", "test@test.com")
+	runGit(t, seedDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(seedDir, "README.md"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, seedDir, "add", ".")
+	runGit(t, seedDir, "commit", "-m", "initial")
+	runGit(t, seedDir, "remote", "add", "origin", originDir)
+	runGit(t, seedDir, "push", "-u", "origin", "main")
+
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, "", "clone", "--bare", originDir, bareDir)
+	runGit(t, bareDir, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	runGit(t, bareDir, "fetch", "origin")
+	if err := os.WriteFile(filepath.Join(projDir, ".git"), []byte("gitdir: ./.bare\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, projDir, "worktree", "add", wtMain, "main")
+	runGit(t, projDir, "worktree", "add", "-b", "feature", wtFeature, "main")
+	return bareDir, wtMain, wtFeature
+}
+
+// End-to-end: the `get` flow (ResolveWorkDir -> ResolvePoolDir -> Acquire) must
+// land in ONE shared pool whether invoked from either sibling worktree or the
+// bare repo itself, and acquiring from the bare dir must produce a real detached
+// checkout on the default branch.
+func TestAcquire_SharedPoolAcrossWorktreesAndBare(t *testing.T) {
+	bareDir, wtMain, wtFeature := setupBarePoolLayout(t)
+	root := t.TempDir()
+
+	acquireFrom := func(startDir string) (poolDir, wtPath string) {
+		t.Helper()
+		workDir, err := git.ResolveWorkDir(startDir)
+		if err != nil {
+			t.Fatalf("ResolveWorkDir(%s): %v", startDir, err)
+		}
+		poolDir, err = config.ResolvePoolDir(workDir, root)
+		if err != nil {
+			t.Fatalf("ResolvePoolDir(%s): %v", startDir, err)
+		}
+		wtPath, err = Acquire(workDir, poolDir, 8, nil)
+		if err != nil {
+			t.Fatalf("Acquire from %s: %v", startDir, err)
+		}
+		return poolDir, wtPath
+	}
+
+	poolMain, pathMain := acquireFrom(wtMain)
+	poolFeature, pathFeature := acquireFrom(wtFeature)
+	poolBare, pathBare := acquireFrom(bareDir)
+
+	if poolMain != poolFeature || poolMain != poolBare {
+		t.Fatalf("pools diverged: from-main=%q from-feature=%q from-bare=%q", poolMain, poolFeature, poolBare)
+	}
+
+	for _, p := range []string{pathMain, pathFeature, pathBare} {
+		if got := filepath.Dir(filepath.Dir(p)); got != poolMain {
+			t.Errorf("acquired worktree %q is not under shared pool %q (got %q)", p, poolMain, got)
+		}
+	}
+
+	// The acquire driven from the bare dir produced a detached HEAD at the
+	// default branch tip - exercising AddWorktree/GetDefaultBranch from bare.
+	if head, want := gitOut(t, pathBare, "rev-parse", "HEAD"), gitOut(t, pathBare, "rev-parse", "refs/heads/main"); head != want {
+		t.Errorf("bare-acquired worktree HEAD %s != main %s", head, want)
+	}
+	if err := exec.Command("git", "-C", pathBare, "symbolic-ref", "-q", "HEAD").Run(); err == nil {
+		t.Errorf("expected detached HEAD in bare-acquired worktree %s", pathBare)
 	}
 }
 
