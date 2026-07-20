@@ -52,7 +52,7 @@ type acquireOptions struct {
 	// leaseHolder is an optional label stored with a lease.
 	leaseHolder string
 	// hookStdout/hookStderr receive post-create hook output. Lease mode routes
-	// hook stdout to stderr so the worktree path stays the only stdout line.
+	// hook stdout to stderr so it cannot contaminate machine-readable CLI output.
 	hookStdout io.Writer
 	hookStderr io.Writer
 }
@@ -72,7 +72,7 @@ func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (strin
 // reservation survives with zero processes running inside it. The lease persists
 // until it is released by Release. holder is an optional label recorded with the
 // lease for diagnostics. Post-create hook stdout is routed to stderr so callers
-// can capture the returned path as the sole stdout line.
+// can emit machine-readable allocation output without hook output on stdout.
 func AcquireLease(repoRoot, poolDir string, poolSize int, postCreate []string, holder string) (string, error) {
 	lease, err := AcquireLeaseInfo(repoRoot, poolDir, poolSize, postCreate, holder)
 	return lease.Path, err

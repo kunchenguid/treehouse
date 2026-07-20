@@ -194,7 +194,7 @@ path=$(treehouse get --lease)
 # $path is the leased worktree's absolute path; all banners went to stderr.
 ```
 
-It acquires a worktree exactly like `get`, but instead of opening a subshell it marks the worktree **leased** in treehouse's persistent state and prints only the worktree's absolute path to stdout (every human-facing message goes to stderr, so command substitution stays clean).
+It acquires a worktree exactly like `get`, but instead of opening a subshell it marks the worktree **leased** in treehouse's persistent state. By default it prints only the worktree's absolute path to stdout; `--json` prints the lease allocation instead. Every human-facing message goes to stderr, so either output mode stays clean.
 
 A leased worktree is never handed out by a later `get` and never removed by `prune`, regardless of whether any process runs inside it, until the lease is explicitly released.
 A bulk `treehouse destroy <pool> --all` never removes it either; only naming its exact path with `treehouse destroy <path> --include-leased --yes` will.

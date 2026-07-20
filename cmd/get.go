@@ -30,10 +30,11 @@ var getCmd = &cobra.Command{
 	Long: `Acquire a worktree from the pool and open a subshell in it.
 
 Pass --lease for a non-interactive, durable acquire: treehouse reserves the
-worktree, marks it leased in its persistent state, and prints only the worktree's
-absolute path to stdout (all banners go to stderr). A leased worktree is never
-handed out by a later get and never removed by prune, even with no process
-running inside it, until you release it with 'treehouse return <path>'.`,
+worktree and marks it leased in persistent state. By default it prints only the
+absolute path to stdout; add --json for the lease identity and metadata. All
+banners go to stderr. A leased worktree is never handed out by a later get and
+never removed by prune, even with no process running inside it, until you release
+it with 'treehouse return <path>'.`,
 	RunE: getRunE,
 }
 
@@ -111,10 +112,9 @@ func getRunE(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// getLeaseRunE performs a non-interactive, durable acquire. It reserves a
-// worktree, marks it leased in persistent state, prints only the worktree path
-// to stdout, and routes every human-facing message to stderr so that
-// `path=$(treehouse get --lease)` works cleanly in scripts.
+// getLeaseRunE performs a non-interactive, durable acquire. It writes either the
+// worktree path or the requested JSON allocation to stdout and routes every
+// human-facing message to stderr, keeping both output modes machine-readable.
 func getLeaseRunE(repoRoot, poolDir string, cfg config.Config) error {
 	holder := getLeaseHolder
 	if holder == "" {
