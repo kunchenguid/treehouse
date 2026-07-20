@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -146,10 +147,11 @@ func AddWorktree(repoRoot, path, branch string) error {
 
 // SeedWorktree copies files selected by .worktreeinclude that are also ignored by git.
 func SeedWorktree(repoRoot, worktreePath string) error {
-	manifest := filepath.Join(repoRoot, ".worktreeinclude")
-	if _, err := os.Stat(manifest); os.IsNotExist(err) {
+	manifestData, err := os.ReadFile(filepath.Join(repoRoot, ".worktreeinclude"))
+	if os.IsNotExist(err) {
 		return nil
-	} else if err != nil {
+	}
+	if err != nil {
 		return err
 	}
 
@@ -171,10 +173,6 @@ func SeedWorktree(repoRoot, worktreePath string) error {
 	tracked := make(map[string]struct{})
 	for _, name := range bytes.Split(trackedOutput, []byte{0}) {
 		tracked[string(name)] = struct{}{}
-	}
-	manifestData, err := os.ReadFile(manifest)
-	if err != nil {
-		return err
 	}
 
 	for _, name := range bytes.Split(bytes.TrimSuffix(ignored, []byte{0}), []byte{0}) {
@@ -229,19 +227,34 @@ func rejectSymlinkPath(root, rel string) error {
 	return nil
 }
 
-// excludedIncludeSubtree handles !dir/ because Git does not descend into an
-// excluded directory to apply its negation. File negations are handled by Git.
 func excludedIncludeSubtree(name, manifest string) bool {
+	excluded := false
 	for _, line := range strings.Split(manifest, "\n") {
 		line = strings.TrimSuffix(line, "\r")
 		if strings.HasPrefix(line, "!") && strings.HasSuffix(line, "/") {
-			dir := strings.TrimPrefix(strings.TrimSuffix(line[1:], "/"), "/")
-			if name == dir || strings.HasPrefix(name, dir+"/") {
-				return true
+			if includePatternMatches(name, line[1:]) {
+				excluded = true
 			}
+			continue
+		}
+		if excluded && !strings.HasPrefix(line, "!") && includePatternMatches(name, line) {
+			excluded = false
 		}
 	}
-	return false
+	return excluded
+}
+
+func includePatternMatches(name, pattern string) bool {
+	pattern = strings.TrimPrefix(pattern, "/")
+	if strings.HasSuffix(pattern, "/") {
+		dir := strings.TrimSuffix(pattern, "/")
+		return name == dir || strings.HasPrefix(name, dir+"/")
+	}
+	if !strings.Contains(pattern, "/") {
+		name = path.Base(name)
+	}
+	matched, _ := path.Match(pattern, name)
+	return matched
 }
 
 func RemoveWorktree(repoRoot, path string) error {

@@ -110,11 +110,12 @@ func TestAcquire_SeedsWorktreeIncludeOnCreateAndReuse(t *testing.T) {
 		}
 	}
 	write(".gitignore", ".env*\nlocal/\ntracked.env\n")
-	write(".worktreeinclude", ".env*\n!.env.local\nlocal/\n!local/archive/\ntracked.env\n")
+	write(".worktreeinclude", ".env*\n!.env.local\nlocal/\n!local/archive/\nlocal/archive/keep.txt\ntracked.env\n")
 	write(".env", "first\n")
 	write(".env.local", "local\n")
 	write("local/config.txt", "config\n")
 	write("local/archive/old.txt", "old\n")
+	write("local/archive/keep.txt", "keep\n")
 	write("tracked.env", "committed\n")
 	runGit(t, repoDir, "add", "-f", ".gitignore", ".worktreeinclude", "tracked.env")
 	runGit(t, repoDir, "commit", "-m", "add worktree include")
@@ -133,6 +134,7 @@ func TestAcquire_SeedsWorktreeIncludeOnCreateAndReuse(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(wtPath, "local", "archive", "old.txt")); !os.IsNotExist(err) {
 		t.Fatalf("excluded file exists: %v", err)
 	}
+	assertFileContents(t, filepath.Join(wtPath, "local", "archive", "keep.txt"), "keep\n")
 
 	if err := Release(poolDir, wtPath); err != nil {
 		t.Fatal(err)
