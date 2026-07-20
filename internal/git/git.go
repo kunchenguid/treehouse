@@ -157,7 +157,11 @@ func Fetch(repoRoot string) error {
 	if !HasRemote(repoRoot, "origin") {
 		return nil
 	}
-	_, err := runGit(repoRoot, "fetch", "origin")
+	// --no-show-forced-updates skips git's post-fetch scan for forced ref
+	// updates. Treehouse never reads or displays that warning, but on repos
+	// where it applies the scan walks the full history and can turn a
+	// sub-second fetch into a multi-minute one, stalling every `get`.
+	_, err := runGit(repoRoot, "fetch", "--no-show-forced-updates", "origin")
 	return err
 }
 
