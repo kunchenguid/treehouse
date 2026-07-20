@@ -960,6 +960,61 @@ func TestGetReusesWorktree(t *testing.T) {
 	}
 }
 
+// TestGetRecoversFromStaleWorktreeRegistration verifies that "treehouse get"
+// self-heals when git still has bookkeeping for a worktree whose directory was
+// removed out-of-band (e.g. a crashed agent). Without prune-before-add, git
+// rejects the add with "missing but already registered worktree" and every
+// subsequent get is wedged. See issue #30.
+func TestGetRecoversFromStaleWorktreeRegistration(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	env := []string{"SHELL=" + exitShellBin}
+
+	// Materialize the pool directory so we can plant the stale entry at the
+	// exact slot path Acquire will target (slot 1 / <repo-basename>).
+	if _, _, code := runTreehouse(t, repoDir, homeDir, nil, "status"); code != 0 {
+		t.Fatalf("initial status failed (code %d)", code)
+	}
+	matches, err := filepath.Glob(filepath.Join(homeDir, ".treehouse", filepath.Base(repoDir)+"-*"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("expected exactly one pool dir under %s/.treehouse, got %v: %v", homeDir, matches, err)
+	}
+	poolDir := matches[0]
+	stalePath := filepath.Join(poolDir, "1", filepath.Base(repoDir))
+
+	// Simulate a crashed scout: register a worktree at the slot path, then
+	// delete its directory without telling git. This leaves a prunable entry.
+	if err := os.MkdirAll(filepath.Dir(stalePath), 0755); err != nil {
+		t.Fatalf("mkdir slot parent: %v", err)
+	}
+	gitCmd(t, repoDir, "worktree", "add", "--detach", stalePath, "main")
+	if err := os.RemoveAll(stalePath); err != nil {
+		t.Fatalf("remove stale worktree dir: %v", err)
+	}
+
+	// Sanity: git should now consider the entry prunable.
+	listOut := gitCmd(t, repoDir, "worktree", "list", "--porcelain")
+	if !strings.Contains(listOut, "prunable") {
+		t.Fatalf("expected prunable entry in worktree list, got:\n%s", listOut)
+	}
+
+	// get must recover and create the worktree despite the stale registration.
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("treehouse get failed on stale registration (code %d): %s", code, getErr)
+	}
+	if strings.Contains(getErr, "already registered") || strings.Contains(getErr, "failed to create worktree") {
+		t.Fatalf("get did not recover from stale registration: %s", getErr)
+	}
+	if !strings.Contains(getErr, "Entered worktree at") {
+		t.Fatalf("expected 'Entered worktree at' in stderr, got: %s", getErr)
+	}
+
+	// The worktree directory must actually exist on disk after get.
+	if _, err := os.Stat(filepath.Join(stalePath, "README.md")); err != nil {
+		t.Errorf("worktree was not recreated at %s: %v", stalePath, err)
+	}
+}
+
 func TestReturnFromInsideWorktreeDoesNotTerminateCaller(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	env := []string{"SHELL=" + exitShellBin}

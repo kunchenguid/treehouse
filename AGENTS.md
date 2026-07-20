@@ -56,7 +56,7 @@ make test
   `Acquire` and `prune` skip recovered entries, and `destroy` only removes one via a single named `--include-leased` target.
   A human clears a recovered entry with `treehouse status` then `treehouse return` (or `destroy --include-leased`) once verified
 - Git operations shell out to `git` (go-git has incomplete worktree support)
-- Self-healing: stale state entries are auto-removed
+- Self-healing: stale state entries are auto-removed, and `get` prunes stale git worktree registrations before adding a worktree
 
 ## Windows Compatibility
 
