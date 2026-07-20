@@ -192,6 +192,38 @@ func TestAcquire_SeedingDoesNotFollowWorktreeSymlinks(t *testing.T) {
 	assertFileContents(t, sentinel, "safe\n")
 }
 
+func TestAcquire_DoesNotSeedFilesTrackedByTargetWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	tracked := filepath.Join(repoDir, "tracked.env")
+	if err := os.WriteFile(tracked, []byte("committed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repoDir, "add", "tracked.env")
+	runGit(t, repoDir, "commit", "-m", "track env")
+	runGit(t, repoDir, "push", "origin", "main")
+
+	runGit(t, repoDir, "checkout", "-b", "feature")
+	runGit(t, repoDir, "remote", "set-head", "origin", "main")
+	runGit(t, repoDir, "rm", "tracked.env")
+	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("tracked.env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".worktreeinclude"), []byte("tracked.env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repoDir, "add", ".gitignore", ".worktreeinclude")
+	runGit(t, repoDir, "commit", "-m", "ignore env")
+	if err := os.WriteFile(tracked, []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFileContents(t, filepath.Join(wtPath, "tracked.env"), "committed\n")
+}
+
 func assertFileContents(t *testing.T, path, want string) {
 	t.Helper()
 	got, err := os.ReadFile(path)

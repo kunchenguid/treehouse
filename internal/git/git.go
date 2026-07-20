@@ -164,12 +164,23 @@ func SeedWorktree(repoRoot, worktreePath string) error {
 		}
 		return err
 	}
+	trackedOutput, err := gitOutput(worktreePath, nil, "ls-files", "-z")
+	if err != nil {
+		return err
+	}
+	tracked := make(map[string]struct{})
+	for _, name := range bytes.Split(trackedOutput, []byte{0}) {
+		tracked[string(name)] = struct{}{}
+	}
 	manifestData, err := os.ReadFile(manifest)
 	if err != nil {
 		return err
 	}
 
 	for _, name := range bytes.Split(bytes.TrimSuffix(ignored, []byte{0}), []byte{0}) {
+		if _, ok := tracked[string(name)]; ok {
+			continue
+		}
 		rel := filepath.FromSlash(string(name))
 		if excludedIncludeSubtree(filepath.ToSlash(rel), string(manifestData)) {
 			continue
