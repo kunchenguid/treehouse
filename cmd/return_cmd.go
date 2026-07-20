@@ -55,9 +55,15 @@ var returnCmd = &cobra.Command{
 			if cmd.Flags().Changed("if-lease-holder") {
 				preconditions.ExpectedLeaseHolder = &returnIfLeaseHolder
 			}
-			err = pool.ReleaseConditional(poolDir, wtPath, preconditions, func() error {
-				return prepareWorktreeReturn(wtPath)
-			})
+			err = pool.ValidateReleasePreconditions(poolDir, wtPath, preconditions)
+			if err == nil {
+				err = confirmWorktreeReturn(wtPath)
+			}
+			if err == nil {
+				err = pool.ReleaseConditional(poolDir, wtPath, preconditions, func() error {
+					return finalizeWorktreeReturn(wtPath)
+				})
+			}
 		} else {
 			err = prepareWorktreeReturn(wtPath)
 			if err == nil {
@@ -85,6 +91,13 @@ func init() {
 }
 
 func prepareWorktreeReturn(wtPath string) error {
+	if err := confirmWorktreeReturn(wtPath); err != nil {
+		return err
+	}
+	return finalizeWorktreeReturn(wtPath)
+}
+
+func confirmWorktreeReturn(wtPath string) error {
 	if !returnForce {
 		dirty, _ := git.IsDirty(wtPath)
 		if dirty {
@@ -93,7 +106,12 @@ func prepareWorktreeReturn(wtPath string) error {
 				return errReturnAborted
 			}
 		}
+	}
+	return nil
+}
 
+func finalizeWorktreeReturn(wtPath string) error {
+	if !returnForce {
 		if err := git.DetachWorktree(wtPath); err != nil {
 			return fmt.Errorf("failed to detach worktree HEAD: %w", err)
 		}

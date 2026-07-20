@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -749,6 +751,81 @@ func TestReturnConditionalLeaseIdentityLifecycle(t *testing.T) {
 		"--if-lease-id", current.LeaseID, "--if-lease-holder", current.LeaseHolder, current.Path)
 	if code != 0 {
 		t.Fatalf("current identity did not release, code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestReturnConditionalDirtyPromptDoesNotHoldPoolLock(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	lease := acquireLeaseJSON(t, repoDir, homeDir, "holder-A")
+	if err := os.WriteFile(filepath.Join(lease.Path, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	returnProcess := exec.Command(treehouseBin, "return", "--if-lease-id", lease.LeaseID, lease.Path)
+	returnProcess.Dir = repoDir
+	returnProcess.Env = buildEnv(homeDir)
+	stdin, err := returnProcess.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := returnProcess.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := returnProcess.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if returnProcess.ProcessState == nil {
+			_ = returnProcess.Process.Kill()
+			_ = returnProcess.Wait()
+		}
+	})
+
+	promptRead := make(chan error, 1)
+	go func() {
+		promptRead <- readUntilSuffix(stderr, "[Y/n] ")
+	}()
+	select {
+	case err := <-promptRead:
+		if err != nil {
+			t.Fatalf("failed to read return prompt: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("conditional return did not prompt")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	statusProcess := exec.CommandContext(ctx, treehouseBin, "status")
+	statusProcess.Dir = repoDir
+	statusProcess.Env = buildEnv(homeDir)
+	if output, err := statusProcess.CombinedOutput(); err != nil {
+		t.Fatalf("status blocked while return awaited confirmation: %v: %s", err, output)
+	}
+
+	if _, err := io.WriteString(stdin, "n\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := returnProcess.Wait(); err != nil {
+		t.Fatalf("aborted return failed: %v", err)
+	}
+}
+
+func readUntilSuffix(reader io.Reader, suffix string) error {
+	buffer := make([]byte, 0, len(suffix))
+	byteBuffer := make([]byte, 1)
+	for {
+		if _, err := io.ReadFull(reader, byteBuffer); err != nil {
+			return err
+		}
+		buffer = append(buffer, byteBuffer[0])
+		if bytes.HasSuffix(buffer, []byte(suffix)) {
+			return nil
+		}
 	}
 }
 

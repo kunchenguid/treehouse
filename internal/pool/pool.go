@@ -232,6 +232,19 @@ func Release(poolDir, worktreePath string) error {
 	return ReleaseConditional(poolDir, worktreePath, ReleasePreconditions{}, nil)
 }
 
+// ValidateReleasePreconditions checks that a managed worktree still matches
+// the requested lease without performing any release effects.
+func ValidateReleasePreconditions(poolDir, worktreePath string, preconditions ReleasePreconditions) error {
+	return WithStateLock(poolDir, func() error {
+		state, err := ReadState(poolDir)
+		if err != nil {
+			return err
+		}
+		_, err = releasableWorktree(&state, worktreePath, preconditions)
+		return err
+	})
+}
+
 // ReleaseConditional verifies any lease preconditions, runs beforeReset, resets
 // the worktree, and clears its reservation while holding one state lock. The
 // callback is invoked only after all preconditions match and runs under that
@@ -251,22 +264,8 @@ func ReleaseConditional(poolDir, worktreePath string, preconditions ReleasePreco
 			return err
 		}
 
-		entryIndex := -1
-		for i := range state.Worktrees {
-			if state.Worktrees[i].Path == worktreePath {
-				entryIndex = i
-				break
-			}
-		}
-		if entryIndex < 0 {
-			return fmt.Errorf("worktree %s is not managed by treehouse", worktreePath)
-		}
-
-		wt := &state.Worktrees[entryIndex]
-		if wt.Destroying {
-			return fmt.Errorf("worktree %s is being destroyed", worktreePath)
-		}
-		if err := validateReleasePreconditions(*wt, preconditions); err != nil {
+		wt, err := releasableWorktree(&state, worktreePath, preconditions)
+		if err != nil {
 			return err
 		}
 		if beforeReset != nil {
@@ -283,6 +282,23 @@ func ReleaseConditional(poolDir, worktreePath string, preconditions ReleasePreco
 		clearLease(wt)
 		return WriteState(poolDir, state)
 	})
+}
+
+func releasableWorktree(state *State, worktreePath string, preconditions ReleasePreconditions) (*WorktreeEntry, error) {
+	for i := range state.Worktrees {
+		wt := &state.Worktrees[i]
+		if wt.Path != worktreePath {
+			continue
+		}
+		if wt.Destroying {
+			return nil, fmt.Errorf("worktree %s is being destroyed", worktreePath)
+		}
+		if err := validateReleasePreconditions(*wt, preconditions); err != nil {
+			return nil, err
+		}
+		return wt, nil
+	}
+	return nil, fmt.Errorf("worktree %s is not managed by treehouse", worktreePath)
 }
 
 func validateReleasePreconditions(wt WorktreeEntry, preconditions ReleasePreconditions) error {
