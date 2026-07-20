@@ -176,6 +176,9 @@ func SeedWorktree(repoRoot, worktreePath string) error {
 		}
 		src := filepath.Join(repoRoot, rel)
 		dst := filepath.Join(worktreePath, rel)
+		if err := rejectSymlinkPath(worktreePath, rel); err != nil {
+			return err
+		}
 		info, err := os.Stat(src)
 		if err != nil {
 			return err
@@ -192,6 +195,24 @@ func SeedWorktree(repoRoot, worktreePath string) error {
 		}
 		if err := os.Chmod(dst, info.Mode().Perm()); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func rejectSymlinkPath(root, rel string) error {
+	path := root
+	for _, part := range strings.Split(filepath.Clean(rel), string(filepath.Separator)) {
+		path = filepath.Join(path, part)
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to seed through symlink %s", path)
 		}
 	}
 	return nil

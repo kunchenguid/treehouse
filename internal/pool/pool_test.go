@@ -148,6 +148,50 @@ func TestAcquire_SeedsWorktreeIncludeOnCreateAndReuse(t *testing.T) {
 	assertFileContents(t, filepath.Join(reused, ".env"), "second\n")
 }
 
+func TestAcquire_SeedingDoesNotFollowWorktreeSymlinks(t *testing.T) {
+	repoDir, poolDir := setupLocalRepo(t)
+	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte(".env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".worktreeinclude"), []byte(".env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repoDir, "add", ".gitignore", ".worktreeinclude")
+	runGit(t, repoDir, "commit", "-m", "seed env")
+	if err := os.WriteFile(filepath.Join(repoDir, ".env"), []byte("seeded\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatal(err)
+	}
+
+	sentinel := filepath.Join(t.TempDir(), "sentinel")
+	if err := os.WriteFile(sentinel, []byte("safe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seeded := filepath.Join(wtPath, ".env")
+	if err := os.Remove(seeded); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sentinel, seeded); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	reused, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused != wtPath {
+		t.Fatalf("got worktree %s, want reused %s", reused, wtPath)
+	}
+	assertFileContents(t, sentinel, "safe\n")
+}
+
 func assertFileContents(t *testing.T, path, want string) {
 	t.Helper()
 	got, err := os.ReadFile(path)
