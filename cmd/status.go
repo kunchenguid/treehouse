@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -13,6 +15,23 @@ import (
 	"github.com/kunchenguid/treehouse/internal/pool"
 	"github.com/kunchenguid/treehouse/internal/ui"
 )
+
+var statusJSON bool
+
+type statusJSONProcess struct {
+	PID  int32  `json:"pid"`
+	Name string `json:"name"`
+}
+
+type statusJSONWorktree struct {
+	Name        string              `json:"name"`
+	Path        string              `json:"path"`
+	Status      string              `json:"status"`
+	LeaseID     string              `json:"lease_id"`
+	LeaseHolder string              `json:"lease_holder"`
+	LeasedAt    *time.Time          `json:"leased_at"`
+	Processes   []statusJSONProcess `json:"processes"`
+}
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
@@ -36,6 +55,10 @@ var statusCmd = &cobra.Command{
 		worktrees, err := pool.List(poolDir)
 		if err != nil {
 			return err
+		}
+
+		if statusJSON {
+			return writeStatusJSON(worktrees)
 		}
 
 		if len(worktrees) == 0 {
@@ -88,5 +111,32 @@ var statusCmd = &cobra.Command{
 }
 
 func init() {
+	statusCmd.Flags().BoolVar(&statusJSON, "json", false, "Print pool status as JSON")
 	rootCmd.AddCommand(statusCmd)
+}
+
+func writeStatusJSON(worktrees []pool.WorktreeStatus) error {
+	output := make([]statusJSONWorktree, 0, len(worktrees))
+	for _, wt := range worktrees {
+		item := statusJSONWorktree{
+			Name:        wt.Name,
+			Path:        wt.Path,
+			Status:      wt.Status,
+			LeaseID:     wt.LeaseID,
+			LeaseHolder: wt.LeaseHolder,
+			Processes:   make([]statusJSONProcess, 0, len(wt.Processes)),
+		}
+		if !wt.LeasedAt.IsZero() {
+			leasedAt := wt.LeasedAt
+			item.LeasedAt = &leasedAt
+		}
+		for _, process := range wt.Processes {
+			item.Processes = append(item.Processes, statusJSONProcess{
+				PID:  process.PID,
+				Name: process.Name,
+			})
+		}
+		output = append(output, item)
+	}
+	return json.NewEncoder(os.Stdout).Encode(output)
 }

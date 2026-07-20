@@ -2,6 +2,7 @@ package pool
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -22,10 +23,22 @@ type WorktreeEntry struct {
 	// it is explicitly released by `treehouse return`. A missing field decodes to
 	// false, so pre-lease state files keep today's behavior.
 	Leased bool `json:"leased,omitempty"`
+	// LeaseID is an immutable identity for one acquisition. It is empty only
+	// when loading state written by a Treehouse version that predates lease IDs
+	// or when conservatively recovering a corrupt state file.
+	LeaseID string `json:"lease_id,omitempty"`
 	// LeaseHolder is an optional human-readable label for who holds the lease.
 	LeaseHolder string `json:"lease_holder,omitempty"`
 	// LeasedAt records when the lease was taken.
 	LeasedAt time.Time `json:"leased_at,omitempty,omitzero"`
+}
+
+func newLeaseID() (string, error) {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", fmt.Errorf("generating lease identity: %w", err)
+	}
+	return hex.EncodeToString(id[:]), nil
 }
 
 type State struct {

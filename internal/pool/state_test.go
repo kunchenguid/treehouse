@@ -27,6 +27,35 @@ func TestWriteState_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestReadState_LoadsPreIdentityLease(t *testing.T) {
+	poolDir := t.TempDir()
+	stateJSON := `{
+  "worktrees": [{
+    "name": "1",
+    "path": "legacy-worktree",
+    "created_at": "2026-07-20T12:00:00Z",
+    "leased": true,
+    "lease_holder": "legacy-automation",
+    "leased_at": "2026-07-20T12:01:00Z"
+  }]
+}`
+	if err := os.WriteFile(stateFilePath(poolDir), []byte(stateJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatalf("ReadState rejected pre-identity lease: %v", err)
+	}
+	if len(state.Worktrees) != 1 {
+		t.Fatalf("ReadState returned %d entries, want 1", len(state.Worktrees))
+	}
+	lease := state.Worktrees[0]
+	if !lease.Leased || lease.LeaseID != "" || lease.LeaseHolder != "legacy-automation" || lease.LeasedAt.IsZero() {
+		t.Fatalf("pre-identity lease loaded incorrectly: %#v", lease)
+	}
+}
+
 // TestWriteState_LeavesNoTempFileBehind guards the temp-then-rename approach:
 // a successful write must not leave its staging file lying around next to the
 // real state file.

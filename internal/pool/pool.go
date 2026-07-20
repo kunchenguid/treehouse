@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -27,8 +28,20 @@ type WorktreeStatus struct {
 	Path      string
 	Status    string
 	Processes []process.ProcessInfo
+	// LeaseID identifies the current acquisition of a leased worktree.
+	LeaseID string
 	// LeaseHolder is the recorded holder for a leased worktree, if any.
 	LeaseHolder string
+	// LeasedAt records when the current lease was acquired.
+	LeasedAt time.Time
+}
+
+// LeaseInfo is the stable machine-readable identity of one lease acquisition.
+type LeaseInfo struct {
+	Path        string    `json:"path"`
+	LeaseID     string    `json:"lease_id"`
+	LeaseHolder string    `json:"lease_holder"`
+	LeasedAt    time.Time `json:"leased_at"`
 }
 
 // acquireOptions controls how Acquire reserves the worktree it hands out.
@@ -48,10 +61,11 @@ type acquireOptions struct {
 // reservation (the calling process). It is the backing call for the interactive
 // `treehouse get` subshell.
 func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (string, error) {
-	return acquire(repoRoot, poolDir, poolSize, postCreate, acquireOptions{
+	acquired, err := acquire(repoRoot, poolDir, poolSize, postCreate, acquireOptions{
 		hookStdout: os.Stdout,
 		hookStderr: os.Stderr,
 	})
+	return acquired.Path, err
 }
 
 // AcquireLease reserves a clean worktree and marks it durably LEASED so the
@@ -60,6 +74,13 @@ func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (strin
 // lease for diagnostics. Post-create hook stdout is routed to stderr so callers
 // can capture the returned path as the sole stdout line.
 func AcquireLease(repoRoot, poolDir string, poolSize int, postCreate []string, holder string) (string, error) {
+	lease, err := AcquireLeaseInfo(repoRoot, poolDir, poolSize, postCreate, holder)
+	return lease.Path, err
+}
+
+// AcquireLeaseInfo reserves a worktree exactly like AcquireLease and returns
+// the immutable identity and metadata for that acquisition.
+func AcquireLeaseInfo(repoRoot, poolDir string, poolSize int, postCreate []string, holder string) (LeaseInfo, error) {
 	return acquire(repoRoot, poolDir, poolSize, postCreate, acquireOptions{
 		lease:       true,
 		leaseHolder: holder,
@@ -68,20 +89,20 @@ func AcquireLease(repoRoot, poolDir string, poolSize int, postCreate []string, h
 	})
 }
 
-func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts acquireOptions) (string, error) {
+func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts acquireOptions) (LeaseInfo, error) {
 	branch, err := git.GetDefaultBranch(repoRoot)
 	if err != nil {
-		return "", err
+		return LeaseInfo{}, err
 	}
 
 	fmt.Fprintf(os.Stderr, "🌳 Setting up worktree...\n")
 	if git.HasRemote(repoRoot, "origin") {
 		if err := git.Fetch(repoRoot); err != nil {
-			return "", fmt.Errorf("fetch failed: %w", err)
+			return LeaseInfo{}, fmt.Errorf("fetch failed: %w", err)
 		}
 	}
 
-	var acquired string
+	var acquired LeaseInfo
 	var runPostCreate bool
 
 	err = WithStateLock(poolDir, func() error {
@@ -112,7 +133,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			if err := markAcquired(&state.Worktrees[i], opts); err != nil {
 				return err
 			}
-			acquired = wt.Path
+			acquired = leaseInfoFromEntry(state.Worktrees[i])
 			if err := WriteState(poolDir, state); err != nil {
 				return err
 			}
@@ -147,7 +168,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		}
 		state.Worktrees = append(state.Worktrees, entry)
 
-		acquired = wtPath
+		acquired = leaseInfoFromEntry(entry)
 		if err := WriteState(poolDir, state); err != nil {
 			return err
 		}
@@ -155,20 +176,34 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		return nil
 	})
 	if err != nil {
-		return "", err
+		return LeaseInfo{}, err
 	}
 	if runPostCreate {
-		hooks.Run(postCreate, acquired, opts.hookStdout, opts.hookStderr)
+		hooks.Run(postCreate, acquired.Path, opts.hookStdout, opts.hookStderr)
 	}
 
 	return acquired, nil
+}
+
+func leaseInfoFromEntry(wt WorktreeEntry) LeaseInfo {
+	return LeaseInfo{
+		Path:        wt.Path,
+		LeaseID:     wt.LeaseID,
+		LeaseHolder: wt.LeaseHolder,
+		LeasedAt:    wt.LeasedAt,
+	}
 }
 
 // markAcquired stamps an acquired worktree entry: a durable lease in lease mode,
 // otherwise the default short-lived owner reservation.
 func markAcquired(wt *WorktreeEntry, opts acquireOptions) error {
 	if opts.lease {
+		leaseID, err := newLeaseID()
+		if err != nil {
+			return err
+		}
 		wt.Leased = true
+		wt.LeaseID = leaseID
 		wt.LeaseHolder = opts.leaseHolder
 		wt.LeasedAt = time.Now()
 		// A lease is process-independent, so it carries no owner reservation.
@@ -179,9 +214,29 @@ func markAcquired(wt *WorktreeEntry, opts acquireOptions) error {
 	return reserveOwner(wt)
 }
 
+// ErrLeasePreconditionFailed reports that a conditional release no longer
+// identifies the worktree's current lease.
+var ErrLeasePreconditionFailed = errors.New("lease precondition failed")
+
+// ReleasePreconditions optionally constrain a release to the current lease.
+// Pointer fields distinguish an omitted condition from an expected empty value.
+type ReleasePreconditions struct {
+	ExpectedLeaseID     *string
+	ExpectedLeaseHolder *string
+}
+
 // Release resets a managed worktree, clears its short-lived owner reservation or
-// durable lease, and returns it to the available pool.
+// durable lease, and returns it to the available pool. It retains the legacy
+// unconditional behavior of releasing by path.
 func Release(poolDir, worktreePath string) error {
+	return ReleaseConditional(poolDir, worktreePath, ReleasePreconditions{}, nil)
+}
+
+// ReleaseConditional verifies any lease preconditions, runs beforeReset, resets
+// the worktree, and clears its reservation while holding one state lock. The
+// callback is invoked only after all preconditions match and runs under that
+// lock so caller-side termination or detachment cannot race a later acquisition.
+func ReleaseConditional(poolDir, worktreePath string, preconditions ReleasePreconditions, beforeReset func() error) error {
 	repoRoot, err := git.FindRepoRootFrom(worktreePath)
 	if err != nil {
 		return err
@@ -190,41 +245,60 @@ func Release(poolDir, worktreePath string) error {
 	if err != nil {
 		return err
 	}
-	if err := WithStateLock(poolDir, func() error {
-		state, err := ReadState(poolDir)
-		if err != nil {
-			return err
-		}
-		for _, wt := range state.Worktrees {
-			if wt.Path == worktreePath && wt.Destroying {
-				return fmt.Errorf("worktree %s is being destroyed", worktreePath)
-			}
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	if err := git.ResetWorktree(worktreePath, branch); err != nil {
-		return err
-	}
 	return WithStateLock(poolDir, func() error {
 		state, err := ReadState(poolDir)
 		if err != nil {
 			return err
 		}
+
+		entryIndex := -1
 		for i := range state.Worktrees {
 			if state.Worktrees[i].Path == worktreePath {
-				if state.Worktrees[i].Destroying {
-					return fmt.Errorf("worktree %s is being destroyed", worktreePath)
-				}
-				state.Worktrees[i].OwnerPID = 0
-				state.Worktrees[i].OwnerStartedAt = 0
-				clearLease(&state.Worktrees[i])
+				entryIndex = i
 				break
 			}
 		}
+		if entryIndex < 0 {
+			return fmt.Errorf("worktree %s is not managed by treehouse", worktreePath)
+		}
+
+		wt := &state.Worktrees[entryIndex]
+		if wt.Destroying {
+			return fmt.Errorf("worktree %s is being destroyed", worktreePath)
+		}
+		if err := validateReleasePreconditions(*wt, preconditions); err != nil {
+			return err
+		}
+		if beforeReset != nil {
+			if err := beforeReset(); err != nil {
+				return err
+			}
+		}
+		if err := git.ResetWorktree(worktreePath, branch); err != nil {
+			return err
+		}
+
+		wt.OwnerPID = 0
+		wt.OwnerStartedAt = 0
+		clearLease(wt)
 		return WriteState(poolDir, state)
 	})
+}
+
+func validateReleasePreconditions(wt WorktreeEntry, preconditions ReleasePreconditions) error {
+	if preconditions.ExpectedLeaseID == nil && preconditions.ExpectedLeaseHolder == nil {
+		return nil
+	}
+	if !wt.Leased {
+		return fmt.Errorf("%w: worktree %s is not leased", ErrLeasePreconditionFailed, wt.Path)
+	}
+	if preconditions.ExpectedLeaseID != nil && wt.LeaseID != *preconditions.ExpectedLeaseID {
+		return fmt.Errorf("%w: lease identity does not match worktree %s", ErrLeasePreconditionFailed, wt.Path)
+	}
+	if preconditions.ExpectedLeaseHolder != nil && wt.LeaseHolder != *preconditions.ExpectedLeaseHolder {
+		return fmt.Errorf("%w: lease holder does not match worktree %s", ErrLeasePreconditionFailed, wt.Path)
+	}
+	return nil
 }
 
 // List returns the current status of managed worktrees in poolDir.
@@ -260,7 +334,9 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 
 			if wt.Leased {
 				ws.Status = StatusLeased
+				ws.LeaseID = wt.LeaseID
 				ws.LeaseHolder = wt.LeaseHolder
+				ws.LeasedAt = wt.LeasedAt
 			} else if ownerAlive(wt) {
 				ws.Status = StatusInUse
 			} else if len(procs) > 0 {
@@ -331,6 +407,7 @@ func reserveOwner(wt *WorktreeEntry) error {
 // clearLease removes any durable lease from a worktree entry.
 func clearLease(wt *WorktreeEntry) {
 	wt.Leased = false
+	wt.LeaseID = ""
 	wt.LeaseHolder = ""
 	wt.LeasedAt = time.Time{}
 }

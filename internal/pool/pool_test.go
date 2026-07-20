@@ -1,12 +1,14 @@
 package pool
 
 import (
+	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1732,6 +1734,10 @@ func TestAcquireLease_MarksWorktreeLeasedInState(t *testing.T) {
 	if !wt.Leased || wt.LeaseHolder != "secondmate-home" {
 		t.Fatalf("expected durable lease with holder, got %#v", wt)
 	}
+	decodedID, err := hex.DecodeString(wt.LeaseID)
+	if err != nil || len(decodedID) != 16 {
+		t.Fatalf("expected 128-bit lease identity, got %q", wt.LeaseID)
+	}
 	// A lease must not depend on a live process: no owner reservation is kept.
 	if wt.OwnerPID != 0 || wt.OwnerStartedAt != 0 {
 		t.Fatalf("expected no owner reservation on a lease, got %#v", wt)
@@ -1820,7 +1826,7 @@ func TestRelease_ClearsLease(t *testing.T) {
 	if len(state.Worktrees) != 1 {
 		t.Fatalf("expected one worktree, got %#v", state.Worktrees)
 	}
-	if state.Worktrees[0].Leased || state.Worktrees[0].LeaseHolder != "" || !state.Worktrees[0].LeasedAt.IsZero() {
+	if state.Worktrees[0].Leased || state.Worktrees[0].LeaseID != "" || state.Worktrees[0].LeaseHolder != "" || !state.Worktrees[0].LeasedAt.IsZero() {
 		t.Fatalf("expected lease to be cleared, got %#v", state.Worktrees[0])
 	}
 	data, err := os.ReadFile(stateFilePath(poolDir))
@@ -1828,7 +1834,7 @@ func TestRelease_ClearsLease(t *testing.T) {
 		t.Fatalf("reading state file failed: %v", err)
 	}
 	stateJSON := string(data)
-	for _, field := range []string{`"leased"`, `"lease_holder"`, `"leased_at"`} {
+	for _, field := range []string{`"leased"`, `"lease_id"`, `"lease_holder"`, `"leased_at"`} {
 		if strings.Contains(stateJSON, field) {
 			t.Fatalf("expected cleared lease field %s to be omitted from state file:\n%s", field, stateJSON)
 		}
@@ -1841,6 +1847,39 @@ func TestRelease_ClearsLease(t *testing.T) {
 	}
 	if reused != wtPath {
 		t.Fatalf("expected released worktree %s to be reused, got %s", wtPath, reused)
+	}
+}
+
+func TestRelease_PreIdentityLeaseFailsConditionalAndAllowsLegacyReturn(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	lease, err := AcquireLeaseInfo(repoDir, poolDir, 4, nil, "legacy-holder")
+	if err != nil {
+		t.Fatalf("AcquireLeaseInfo failed: %v", err)
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Worktrees[0].LeaseID = ""
+	if err := WriteState(poolDir, state); err != nil {
+		t.Fatal(err)
+	}
+
+	err = ReleaseConditional(poolDir, lease.Path, ReleasePreconditions{ExpectedLeaseID: &lease.LeaseID}, nil)
+	if !errors.Is(err, ErrLeasePreconditionFailed) {
+		t.Fatalf("conditional release of pre-identity lease = %v, want precondition failure", err)
+	}
+	state, err = ReadState(poolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Worktrees[0].Leased || state.Worktrees[0].LeaseID != "" {
+		t.Fatalf("conditional refusal mutated pre-identity lease: %#v", state.Worktrees[0])
+	}
+
+	if err := Release(poolDir, lease.Path); err != nil {
+		t.Fatalf("legacy unconditional release rejected pre-identity lease: %v", err)
 	}
 }
 
@@ -1864,6 +1903,9 @@ func TestList_ShowsLeasedState(t *testing.T) {
 	}
 	if statuses[0].LeaseHolder != "secondmate-7" {
 		t.Fatalf("expected lease holder to be reported, got %q", statuses[0].LeaseHolder)
+	}
+	if statuses[0].LeaseID == "" || statuses[0].LeasedAt.IsZero() {
+		t.Fatalf("expected lease identity and timestamp to be reported, got %#v", statuses[0])
 	}
 }
 
@@ -2023,6 +2065,69 @@ func TestAcquireLease_ConcurrentAcquiresNeverDoubleLease(t *testing.T) {
 		if !wt.Leased {
 			t.Fatalf("expected every concurrently acquired worktree to be leased, got %#v", wt)
 		}
+	}
+}
+
+func TestReleaseConditional_ConcurrentIdentityReleasesExactlyOnce(t *testing.T) {
+	repoDir, poolDir := setupLocalRepo(t)
+	lease, err := AcquireLeaseInfo(repoDir, poolDir, 1, nil, "automation-A")
+	if err != nil {
+		t.Fatalf("AcquireLeaseInfo failed: %v", err)
+	}
+
+	enteredBoundary := make(chan struct{})
+	allowReset := make(chan struct{})
+	secondStarted := make(chan struct{})
+	results := make(chan error, 2)
+	var preparationCalls atomic.Int32
+	preconditions := ReleasePreconditions{
+		ExpectedLeaseID:     &lease.LeaseID,
+		ExpectedLeaseHolder: &lease.LeaseHolder,
+	}
+	release := func() {
+		results <- ReleaseConditional(poolDir, lease.Path, preconditions, func() error {
+			if preparationCalls.Add(1) == 1 {
+				close(enteredBoundary)
+				<-allowReset
+			}
+			return nil
+		})
+	}
+
+	go release()
+	<-enteredBoundary
+	go func() {
+		close(secondStarted)
+		release()
+	}()
+	<-secondStarted
+	close(allowReset)
+
+	var succeeded, refused int
+	for range 2 {
+		err := <-results
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrLeasePreconditionFailed):
+			refused++
+		default:
+			t.Fatalf("unexpected concurrent release error: %v", err)
+		}
+	}
+	if succeeded != 1 || refused != 1 {
+		t.Fatalf("concurrent releases: succeeded=%d refused=%d, want exactly one each", succeeded, refused)
+	}
+	if preparationCalls.Load() != 1 {
+		t.Fatalf("release preparation ran %d times, want 1", preparationCalls.Load())
+	}
+
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Worktrees) != 1 || state.Worktrees[0].Leased {
+		t.Fatalf("expected lease released exactly once, got %#v", state.Worktrees)
 	}
 }
 

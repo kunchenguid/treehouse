@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 var (
 	getLease       bool
 	getLeaseHolder string
+	getJSON        bool
 )
 
 var getCmd = &cobra.Command{
@@ -38,10 +40,15 @@ running inside it, until you release it with 'treehouse return <path>'.`,
 func init() {
 	getCmd.Flags().BoolVar(&getLease, "lease", false, "Durably lease a worktree without opening a subshell; print only its path to stdout")
 	getCmd.Flags().StringVar(&getLeaseHolder, "lease-holder", "", "Optional label recorded as the lease holder (defaults to $TREEHOUSE_LEASE_HOLDER)")
+	getCmd.Flags().BoolVar(&getJSON, "json", false, "Print lease allocation as JSON (requires --lease)")
 	rootCmd.AddCommand(getCmd)
 }
 
 func getRunE(cmd *cobra.Command, args []string) error {
+	if getJSON && !getLease {
+		return fmt.Errorf("--json requires --lease")
+	}
+
 	repoRoot, err := git.FindRepoRoot()
 	if err != nil {
 		return fmt.Errorf("not in a git repository: %w", err)
@@ -114,15 +121,18 @@ func getLeaseRunE(repoRoot, poolDir string, cfg config.Config) error {
 		holder = os.Getenv("TREEHOUSE_LEASE_HOLDER")
 	}
 
-	wtPath, err := pool.AcquireLease(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate, holder)
+	lease, err := pool.AcquireLeaseInfo(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate, holder)
 	if err != nil {
 		return err
 	}
 
 	fmt.Fprintf(os.Stderr, "🌳 Leased worktree at %s. Run 'treehouse return %s' to release it.\n",
-		ui.PrettyPath(wtPath), ui.PrettyPath(wtPath))
+		ui.PrettyPath(lease.Path), ui.PrettyPath(lease.Path))
+	if getJSON {
+		return json.NewEncoder(os.Stdout).Encode(lease)
+	}
 	// The bare path is the only thing on stdout, so callers can capture it.
-	fmt.Fprintln(os.Stdout, wtPath)
+	fmt.Fprintln(os.Stdout, lease.Path)
 	return nil
 }
 

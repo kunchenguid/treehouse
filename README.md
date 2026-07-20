@@ -133,7 +133,7 @@ The default treehouse root is `~/.treehouse/`.
 - **No daemon** - all operations are inline CLI commands.
   Pool state is a small on-disk file, written under a lock by each command.
 - **In-use detection** — treehouse scans running processes and short-lived owner reservations to determine which worktrees are in-use. Reservations are persisted only while `get`, `destroy`, and `prune` lifecycle work is running.
-- **Durable leases** — `treehouse get --lease` reserves a worktree as a persistent home without keeping a process inside it. The lease is recorded in treehouse's own state, so the worktree is never handed out by a later `get` and never removed by `prune` until you release it with `treehouse return`. Unlike process-based in-use detection, a lease survives with zero processes running inside the worktree.
+- **Durable leases** - `treehouse get --lease` reserves a worktree as a persistent home without keeping a process inside it. Each acquisition gets an immutable random lease identity, and the lease is recorded in treehouse's own state. The worktree is never handed out by a later `get` and never removed by `prune` until you release it with `treehouse return`. Unlike process-based in-use detection, a lease survives with zero processes running inside the worktree.
 - **State recovery** - treehouse writes pool state atomically via a temp file and replacement.
   If an existing state file is empty or truncated, treehouse warns, rebuilds entries from worktrees still on disk, and marks those entries leased until you verify them with `treehouse status`.
 - **Dirty detection** - treehouse treats tracked changes and untracked files as dirty, even when repository config hides untracked files from normal `git status` output.
@@ -165,8 +165,12 @@ The default treehouse root is `~/.treehouse/`.
 | --------- | --------- | --------------------------------- |
 | `get`     | `--lease` | Durably lease the worktree without opening a subshell; print only its path to stdout |
 | `get`     | `--lease-holder` | Optional label recorded as the lease holder (defaults to `$TREEHOUSE_LEASE_HOLDER`) |
+| `get`     | `--json` | Print `path`, `lease_id`, `lease_holder`, and `leased_at` as JSON (requires `--lease`) |
 | `enter`   | `--print-path` | Print only the worktree's absolute path to stdout instead of opening a subshell (for `cd "$(treehouse enter --print-path 1)"`) |
+| `status`  | `--json` | Print worktree status and lease metadata as JSON |
 | `return`  | `--force` | Clean, reset, and return without prompting |
+| `return`  | `--if-lease-id` | Return only if the current lease has the expected per-acquisition identity |
+| `return`  | `--if-lease-holder` | Return only if the current lease has the expected holder |
 | `prune`   | `--yes`   | Delete listed prune candidates instead of doing a dry run |
 | `prune`   | `--all`   | Sweep every managed pool under the user-level treehouse root |
 | `prune`   | `--global` | Alias for `--all` |
@@ -197,8 +201,30 @@ A bulk `treehouse destroy <pool> --all` never removes it either; only naming its
 
 Pass `--lease-holder <label>` (or set `$TREEHOUSE_LEASE_HOLDER`) to record who holds the lease; `treehouse status` then shows it next to the `leased` state.
 
+Every acquisition receives a new random `lease_id`, including reacquiring the same path with the same holder. Automation can request a stable machine-readable allocation:
+
+```sh
+treehouse get --lease --lease-holder automation-A --json
+# {"path":"...","lease_id":"...","lease_holder":"automation-A","leased_at":"..."}
+```
+
+`treehouse status --json` returns an array with `name`, `path`, `status`, `lease_id`, `lease_holder`, `leased_at`, and `processes`. Non-leased entries use empty lease strings and a `null` timestamp. State files written before lease identities remain readable; their existing leases have an empty `lease_id` until released and acquired again.
+
 Release a lease with `treehouse return <path>`, which clears the lease, terminates any lingering processes, resets the worktree, and returns it to the pool.
 When you pass an explicit path, `treehouse return` can run from outside the repository because it resolves the managed pool from that worktree path.
+
+For retry-safe automation, condition the return on the identity from allocation or status:
+
+```sh
+treehouse return --force \
+  --if-lease-id "$lease_id" \
+  --if-lease-holder "$lease_holder" \
+  "$path"
+```
+
+Treehouse compares supplied conditions while holding the pool state lock. A missing lease or mismatch exits nonzero before process termination, worktree reset, or state clearing. The same lock fences a matching return through the final clear, so the identity succeeds once and cannot release a later acquisition of the same path. `--if-lease-holder` is optional; use `--if-lease-id` for ABA protection when a holder may be reused.
+
+For backward compatibility, `treehouse return <path>` without either condition keeps its original unconditional path-only behavior. Existing path-only scripts and `treehouse get --lease` stdout are unchanged.
 
 ### Recovering a damaged pool state file
 
