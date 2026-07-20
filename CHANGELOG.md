@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/kunchenguid/treehouse/compare/v2.0.1...v2.1.0) (2026-07-20)
+
+
+### Features
+
+* **pool:** add stable lease identities ([#68](https://github.com/kunchenguid/treehouse/issues/68)) ([e914cca](https://github.com/kunchenguid/treehouse/commit/e914cca93693be4c47e0a4df1bf7439afd5e820a))
+
 ## [2.0.1](https://github.com/kunchenguid/treehouse/compare/v2.0.0...v2.0.1) (2026-07-14)
 
 
