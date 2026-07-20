@@ -1,9 +1,12 @@
 package git
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -140,6 +143,118 @@ func isAncestor(repoRoot, a, b string) bool {
 func AddWorktree(repoRoot, path, branch string) error {
 	_, err := runGit(repoRoot, "worktree", "add", "--detach", path, branchRef(repoRoot, branch))
 	return err
+}
+
+// SeedWorktree copies files selected by .worktreeinclude that are also ignored by git.
+func SeedWorktree(repoRoot, worktreePath string) error {
+	manifestData, err := os.ReadFile(filepath.Join(repoRoot, ".worktreeinclude"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	candidates, err := gitOutput(repoRoot, nil, "ls-files", "-z", "--others", "--ignored", "--exclude-from=.worktreeinclude")
+	if err != nil || len(candidates) == 0 {
+		return err
+	}
+	ignored, err := gitOutput(repoRoot, candidates, "check-ignore", "-z", "--stdin")
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil
+		}
+		return err
+	}
+	trackedOutput, err := gitOutput(worktreePath, nil, "ls-files", "-z")
+	if err != nil {
+		return err
+	}
+	tracked := make(map[string]struct{})
+	for _, name := range bytes.Split(trackedOutput, []byte{0}) {
+		tracked[string(name)] = struct{}{}
+	}
+
+	for _, name := range bytes.Split(bytes.TrimSuffix(ignored, []byte{0}), []byte{0}) {
+		if _, ok := tracked[string(name)]; ok {
+			continue
+		}
+		rel := filepath.FromSlash(string(name))
+		if excludedIncludeSubtree(filepath.ToSlash(rel), string(manifestData)) {
+			continue
+		}
+		src := filepath.Join(repoRoot, rel)
+		dst := filepath.Join(worktreePath, rel)
+		if err := rejectSymlinkPath(worktreePath, rel); err != nil {
+			return err
+		}
+		info, err := os.Stat(src)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(src)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(dst, data, info.Mode().Perm()); err != nil {
+			return err
+		}
+		if err := os.Chmod(dst, info.Mode().Perm()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func rejectSymlinkPath(root, rel string) error {
+	path := root
+	for _, part := range strings.Split(filepath.Clean(rel), string(filepath.Separator)) {
+		path = filepath.Join(path, part)
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to seed through symlink %s", path)
+		}
+	}
+	return nil
+}
+
+func excludedIncludeSubtree(name, manifest string) bool {
+	excluded := false
+	for _, line := range strings.Split(manifest, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.HasPrefix(line, "!") && strings.HasSuffix(line, "/") {
+			if includePatternMatches(name, line[1:]) {
+				excluded = true
+			}
+			continue
+		}
+		if excluded && !strings.HasPrefix(line, "!") && includePatternMatches(name, line) {
+			excluded = false
+		}
+	}
+	return excluded
+}
+
+func includePatternMatches(name, pattern string) bool {
+	pattern = strings.TrimPrefix(pattern, "/")
+	if strings.HasSuffix(pattern, "/") {
+		dir := strings.TrimSuffix(pattern, "/")
+		return name == dir || strings.HasPrefix(name, dir+"/")
+	}
+	if !strings.Contains(pattern, "/") {
+		name = path.Base(name)
+	}
+	matched, _ := path.Match(pattern, name)
+	return matched
 }
 
 func RemoveWorktree(repoRoot, path string) error {
@@ -298,4 +413,12 @@ func runGit(dir string, args ...string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func gitOutput(dir string, stdin []byte, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Stdin = bytes.NewReader(stdin)
+	out, err := cmd.Output()
+	return out, err
 }

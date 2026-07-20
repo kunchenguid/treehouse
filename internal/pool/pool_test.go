@@ -97,6 +97,146 @@ func TestAcquire_RunsPostCreateHookInWorktree(t *testing.T) {
 	}
 }
 
+func TestAcquire_SeedsWorktreeIncludeOnCreateAndReuse(t *testing.T) {
+	repoDir, poolDir := setupLocalRepo(t)
+	write := func(name, contents string) {
+		t.Helper()
+		path := filepath.Join(repoDir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".gitignore", ".env*\nlocal/\ntracked.env\n")
+	write(".worktreeinclude", ".env*\n!.env.local\nlocal/\n!local/archive/\nlocal/archive/keep.txt\ntracked.env\n")
+	write(".env", "first\n")
+	write(".env.local", "local\n")
+	write("local/config.txt", "config\n")
+	write("local/archive/old.txt", "old\n")
+	write("local/archive/keep.txt", "keep\n")
+	write("tracked.env", "committed\n")
+	runGit(t, repoDir, "add", "-f", ".gitignore", ".worktreeinclude", "tracked.env")
+	runGit(t, repoDir, "commit", "-m", "add worktree include")
+	write("tracked.env", "uncommitted\n")
+
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFileContents(t, filepath.Join(wtPath, ".env"), "first\n")
+	if _, err := os.Stat(filepath.Join(wtPath, ".env.local")); !os.IsNotExist(err) {
+		t.Fatalf("file negation was not honored: %v", err)
+	}
+	assertFileContents(t, filepath.Join(wtPath, "local", "config.txt"), "config\n")
+	assertFileContents(t, filepath.Join(wtPath, "tracked.env"), "committed\n")
+	if _, err := os.Stat(filepath.Join(wtPath, "local", "archive", "old.txt")); !os.IsNotExist(err) {
+		t.Fatalf("excluded file exists: %v", err)
+	}
+	assertFileContents(t, filepath.Join(wtPath, "local", "archive", "keep.txt"), "keep\n")
+
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatal(err)
+	}
+	write(".env", "second\n")
+	reused, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused != wtPath {
+		t.Fatalf("got worktree %s, want reused %s", reused, wtPath)
+	}
+	assertFileContents(t, filepath.Join(reused, ".env"), "second\n")
+}
+
+func TestAcquire_SeedingDoesNotFollowWorktreeSymlinks(t *testing.T) {
+	repoDir, poolDir := setupLocalRepo(t)
+	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte(".env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".worktreeinclude"), []byte(".env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repoDir, "add", ".gitignore", ".worktreeinclude")
+	runGit(t, repoDir, "commit", "-m", "seed env")
+	if err := os.WriteFile(filepath.Join(repoDir, ".env"), []byte("seeded\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatal(err)
+	}
+
+	sentinel := filepath.Join(t.TempDir(), "sentinel")
+	if err := os.WriteFile(sentinel, []byte("safe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seeded := filepath.Join(wtPath, ".env")
+	if err := os.Remove(seeded); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sentinel, seeded); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	reused, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused != wtPath {
+		t.Fatalf("got worktree %s, want reused %s", reused, wtPath)
+	}
+	assertFileContents(t, sentinel, "safe\n")
+}
+
+func TestAcquire_DoesNotSeedFilesTrackedByTargetWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	tracked := filepath.Join(repoDir, "tracked.env")
+	if err := os.WriteFile(tracked, []byte("committed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repoDir, "add", "tracked.env")
+	runGit(t, repoDir, "commit", "-m", "track env")
+	runGit(t, repoDir, "push", "origin", "main")
+
+	runGit(t, repoDir, "checkout", "-b", "feature")
+	runGit(t, repoDir, "remote", "set-head", "origin", "main")
+	runGit(t, repoDir, "rm", "tracked.env")
+	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("tracked.env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".worktreeinclude"), []byte("tracked.env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repoDir, "add", ".gitignore", ".worktreeinclude")
+	runGit(t, repoDir, "commit", "-m", "ignore env")
+	if err := os.WriteFile(tracked, []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFileContents(t, filepath.Join(wtPath, "tracked.env"), "committed\n")
+}
+
+func assertFileContents(t *testing.T, path, want string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.ReplaceAll(string(got), "\r\n", "\n") != want {
+		t.Fatalf("%s = %q, want %q", path, got, want)
+	}
+}
+
 func TestAcquire_HookFailureDoesNotFailAcquire(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
