@@ -151,6 +151,7 @@ The default treehouse root is `~/.treehouse/`.
 | `treehouse get --lease`    | Durably lease a worktree without a subshell; print its path |
 | `treehouse enter <name>`   | Open a subshell in an existing worktree by name (the number from `status`), even if it is in use; pool state is left untouched |
 | `treehouse status`         | Show pool status (highlights leased and current worktrees) |
+| `treehouse current`        | Report whether the current directory is inside a managed worktree (exit 0 if so) |
 | `treehouse return [path]`  | Release any lease, terminate lingering worktree processes, and return it to the pool |
 | `treehouse prune`          | Dry-run removal of stale idle worktrees in the current repo pool |
 | `treehouse prune --all`    | Dry-run removal of stale idle worktrees across every managed pool |
@@ -165,9 +166,14 @@ The default treehouse root is `~/.treehouse/`.
 | --------- | --------- | --------------------------------- |
 | `get`     | `--lease` | Durably lease the worktree without opening a subshell; print only its path to stdout |
 | `get`     | `--lease-holder` | Optional label recorded as the lease holder (defaults to `$TREEHOUSE_LEASE_HOLDER`) |
+<<<<<<< HEAD
 | `get`     | `--json` | Print `path`, `lease_id`, `lease_holder`, and `leased_at` as JSON (requires `--lease`) |
 | `enter`   | `--print-path` | Print only the worktree's absolute path to stdout instead of opening a subshell (for `cd "$(treehouse enter --print-path 1)"`) |
 | `status`  | `--json` | Print worktree status and lease metadata as JSON |
+=======
+| `current` | `--path`  | Print only the worktree's absolute path to stdout (empty when not in one) |
+| `current` | `--json`  | Print worktree metadata as JSON (`{"in_worktree":false}` when not in one) |
+>>>>>>> 56c5af0 (feat(cmd): add current command to detect the active worktree)
 | `return`  | `--force` | Clean, reset, and return without prompting |
 | `return`  | `--if-lease-id` | Return only if the current lease has the expected per-acquisition identity |
 | `return`  | `--if-lease-holder` | Return only if the current lease has the expected holder |
@@ -213,6 +219,7 @@ treehouse get --lease --lease-holder automation-A --json
 Release a lease with `treehouse return <path>`, which clears the lease, terminates any lingering processes, resets the worktree, and returns it to the pool.
 When you pass an explicit path, `treehouse return` can run from outside the repository because it resolves the managed pool from that worktree path.
 
+<<<<<<< HEAD
 For retry-safe automation, condition the return on the identity from allocation or status:
 
 ```sh
@@ -236,6 +243,23 @@ Run `treehouse status` to inspect recovered entries.
 After verifying a worktree is safe to reuse, run `treehouse return <path>` to clear the safety lease.
 To delete one instead, name its exact path with `treehouse destroy <path> --include-leased --yes`.
 Bulk `destroy --all` and prune leave recovered entries alone.
+=======
+### Detecting the current worktree
+
+`treehouse current` reports whether the working directory is inside a managed worktree. It exits `0` when it is and non-zero when it is not, so it drops straight into scripts, prompts, and hooks:
+
+```sh
+if treehouse current --path >/dev/null 2>&1; then
+  echo "inside a treehouse worktree"
+fi
+```
+
+Detection is authoritative rather than advisory: it resolves the owning repository from git metadata (so it works from inside a linked worktree) and cross-checks the directory against treehouse's own pool state, instead of trusting the `$TREEHOUSE_DIR` variable that only the `get` subshell exports.
+
+- Default output prints the worktree name, live status, and path — mirroring one `treehouse status` row.
+- `--path` prints only the absolute worktree path, the counterpart to `get --lease` for `p=$(treehouse current --path)`.
+- `--json` emits `{"in_worktree":true,"name":...,"path":...,"status":...}` (or `{"in_worktree":false}` when outside one) for tooling.
+>>>>>>> 56c5af0 (feat(cmd): add current command to detect the active worktree)
 
 ### Pruning stale worktrees and orphans
 

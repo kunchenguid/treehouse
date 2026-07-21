@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -10,6 +11,12 @@ import (
 )
 
 var version = "dev"
+
+// errSilent signals a non-zero exit whose messaging the command has already
+// handled (or intentionally suppressed). Execute exits with a failure code
+// without printing anything extra. Use it for expected non-error outcomes such
+// as `treehouse current` reporting "not in a worktree".
+var errSilent = errors.New("")
 
 func SetVersion(v string) {
 	version = v
@@ -58,7 +65,9 @@ func init() {
 
 func Execute() error {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		if !errors.Is(err, errSilent) {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		return err
 	}
 	return nil
