@@ -1,11 +1,20 @@
 package git
 
 import (
+	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+)
+
+const (
+	gitCommandTimeout   = 2 * time.Minute
+	gitCommandWaitDelay = 250 * time.Millisecond
 )
 
 func FindRepoRoot() (string, error) {
@@ -259,16 +268,25 @@ func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error
 
 // IsHeadMergedIntoRef reports whether worktreePath's HEAD is an ancestor of ref.
 func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
-	cmd := exec.Command("git", "merge-base", "--is-ancestor", "HEAD", ref)
-	cmd.Dir = worktreePath
-	out, err := cmd.CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+	defer cancel()
+
+	return isHeadMergedIntoRefContext(ctx, worktreePath, ref)
+}
+
+func isHeadMergedIntoRefContext(ctx context.Context, worktreePath, ref string) (bool, error) {
+	args := []string{"merge-base", "--is-ancestor", "HEAD", ref}
+	out, err := gitCommandContext(ctx, worktreePath, args...).CombinedOutput()
 	if err == nil {
 		return true, nil
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return false, gitTimeoutError(worktreePath, args)
 	}
 	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 		return false, nil
 	}
-	return false, fmt.Errorf("git merge-base --is-ancestor HEAD %s: %s", ref, strings.TrimSpace(string(out)))
+	return false, fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
 }
 
 // IsDirty reports tracked or untracked changes, ignoring status.showUntrackedFiles.
@@ -286,16 +304,49 @@ func ShortHash(s string) string {
 }
 
 func runGit(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	out, err := cmd.Output()
+	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+	defer cancel()
+
+	return runGitContext(ctx, dir, args...)
+}
+
+func runGitContext(ctx context.Context, dir string, args ...string) (string, error) {
+	out, err := gitCommandContext(ctx, dir, args...).Output()
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", gitTimeoutError(dir, args)
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(exitErr.Stderr)))
 		}
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func gitCommandContext(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.WaitDelay = gitCommandWaitDelay
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	return cmd
+}
+
+func gitTimeoutError(dir string, args []string) error {
+	workingDir := dir
+	if workingDir == "" {
+		if currentDir, err := os.Getwd(); err == nil {
+			workingDir = currentDir
+		} else {
+			workingDir = "."
+		}
+	}
+	lockPath := filepath.Join(".git", "index.lock")
+	return fmt.Errorf(
+		"git %s timed out in %q; check for a stale %s, blocked credential prompts, or network connectivity",
+		strings.Join(args, " "),
+		workingDir,
+		lockPath,
+	)
 }
