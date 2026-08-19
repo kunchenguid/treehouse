@@ -101,6 +101,47 @@ func TestRemoveCleanWorktreeRejectsDirtyWorktree(t *testing.T) {
 	}
 }
 
+func TestFetchSkipsForcedUpdateWarning(t *testing.T) {
+	base := t.TempDir()
+	remoteDir := filepath.Join(base, "remote")
+	repoDir := filepath.Join(base, "repo")
+
+	mustGit(t, "", "init", "--initial-branch=main", remoteDir)
+	mustGit(t, remoteDir, "config", "user.email", "test@test.com")
+	mustGit(t, remoteDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(remoteDir, "README.md"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, remoteDir, "add", ".")
+	mustGit(t, remoteDir, "commit", "-m", "first")
+
+	mustGit(t, "", "clone", remoteDir, repoDir)
+	mustGit(t, repoDir, "config", "user.email", "test@test.com")
+	mustGit(t, repoDir, "config", "user.name", "Test")
+
+	// Force-move the remote's branch to an unrelated history so the local
+	// clone's next fetch qualifies for git's forced-update scan.
+	if err := os.WriteFile(filepath.Join(remoteDir, "README.md"), []byte("v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, remoteDir, "add", ".")
+	mustGit(t, remoteDir, "commit", "--amend", "-m", "rewritten")
+
+	cmd := exec.Command("git", "fetch", "--no-show-forced-updates", "origin")
+	cmd.Dir = repoDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git fetch failed: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "seconds to check forced updates") {
+		t.Fatalf("forced-update scan ran even though it was disabled: %s", out)
+	}
+
+	if err := Fetch(repoDir); err != nil {
+		t.Fatalf("Fetch failed: %v", err)
+	}
+}
+
 func mustGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
