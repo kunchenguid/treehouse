@@ -16,7 +16,7 @@ var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Create a default treehouse.toml config file",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		repoRoot, err := git.FindRepoRoot()
+		repoRoot, err := git.FindMainRepoRoot()
 		if err != nil {
 			return fmt.Errorf("not in a git repository: %w", err)
 		}
@@ -38,7 +38,7 @@ var initCmd = &cobra.Command{
 		}
 
 		// Append a comment showing the root option.
-		if _, err := f.WriteString("\n# Worktree root directory (relative to repo root or absolute path).\n# Worktrees are placed under {root}/.treehouse/. Default: $HOME\n# Example: root = \"./\"\n"); err != nil {
+		if _, err := f.WriteString("\n# Worktree root directory (relative to repo root or absolute path).\n# Worktrees are placed under {root}/.treehouse/. Default: $HOME\n# Override per-command with the --root flag or the TREEHOUSE_ROOT env var.\n# Use \".\" to keep the pool in-project at <repo>/.treehouse/, next to the\n# code and removed with the project. Example: root = \".\"\n"); err != nil {
 			return fmt.Errorf("failed to write config: %w", err)
 		}
 

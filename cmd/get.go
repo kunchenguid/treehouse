@@ -22,6 +22,7 @@ var (
 	getLease       bool
 	getLeaseHolder string
 	getJSON        bool
+	getNoFetch     bool
 )
 
 var getCmd = &cobra.Command{
@@ -42,6 +43,7 @@ func init() {
 	getCmd.Flags().BoolVar(&getLease, "lease", false, "Durably lease a worktree without opening a subshell; print only its path to stdout")
 	getCmd.Flags().StringVar(&getLeaseHolder, "lease-holder", "", "Optional label recorded as the lease holder (defaults to $TREEHOUSE_LEASE_HOLDER)")
 	getCmd.Flags().BoolVar(&getJSON, "json", false, "Print lease allocation as JSON (requires --lease)")
+	getCmd.Flags().BoolVar(&getNoFetch, "no-fetch", false, "Skip fetching origin before acquiring; use existing local refs")
 	rootCmd.AddCommand(getCmd)
 }
 
@@ -54,26 +56,32 @@ func getRunE(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("not in a git repository: %w", err)
 	}
+	repoRoot, err = git.FindMainRepoRoot()
+	if err != nil {
+		return fmt.Errorf("not in a git repository: %w", err)
+	}
 
 	cfg, err := config.Load(repoRoot)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	poolDir, err := config.ResolvePoolDir(repoRoot, cfg.Root)
+	poolDir, err := config.ResolvePoolDir(repoRoot, config.ResolveRoot(rootFlag, cfg))
 	if err != nil {
 		return fmt.Errorf("failed to resolve pool directory: %w", err)
 	}
 
-	if err := config.EnsureGitignore(filepath.Dir(poolDir)); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to update .gitignore: %v\n", err)
+	if err := config.EnsureExcluded(filepath.Dir(poolDir)); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to update git exclude: %v\n", err)
 	}
 
 	if getLease {
 		return getLeaseRunE(repoRoot, poolDir, cfg)
 	}
 
-	wtPath, err := pool.Acquire(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate)
+	wtPath, err := pool.AcquireWithOptions(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate, pool.AcquireOptions{
+		SkipFetch: getNoFetch,
+	})
 	if err != nil {
 		return err
 	}
@@ -121,7 +129,9 @@ func getLeaseRunE(repoRoot, poolDir string, cfg config.Config) error {
 		holder = os.Getenv("TREEHOUSE_LEASE_HOLDER")
 	}
 
-	lease, err := pool.AcquireLeaseInfo(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate, holder)
+	lease, err := pool.AcquireLeaseInfoWithOptions(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate, holder, pool.AcquireOptions{
+		SkipFetch: getNoFetch,
+	})
 	if err != nil {
 		return err
 	}

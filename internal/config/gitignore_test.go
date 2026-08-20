@@ -47,85 +47,156 @@ func run(t *testing.T, dir string, name string, args ...string) {
 	}
 }
 
-func TestEnsureGitignore_AddsEntry(t *testing.T) {
+func excludePath(repoDir string) string {
+	return filepath.Join(repoDir, ".git", "info", "exclude")
+}
+
+func readExclude(t *testing.T, repoDir string) string {
+	t.Helper()
+	data, err := os.ReadFile(excludePath(repoDir))
+	if err != nil {
+		t.Fatalf("failed to read .git/info/exclude: %v", err)
+	}
+	return string(data)
+}
+
+func TestEnsureExcluded_WritesToGitInfoExclude(t *testing.T) {
 	repoDir := setupGitRepo(t)
 
-	treehouseDir := filepath.Join(repoDir, ".worktrees", ".treehouse")
+	treehouseDir := filepath.Join(repoDir, ".treehouse")
 
-	if err := EnsureGitignore(treehouseDir); err != nil {
-		t.Fatalf("EnsureGitignore failed: %v", err)
+	if err := EnsureExcluded(treehouseDir); err != nil {
+		t.Fatalf("EnsureExcluded failed: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(repoDir, ".gitignore"))
+	expected := "/.treehouse"
+	if got := readExclude(t, repoDir); !strings.Contains(got, expected) {
+		t.Errorf("expected .git/info/exclude to contain %q, got: %s", expected, got)
+	}
+
+	// The tracked .gitignore must stay clean so the repo does not read dirty.
+	if _, err := os.Stat(filepath.Join(repoDir, ".gitignore")); !os.IsNotExist(err) {
+		t.Errorf("expected no tracked .gitignore to be created, stat err: %v", err)
+	}
+}
+
+func TestEnsureExcluded_LeavesRepoClean(t *testing.T) {
+	repoDir := setupGitRepo(t)
+
+	treehouseDir := filepath.Join(repoDir, ".treehouse")
+	if err := EnsureExcluded(treehouseDir); err != nil {
+		t.Fatalf("EnsureExcluded failed: %v", err)
+	}
+
+	out, err := exec.Command("git", "-C", repoDir, "status", "--porcelain").CombinedOutput()
 	if err != nil {
-		t.Fatalf("failed to read .gitignore: %v", err)
+		t.Fatalf("git status failed: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		t.Errorf("expected clean git status after EnsureExcluded, got:\n%s", out)
+	}
+}
+
+func TestEnsureExcluded_Idempotent(t *testing.T) {
+	repoDir := setupGitRepo(t)
+
+	treehouseDir := filepath.Join(repoDir, ".treehouse")
+
+	if err := EnsureExcluded(treehouseDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureExcluded(treehouseDir); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := "/.treehouse"
+	count := strings.Count(readExclude(t, repoDir), entry)
+	if count != 1 {
+		t.Errorf("expected entry exactly once, found %d times in:\n%s", count, readExclude(t, repoDir))
+	}
+}
+
+func TestEnsureExcluded_PreservesPreexistingGitignoreEntry(t *testing.T) {
+	repoDir := setupGitRepo(t)
+
+	treehouseDir := filepath.Join(repoDir, ".treehouse")
+	entry := "/.treehouse"
+
+	// Simulate a pool created by an older version that added the entry to the
+	// tracked .gitignore.
+	gitignorePath := filepath.Join(repoDir, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte(entry+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsureExcluded(treehouseDir); err != nil {
+		t.Fatalf("EnsureExcluded failed: %v", err)
+	}
+
+	// The pre-existing .gitignore entry must be left untouched.
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != entry {
+		t.Errorf("expected .gitignore to keep %q untouched, got: %s", entry, data)
+	}
+
+	// And no duplicate should be written to .git/info/exclude.
+	if data, err := os.ReadFile(excludePath(repoDir)); err == nil {
+		if strings.Contains(string(data), entry) {
+			t.Errorf("expected no duplicate entry in .git/info/exclude, got: %s", data)
+		}
+	}
+}
+
+func TestEnsureExcluded_NestedRoot(t *testing.T) {
+	repoDir := setupGitRepo(t)
+
+	// A relative root like ".worktrees" resolves to <repo>/.worktrees/.treehouse.
+	treehouseDir := filepath.Join(repoDir, ".worktrees", ".treehouse")
+
+	if err := EnsureExcluded(treehouseDir); err != nil {
+		t.Fatalf("EnsureExcluded failed: %v", err)
 	}
 
 	expected := "/.worktrees/.treehouse"
-	if !strings.Contains(string(data), expected) {
-		t.Errorf("expected .gitignore to contain %q, got: %s", expected, data)
+	if got := readExclude(t, repoDir); !strings.Contains(got, expected) {
+		t.Errorf("expected .git/info/exclude to contain %q, got: %s", expected, got)
 	}
 }
 
-func TestEnsureGitignore_Idempotent(t *testing.T) {
-	repoDir := setupGitRepo(t)
-
-	treehouseDir := filepath.Join(repoDir, ".worktrees", ".treehouse")
-
-	if err := EnsureGitignore(treehouseDir); err != nil {
-		t.Fatal(err)
-	}
-	if err := EnsureGitignore(treehouseDir); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(repoDir, ".gitignore"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	entry := "/.worktrees/.treehouse"
-	count := strings.Count(string(data), entry)
-	if count != 1 {
-		t.Errorf("expected entry exactly once, found %d times in:\n%s", count, data)
-	}
-}
-
-func TestEnsureGitignore_NotInRepo(t *testing.T) {
+func TestEnsureExcluded_NotInRepo(t *testing.T) {
 	// A temp dir that is not a git repo.
 	dir := t.TempDir()
 	treehouseDir := filepath.Join(dir, ".treehouse")
 
-	if err := EnsureGitignore(treehouseDir); err != nil {
-		t.Fatalf("EnsureGitignore should be a no-op outside a repo, got: %v", err)
+	if err := EnsureExcluded(treehouseDir); err != nil {
+		t.Fatalf("EnsureExcluded should be a no-op outside a repo, got: %v", err)
 	}
 
-	// No .gitignore should be created.
 	if _, err := os.Stat(filepath.Join(dir, ".gitignore")); !os.IsNotExist(err) {
 		t.Error("expected no .gitignore to be created outside a git repo")
 	}
 }
 
-func TestEnsureGitignore_DefaultRoot(t *testing.T) {
+func TestEnsureExcluded_DefaultRoot(t *testing.T) {
 	repoDir := setupGitRepo(t)
 
-	// When using default root ($HOME/.treehouse), the treehouse dir is outside
-	// the repo, so EnsureGitignore should be a no-op.
+	// When using the default root ($HOME/.treehouse), the treehouse dir is
+	// outside the repo, so EnsureExcluded should be a no-op and must not touch
+	// the repo's exclude file or .gitignore.
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
 	treehouseDir := filepath.Join(home, ".treehouse")
 
-	// This should not fail even though the dir is outside the repo.
-	if err := EnsureGitignore(treehouseDir); err != nil {
-		t.Fatalf("EnsureGitignore failed: %v", err)
+	if err := EnsureExcluded(treehouseDir); err != nil {
+		t.Fatalf("EnsureExcluded failed: %v", err)
 	}
 
-	// No .gitignore should be created/modified in the repo.
 	if _, err := os.Stat(filepath.Join(repoDir, ".gitignore")); err == nil {
-		// If .gitignore exists, it shouldn't contain .treehouse (the home one
-		// is in a different repo context).
-		_ = repoDir // just ensure we don't accidentally create one
+		t.Error("expected no .gitignore to be created in the repo for the default root")
 	}
 }

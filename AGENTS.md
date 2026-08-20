@@ -56,7 +56,14 @@ make test
   `Acquire` and `prune` skip recovered entries, and `destroy` only removes one via a single named `--include-leased` target.
   A human clears a recovered entry with `treehouse status` then `treehouse return` (or `destroy --include-leased`) once verified
 - Git operations shell out to `git` (go-git has incomplete worktree support)
-- Self-healing: stale state entries are auto-removed
+- Self-healing: stale state entries are auto-removed, and `get` prunes stale git worktree registrations before adding a worktree
+
+## Contribution Gate
+
+- PRs to `main` must carry the no-mistakes pipeline signature. The required check is `PR must be raised via no-mistakes` (`.github/workflows/no-mistakes-required.yml`), enforced by the repository `main` ruleset; only the owner/Admin role can bypass it.
+- Every exemption (bots, and release-please identified structurally by branch prefix + same-repo head + Release Please body footer) lives in `.github/scripts/no-mistakes-gate.sh`, the single executable decision surface, covered by `TestNoMistakesGateDecisions`.
+- release-please opens its PRs with `GITHUB_TOKEN`, so GitHub creates **no** workflow runs on them and the gate can never report there. `release.yml`'s `release-pr-gate-status` job publishes the required context on the release PR head by running that same gate script, so release PRs go green without an owner override.
+- A workflow backing a required check must never use `paths`/`paths-ignore`: a filtered required check never reports and blocks the PR forever. `TestPullRequestWorkflowsExcludeReleasePleaseOutputs` encodes both that rule and the opposite rule for ordinary PR workflows.
 
 ## Windows Compatibility
 

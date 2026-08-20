@@ -294,6 +294,114 @@ func TestRemoveCleanWorktreeRejectsDirtyWorktree(t *testing.T) {
 	}
 }
 
+func TestIsHeadMergedIntoRef(t *testing.T) {
+	tests := []struct {
+		name                   string
+		ordinaryMerge          bool
+		squashMerge            bool
+		laterUnrelated         bool
+		targetFeatureContent   string
+		emptyFeatureCommit     bool
+		revertedFeatureContent bool
+		wantMerged             bool
+	}{
+		{name: "ordinary ancestry merge", ordinaryMerge: true, wantMerged: true},
+		{name: "squash merge", squashMerge: true, wantMerged: true},
+		{name: "squash merge followed by unrelated target commit", squashMerge: true, laterUnrelated: true, wantMerged: true},
+		{name: "squash merge missing final feature content", squashMerge: true, targetFeatureContent: "one\n", wantMerged: false},
+		{name: "unique unmerged content", wantMerged: false},
+		{name: "empty feature commit", emptyFeatureCommit: true, wantMerged: false},
+		{name: "feature content fully reverted", revertedFeatureContent: true, wantMerged: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoDir := t.TempDir()
+			mustGit(t, "", "init", "--initial-branch=main", repoDir)
+			mustGit(t, repoDir, "config", "user.email", "test@test.com")
+			mustGit(t, repoDir, "config", "user.name", "Test")
+
+			if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("base\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			mustGit(t, repoDir, "add", ".")
+			mustGit(t, repoDir, "commit", "-m", "initial")
+			mustGit(t, repoDir, "checkout", "-b", "feature")
+
+			switch {
+			case tt.emptyFeatureCommit:
+				mustGit(t, repoDir, "commit", "--allow-empty", "-m", "empty feature commit")
+			case tt.revertedFeatureContent:
+				if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("feature\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				mustGit(t, repoDir, "commit", "-am", "feature change")
+				if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("base\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				mustGit(t, repoDir, "commit", "-am", "revert feature change")
+			default:
+				if err := os.WriteFile(filepath.Join(repoDir, "feature.txt"), []byte("one\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				mustGit(t, repoDir, "add", "feature.txt")
+				mustGit(t, repoDir, "commit", "-m", "feature one")
+				if err := os.WriteFile(filepath.Join(repoDir, "feature.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				mustGit(t, repoDir, "commit", "-am", "feature two")
+			}
+
+			mustGit(t, repoDir, "checkout", "main")
+			switch {
+			case tt.ordinaryMerge:
+				mustGit(t, repoDir, "merge", "--no-ff", "feature", "-m", "merge feature")
+			case tt.squashMerge:
+				mustGit(t, repoDir, "merge", "--squash", "feature")
+				if tt.targetFeatureContent != "" {
+					if err := os.WriteFile(filepath.Join(repoDir, "feature.txt"), []byte(tt.targetFeatureContent), 0o644); err != nil {
+						t.Fatal(err)
+					}
+					mustGit(t, repoDir, "add", "feature.txt")
+				}
+				mustGit(t, repoDir, "commit", "-m", "squash feature")
+			}
+			if tt.laterUnrelated {
+				if err := os.WriteFile(filepath.Join(repoDir, "unrelated.txt"), []byte("later\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				mustGit(t, repoDir, "add", "unrelated.txt")
+				mustGit(t, repoDir, "commit", "-m", "unrelated target change")
+			}
+			mustGit(t, repoDir, "checkout", "feature")
+
+			merged, err := IsHeadMergedIntoRef(repoDir, "refs/heads/main")
+			if err != nil {
+				t.Fatalf("IsHeadMergedIntoRef failed: %v", err)
+			}
+			if merged != tt.wantMerged {
+				t.Fatalf("expected merged=%t, got %t", tt.wantMerged, merged)
+			}
+		})
+	}
+}
+
+func TestIsHeadMergedIntoRefFailsClosedWhenTargetCannotBeVerified(t *testing.T) {
+	repoDir := t.TempDir()
+	mustGit(t, "", "init", "--initial-branch=main", repoDir)
+	mustGit(t, repoDir, "config", "user.email", "test@test.com")
+	mustGit(t, repoDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repoDir, "add", ".")
+	mustGit(t, repoDir, "commit", "-m", "initial")
+
+	if _, err := IsHeadMergedIntoRef(repoDir, "refs/heads/missing"); err == nil {
+		t.Fatal("expected merge verification error for missing target ref")
+	}
+}
+
 func mustGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)

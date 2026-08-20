@@ -172,7 +172,7 @@ func resolveDestroyPoolFromTarget(targetPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to load config: %w", err)
 	}
-	return config.ResolvePoolDir(repoRoot, cfg.Root)
+	return config.ResolvePoolDir(repoRoot, config.ResolveRoot(rootFlag, cfg))
 }
 
 // destroySingleExit makes a single named destruction fail loudly when the

@@ -48,7 +48,7 @@ absolute.`,
 				return fmt.Errorf("failed to load config: %w", err)
 			}
 
-			poolRoot, err := config.ResolvePoolRoot("", cfg.Root)
+			poolRoot, err := config.ResolvePoolRoot("", config.ResolveRoot(rootFlag, cfg))
 			if err != nil {
 				return err
 			}
@@ -66,7 +66,7 @@ absolute.`,
 			return nil
 		}
 
-		repoRoot, err := git.FindRepoRoot()
+		repoRoot, err := git.FindMainRepoRoot()
 		if err != nil {
 			return fmt.Errorf("not in a git repository: %w", err)
 		}
@@ -76,7 +76,7 @@ absolute.`,
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		poolDir, err := config.ResolvePoolDir(repoRoot, cfg.Root)
+		poolDir, err := config.ResolvePoolDir(repoRoot, config.ResolveRoot(rootFlag, cfg))
 		if err != nil {
 			return err
 		}

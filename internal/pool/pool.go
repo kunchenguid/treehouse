@@ -44,8 +44,17 @@ type LeaseInfo struct {
 	LeasedAt    time.Time `json:"leased_at"`
 }
 
+// AcquireOptions controls optional acquisition behavior.
+type AcquireOptions struct {
+	// SkipFetch uses the repository's existing local refs instead of fetching
+	// origin before acquiring a worktree.
+	SkipFetch bool
+}
+
 // acquireOptions controls how Acquire reserves the worktree it hands out.
 type acquireOptions struct {
+	// skipFetch uses existing local refs without contacting origin.
+	skipFetch bool
 	// lease records a durable, process-independent reservation instead of the
 	// default short-lived owner reservation.
 	lease bool
@@ -61,7 +70,13 @@ type acquireOptions struct {
 // reservation (the calling process). It is the backing call for the interactive
 // `treehouse get` subshell.
 func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (string, error) {
+	return AcquireWithOptions(repoRoot, poolDir, poolSize, postCreate, AcquireOptions{})
+}
+
+// AcquireWithOptions reserves a clean worktree with optional acquisition behavior.
+func AcquireWithOptions(repoRoot, poolDir string, poolSize int, postCreate []string, options AcquireOptions) (string, error) {
 	acquired, err := acquire(repoRoot, poolDir, poolSize, postCreate, acquireOptions{
+		skipFetch:  options.SkipFetch,
 		hookStdout: os.Stdout,
 		hookStderr: os.Stderr,
 	})
@@ -81,7 +96,13 @@ func AcquireLease(repoRoot, poolDir string, poolSize int, postCreate []string, h
 // AcquireLeaseInfo reserves a worktree exactly like AcquireLease and returns
 // the immutable identity and metadata for that acquisition.
 func AcquireLeaseInfo(repoRoot, poolDir string, poolSize int, postCreate []string, holder string) (LeaseInfo, error) {
+	return AcquireLeaseInfoWithOptions(repoRoot, poolDir, poolSize, postCreate, holder, AcquireOptions{})
+}
+
+// AcquireLeaseInfoWithOptions reserves a durable lease with optional acquisition behavior.
+func AcquireLeaseInfoWithOptions(repoRoot, poolDir string, poolSize int, postCreate []string, holder string, options AcquireOptions) (LeaseInfo, error) {
 	return acquire(repoRoot, poolDir, poolSize, postCreate, acquireOptions{
+		skipFetch:   options.SkipFetch,
 		lease:       true,
 		leaseHolder: holder,
 		hookStdout:  os.Stderr,
@@ -96,7 +117,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 	}
 
 	fmt.Fprintf(os.Stderr, "🌳 Setting up worktree...\n")
-	if git.HasRemote(repoRoot, "origin") {
+	if !opts.skipFetch && git.HasRemote(repoRoot, "origin") {
 		if err := git.Fetch(repoRoot); err != nil {
 			return LeaseInfo{}, fmt.Errorf("fetch failed: %w", err)
 		}
@@ -152,6 +173,20 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 
 		if err := os.MkdirAll(filepath.Dir(wtPath), 0755); err != nil {
 			return err
+		}
+
+		// Clear any stale worktree bookkeeping left behind by a crashed or
+		// forcibly removed worktree. Without this, git rejects the add with
+		// "missing but already registered worktree". Prune is safe: it only
+		// removes registrations whose target directories are already gone.
+		//
+		// Best-effort: prune is a self-healing optimization, not a precondition
+		// for AddWorktree in the common (non-stale) case. A transient failure
+		// (e.g. a temporary .git/worktrees lock or permission issue) must not
+		// wedge a get that would otherwise succeed; let AddWorktree surface the
+		// real error if one exists.
+		if err := git.PruneWorktrees(repoRoot); err != nil {
+			fmt.Fprintf(os.Stderr, "🌳 Warning: failed to prune stale worktrees: %v\n", err)
 		}
 
 		if err := git.AddWorktree(repoRoot, wtPath, branch); err != nil {

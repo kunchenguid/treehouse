@@ -504,6 +504,29 @@ func TestGetLeasePrintsOnlyPathToStdout(t *testing.T) {
 	}
 }
 
+func TestGetNoFetchUsesLocalRefs(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	missingRemote := filepath.Join(t.TempDir(), "missing.git")
+	gitCmd(t, repoDir, "remote", "set-url", "origin", missingRemote)
+
+	_, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease")
+	if code == 0 || !strings.Contains(stderr, "fetch failed") {
+		t.Fatalf("get with unreachable origin should fail fetching: code=%d stderr=%q", code, stderr)
+	}
+
+	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease", "--no-fetch", "--json")
+	if code != 0 {
+		t.Fatalf("get --no-fetch should use local refs: code=%d stderr=%q", code, stderr)
+	}
+	var lease leaseJSONResult
+	if err := json.Unmarshal([]byte(stdout), &lease); err != nil {
+		t.Fatalf("get --no-fetch returned invalid JSON %q: %v", stdout, err)
+	}
+	if _, err := os.Stat(filepath.Join(lease.Path, "README.md")); err != nil {
+		t.Fatalf("leased worktree should contain locally available repository content: %v", err)
+	}
+}
+
 func TestGetLeaseRecordsHolder(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 
@@ -960,6 +983,61 @@ func TestGetReusesWorktree(t *testing.T) {
 	}
 }
 
+// TestGetRecoversFromStaleWorktreeRegistration verifies that "treehouse get"
+// self-heals when git still has bookkeeping for a worktree whose directory was
+// removed out-of-band (e.g. a crashed agent). Without prune-before-add, git
+// rejects the add with "missing but already registered worktree" and every
+// subsequent get is wedged. See issue #30.
+func TestGetRecoversFromStaleWorktreeRegistration(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	env := []string{"SHELL=" + exitShellBin}
+
+	// Materialize the pool directory so we can plant the stale entry at the
+	// exact slot path Acquire will target (slot 1 / <repo-basename>).
+	if _, _, code := runTreehouse(t, repoDir, homeDir, nil, "status"); code != 0 {
+		t.Fatalf("initial status failed (code %d)", code)
+	}
+	matches, err := filepath.Glob(filepath.Join(homeDir, ".treehouse", filepath.Base(repoDir)+"-*"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("expected exactly one pool dir under %s/.treehouse, got %v: %v", homeDir, matches, err)
+	}
+	poolDir := matches[0]
+	stalePath := filepath.Join(poolDir, "1", filepath.Base(repoDir))
+
+	// Simulate a crashed scout: register a worktree at the slot path, then
+	// delete its directory without telling git. This leaves a prunable entry.
+	if err := os.MkdirAll(filepath.Dir(stalePath), 0755); err != nil {
+		t.Fatalf("mkdir slot parent: %v", err)
+	}
+	gitCmd(t, repoDir, "worktree", "add", "--detach", stalePath, "main")
+	if err := os.RemoveAll(stalePath); err != nil {
+		t.Fatalf("remove stale worktree dir: %v", err)
+	}
+
+	// Sanity: git should now consider the entry prunable.
+	listOut := gitCmd(t, repoDir, "worktree", "list", "--porcelain")
+	if !strings.Contains(listOut, "prunable") {
+		t.Fatalf("expected prunable entry in worktree list, got:\n%s", listOut)
+	}
+
+	// get must recover and create the worktree despite the stale registration.
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("treehouse get failed on stale registration (code %d): %s", code, getErr)
+	}
+	if strings.Contains(getErr, "already registered") || strings.Contains(getErr, "failed to create worktree") {
+		t.Fatalf("get did not recover from stale registration: %s", getErr)
+	}
+	if !strings.Contains(getErr, "Entered worktree at") {
+		t.Fatalf("expected 'Entered worktree at' in stderr, got: %s", getErr)
+	}
+
+	// The worktree directory must actually exist on disk after get.
+	if _, err := os.Stat(filepath.Join(stalePath, "README.md")); err != nil {
+		t.Errorf("worktree was not recreated at %s: %v", stalePath, err)
+	}
+}
+
 func TestReturnFromInsideWorktreeDoesNotTerminateCaller(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	env := []string{"SHELL=" + exitShellBin}
@@ -982,6 +1060,93 @@ func TestReturnFromInsideWorktreeDoesNotTerminateCaller(t *testing.T) {
 	}
 	if strings.Contains(returnErr, "Terminated lingering processes") && strings.Contains(returnErr, "treehouse") {
 		t.Fatalf("return should not terminate its own process chain: %s", returnErr)
+	}
+}
+
+// setupLocalOnlyRepo creates a repo with no remotes. Without a remote, the
+// pool name is hashed from the repo path, so pool resolution is sensitive to
+// which repo root a command resolves.
+func setupLocalOnlyRepo(t *testing.T) (repoDir, homeDir string) {
+	t.Helper()
+
+	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	homeDir = filepath.Join(base, "home")
+	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	repoDir = filepath.Join(base, "myrepo")
+	gitCmd(t, "", "init", "--initial-branch=main", repoDir)
+	gitCmd(t, repoDir, "config", "user.email", "test@test.com")
+	gitCmd(t, repoDir, "config", "user.name", "Test")
+
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repoDir, "add", ".")
+	gitCmd(t, repoDir, "commit", "-m", "initial commit")
+
+	return repoDir, homeDir
+}
+
+func TestCommandsInsideWorktreeUseMainRepoPool(t *testing.T) {
+	repoDir, homeDir := setupLocalOnlyRepo(t)
+
+	leaseOut, leaseErr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease")
+	if code != 0 {
+		t.Fatalf("get --lease failed (code %d): %s", code, leaseErr)
+	}
+	wtPath := strings.TrimSpace(leaseOut)
+	if wtPath == "" {
+		t.Fatal("could not capture leased worktree path")
+	}
+
+	// status inside the worktree must resolve the main repo's pool, not hash
+	// the worktree path into a fresh empty pool.
+	statusOut, statusErr, code := runTreehouseFromDir(t, repoDir, wtPath, homeDir, nil, "status")
+	if code != 0 {
+		t.Fatalf("status inside worktree failed (code %d): %s", code, statusErr)
+	}
+	if strings.Contains(statusErr, "No worktrees in pool") {
+		t.Fatalf("status inside worktree resolved an empty pool, stderr:\n%s", statusErr)
+	}
+	if !strings.Contains(statusOut, "leased") {
+		t.Fatalf("expected leased worktree in status output, got:\n%s", statusOut)
+	}
+
+	// get inside the worktree must acquire from the same pool.
+	env := []string{"SHELL=" + exitShellBin}
+	_, getErr, code := runTreehouseFromDir(t, repoDir, wtPath, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get inside worktree failed (code %d): %s", code, getErr)
+	}
+	secondPath := extractWorktreePath(getErr, homeDir)
+	if secondPath == "" {
+		t.Fatal("could not extract worktree path")
+	}
+	poolDir := filepath.Dir(filepath.Dir(wtPath))
+	if filepath.Dir(filepath.Dir(secondPath)) != poolDir {
+		t.Fatalf("expected worktree in pool %s, got %s", poolDir, secondPath)
+	}
+
+	// No ghost pool directory may appear next to the real one.
+	entries, err := os.ReadDir(filepath.Join(homeDir, ".treehouse"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pools []string
+	for _, e := range entries {
+		if e.IsDir() {
+			pools = append(pools, e.Name())
+		}
+	}
+	if len(pools) != 1 {
+		t.Fatalf("expected exactly one pool directory, got %v", pools)
 	}
 }
 
@@ -1870,8 +2035,8 @@ func TestPruneRefreshesOriginBeforeMergeSafety(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("prune --yes failed after remote rewrite (code %d): %s", code, pruneErr)
 	}
-	if !strings.Contains(pruneOut, "not merged") {
-		t.Fatalf("expected stale local origin to be refreshed, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
+	if !strings.Contains(pruneOut, "cannot verify") {
+		t.Fatalf("expected unrelated remote history to be unverified, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("worktree with remotely unmerged HEAD was removed: %v", err)
@@ -1911,8 +2076,8 @@ func TestPruneUsesCurrentRemoteDefaultBranch(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("prune --yes failed after remote default rename (code %d): %s", code, pruneErr)
 	}
-	if !strings.Contains(pruneOut, "not merged") || !strings.Contains(pruneOut, "origin/trunk") {
-		t.Fatalf("expected prune to use current remote default, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
+	if !strings.Contains(pruneOut, "cannot verify") {
+		t.Fatalf("expected prune to use current remote default and fail closed, got stdout:\n%s\nstderr:\n%s", pruneOut, pruneErr)
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("worktree unmerged into current remote default was removed: %v", err)

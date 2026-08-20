@@ -37,7 +37,7 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show the status of all worktrees in the pool",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		repoRoot, err := git.FindRepoRoot()
+		repoRoot, err := git.FindMainRepoRoot()
 		if err != nil {
 			return fmt.Errorf("not in a git repository: %w", err)
 		}
@@ -47,7 +47,7 @@ var statusCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		poolDir, err := config.ResolvePoolDir(repoRoot, cfg.Root)
+		poolDir, err := config.ResolvePoolDir(repoRoot, config.ResolveRoot(rootFlag, cfg))
 		if err != nil {
 			return err
 		}

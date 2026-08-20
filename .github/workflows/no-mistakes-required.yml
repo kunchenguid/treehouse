@@ -1,0 +1,57 @@
+name: Require no-mistakes
+run-name: "PR #${{ github.event.pull_request.number }} body compliance - ${{ github.event.action }} - event ${{ github.run_number }} (run ${{ github.run_id }})"
+
+# No paths / paths-ignore filter here, deliberately. This workflow backs a
+# required status check, and a path-filtered required check never reports at
+# all, leaving the PR blocked on a status that can never arrive.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# GitHub concurrency groups retain at most one pending run, replacing older
+# pending runs even when cancel-in-progress is false. Give body-bearing events
+# an immutable per-event group so first-time-fork approvals can never collapse
+# opened/edited checks. Keep synchronize/reopened coalescing as before.
+concurrency:
+  group: no-mistakes-required-${{ github.event.pull_request.number }}-${{ (github.event.action == 'opened' || github.event.action == 'edited') && github.run_id || 'head-change' }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: PR must be raised via no-mistakes
+    runs-on: ubuntu-latest
+    steps:
+      # Check out the BASE branch, never the PR head: the gate script must come
+      # from trusted, already-merged code so a pull request cannot weaken the
+      # check that judges it.
+      - name: Check out the gate script from the base branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Verify no-mistakes signature in PR body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+        run: |
+          set -eu
+          script=./.github/scripts/no-mistakes-gate.sh
+          if [ ! -f "$script" ]; then
+            # The script is read from the base branch on purpose, so a PR based
+            # on a main that predates it must say so rather than exit 127.
+            echo "::error::The no-mistakes gate script is missing from the base branch. Rebase onto a main that contains ${script}." >&2
+            exit 1
+          fi
+          bash "$script"

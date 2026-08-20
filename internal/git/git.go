@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -16,6 +17,13 @@ const (
 	gitCommandTimeout   = 2 * time.Minute
 	gitCommandWaitDelay = 250 * time.Millisecond
 )
+
+// FindMainRepoRoot returns the main repository root for the current working
+// directory. Inside a linked worktree it resolves back to the owning
+// repository, so pool resolution is stable no matter where a command runs.
+func FindMainRepoRoot() (string, error) {
+	return FindMainRepoRootFrom("")
+}
 
 func FindRepoRoot() (string, error) {
 	return runGit("", "rev-parse", "--show-toplevel")
@@ -62,6 +70,26 @@ func mainRepoRoot(repoRoot string) string {
 		}
 	}
 	return mainRoot
+}
+
+// CommonGitDir returns the absolute path to the repository's common git
+// directory for the repo containing dir. For a linked worktree this is the
+// shared .git of the main repository, so files such as info/exclude resolve to
+// the single shared location git actually reads.
+func CommonGitDir(dir string) (string, error) {
+	out, err := runGit(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		// Older git without --path-format falls back to a possibly-relative path.
+		out, err = runGit(dir, "rev-parse", "--git-common-dir")
+		if err != nil {
+			return "", err
+		}
+	}
+	p := filepath.Clean(filepath.FromSlash(out))
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(dir, p)
+	}
+	return p, nil
 }
 
 func repoRootFromCommonGitDir(dir string) (string, bool) {
@@ -148,6 +176,15 @@ func isAncestor(repoRoot, a, b string) bool {
 
 func AddWorktree(repoRoot, path, branch string) error {
 	_, err := runGit(repoRoot, "worktree", "add", "--detach", path, branchRef(repoRoot, branch))
+	return err
+}
+
+// PruneWorktrees removes git worktree bookkeeping for worktrees whose
+// directories no longer exist. It is safe by design: git only deletes
+// registrations for already-missing directories and never touches live
+// worktrees or their data.
+func PruneWorktrees(repoRoot string) error {
+	_, err := runGit(repoRoot, "worktree", "prune")
 	return err
 }
 
@@ -266,7 +303,10 @@ func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error
 	return merged, ref, err
 }
 
-// IsHeadMergedIntoRef reports whether worktreePath's HEAD is an ancestor of ref.
+// IsHeadMergedIntoRef reports whether worktreePath's HEAD is merged into ref.
+// Ancestry is the fast proof; when it is absent, a path-scoped tree comparison
+// detects a squash merge without treating unrelated target-branch changes as a
+// mismatch.
 func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
 	defer cancel()
@@ -284,9 +324,89 @@ func isHeadMergedIntoRefContext(ctx context.Context, worktreePath, ref string) (
 		return false, gitTimeoutError(worktreePath, args)
 	}
 	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-		return false, nil
+		return isHeadContentMergedIntoRef(worktreePath, ref)
 	}
 	return false, fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
+}
+
+func isHeadContentMergedIntoRef(worktreePath, ref string) (bool, error) {
+	cmd := exec.Command("git", "merge-base", "HEAD", ref)
+	cmd.Dir = worktreePath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return false, fmt.Errorf("git merge-base HEAD %s returned no common ancestor", ref)
+		}
+		return false, fmt.Errorf("git merge-base HEAD %s: %s", ref, strings.TrimSpace(string(out)))
+	}
+	base := strings.TrimSpace(string(out))
+	if base == "" {
+		return false, fmt.Errorf("git merge-base HEAD %s returned no common ancestor", ref)
+	}
+
+	baseTree, err := readTree(worktreePath, base)
+	if err != nil {
+		return false, err
+	}
+	headTree, err := readTree(worktreePath, "HEAD")
+	if err != nil {
+		return false, err
+	}
+	targetTree, err := readTree(worktreePath, ref)
+	if err != nil {
+		return false, err
+	}
+
+	hasDelta := false
+	for path, baseEntry := range baseTree {
+		if baseEntry == headTree[path] {
+			continue
+		}
+		hasDelta = true
+		if headTree[path] != targetTree[path] {
+			return false, nil
+		}
+	}
+	for path, headEntry := range headTree {
+		if _, ok := baseTree[path]; ok {
+			continue
+		}
+		hasDelta = true
+		if headEntry != targetTree[path] {
+			return false, nil
+		}
+	}
+	if !hasDelta {
+		return false, nil
+	}
+	return true, nil
+}
+
+func readTree(repoRoot, ref string) (map[string]string, error) {
+	out, err := runGitRaw(repoRoot, "ls-tree", "-r", "-z", "--full-tree", ref)
+	if err != nil {
+		return nil, err
+	}
+
+	tree := make(map[string]string)
+	for len(out) > 0 {
+		end := bytes.IndexByte(out, 0)
+		if end == -1 {
+			return nil, fmt.Errorf("git ls-tree %s returned malformed NUL-delimited output", ref)
+		}
+		record := out[:end]
+		out = out[end+1:]
+		separator := bytes.IndexByte(record, '\t')
+		if separator == -1 || separator == len(record)-1 {
+			return nil, fmt.Errorf("git ls-tree %s returned malformed tree entry", ref)
+		}
+		path := string(record[separator+1:])
+		if _, exists := tree[path]; exists {
+			return nil, fmt.Errorf("git ls-tree %s returned duplicate path %q", ref, path)
+		}
+		tree[path] = string(record[:separator])
+	}
+	return tree, nil
 }
 
 // IsDirty reports tracked or untracked changes, ignoring status.showUntrackedFiles.
@@ -311,17 +431,34 @@ func runGit(dir string, args ...string) (string, error) {
 }
 
 func runGitContext(ctx context.Context, dir string, args ...string) (string, error) {
-	out, err := gitCommandContext(ctx, dir, args...).Output()
+	out, err := runGitRawContext(ctx, dir, args...)
 	if err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return "", gitTimeoutError(dir, args)
-		}
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(exitErr.Stderr)))
-		}
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// runGitRaw keeps upstream's byte-returning entry point but routes it through
+// the same timeout budget as runGit, so the ls-tree caller cannot hang either.
+func runGitRaw(dir string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+	defer cancel()
+
+	return runGitRawContext(ctx, dir, args...)
+}
+
+func runGitRawContext(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	out, err := gitCommandContext(ctx, dir, args...).Output()
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, gitTimeoutError(dir, args)
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return nil, err
+	}
+	return out, nil
 }
 
 func gitCommandContext(ctx context.Context, dir string, args ...string) *exec.Cmd {

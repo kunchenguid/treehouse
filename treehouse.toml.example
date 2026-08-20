@@ -5,6 +5,15 @@
 # Maximum number of worktrees in the pool
 max_trees = 16
 
+# Optional worktree root directory.
+# Empty (default) uses the global $HOME/.treehouse store.
+# Relative paths resolve from the repo root; "treehouse" is always appended.
+# Override per-command with the --root flag or the TREEHOUSE_ROOT env var
+# (precedence: --root > TREEHOUSE_ROOT > this file > user config > default).
+# Set to "." to keep the pool in-project at <repo>/.treehouse/, next to the
+# code and removed with the project.
+# root = "."
+
 # Lifecycle hooks are ignored in repo-level config for safety.
 # Each list runs sequentially in the worktree directory via the OS shell.
 # Failures are logged and do not fail the operation.

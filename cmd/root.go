@@ -11,6 +11,11 @@ import (
 
 var version = "dev"
 
+// rootFlag holds the value of the persistent --root flag. It overrides both the
+// TREEHOUSE_ROOT environment variable and the configured root; see
+// config.ResolveRoot for the full precedence.
+var rootFlag string
+
 func SetVersion(v string) {
 	version = v
 	rootCmd.Version = v
@@ -54,6 +59,8 @@ so that multiple AI coding agents can work on the same repo in parallel.`,
 
 func init() {
 	rootCmd.SetVersionTemplate(`{{.Version}}` + "\n")
+	rootCmd.PersistentFlags().StringVar(&rootFlag, "root", "",
+		"Worktree root directory, overriding TREEHOUSE_ROOT and config; relative paths (e.g. \".\" for an in-project pool) resolve from the repo root")
 }
 
 func Execute() error {

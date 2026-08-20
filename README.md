@@ -86,6 +86,7 @@ make install
 
 Treehouse manages a **pool of git worktrees** per repository, stored under the configured treehouse root.
 The default treehouse root is `~/.treehouse/`.
+You can instead keep the pool [inside the project](#in-project-storage) with `--root .`, so it lives next to the code and is removed with the project.
 
 ```
   treehouse
@@ -141,6 +142,7 @@ The default treehouse root is `~/.treehouse/`.
   `treehouse prune --all` applies the same safety checks across every managed pool under the user-level treehouse root.
   Backing-repository-missing orphans are reported by default; `--prune-orphans` includes them as unverified prune candidates, and `--yes` is required before deletion.
   It is a dry run unless you pass `--yes`.
+- **Self-healing get** - `treehouse get` prunes stale git worktree bookkeeping (e.g. left behind by a crashed or forcibly removed worktree) before adding a new worktree, so a prunable registration never wedges the pool with a "missing but already registered worktree" error.
 
 ## CLI Reference
 
@@ -207,6 +209,15 @@ Every acquisition receives a new random `lease_id`, including reacquiring the sa
 treehouse get --lease --lease-holder automation-A --json
 # {"path":"...","lease_id":"...","lease_holder":"automation-A","leased_at":"..."}
 ```
+
+Callers that already fetched the required refs can avoid another network operation with `--no-fetch`:
+
+```sh
+git fetch origin main refs/pull/123/head
+treehouse get --lease --no-fetch --json
+```
+
+With `--no-fetch`, Treehouse resets or creates the worktree from existing local refs and never contacts `origin`. The caller is responsible for ensuring those refs and objects are current.
 
 `treehouse status --json` returns an array with `name`, `path`, `status`, `lease_id`, `lease_holder`, `leased_at`, and `processes`. Non-leased entries use empty lease strings and a `null` timestamp. State files written before lease identities remain readable; their existing leases have an empty `lease_id` until released and acquired again.
 
@@ -312,6 +323,7 @@ max_trees = 16
 # Optional worktree root directory.
 # Empty uses $HOME/.treehouse.
 # Relative paths are resolved from the repo root for repo-scoped commands.
+# Use "." to keep the pool inside the project (see "In-project storage" below).
 # Use an absolute user-level root for treehouse prune --all.
 # root = "$HOME/worktrees"
 ```
@@ -319,6 +331,39 @@ max_trees = 16
 The repo-level config takes precedence for repo-safe settings.
 `treehouse prune --all` can run without a repository, so it uses only the user-level config and does not read per-repo `treehouse.toml` files while sweeping.
 If no config is found, the default pool size is 16.
+
+### Worktree root
+
+The worktree root can also be set without a config file, and the resolved value follows this precedence (highest first):
+
+1. The `--root` flag (e.g. `treehouse get --root .`)
+2. The `TREEHOUSE_ROOT` environment variable
+3. `root` in the repo-level `treehouse.toml`
+4. `root` in the user-level `~/.config/treehouse/config.toml`
+5. The default, `~/.treehouse`
+
+A relative value (including `.`) is resolved from the repo root, exactly like a relative `root` in config; `treehouse` is always appended, so `--root .` places the pool at `<repo>/.treehouse/`.
+
+### In-project storage
+
+By default the pool lives in the global `~/.treehouse` store. Set the root to `.` to keep it **inside the project** instead:
+
+```sh
+treehouse get --root .          # one-off
+export TREEHOUSE_ROOT=.         # for a shell session
+```
+
+or commit it for the whole repo in `treehouse.toml`:
+
+```toml
+root = "."
+```
+
+This is **opt-in**; the default global store is unchanged. In-project mode:
+
+- Places the pool at `<repo>/.treehouse/`, so worktrees sit next to the code and are **removed with the project** (`rm -rf <repo>` leaves no global orphan).
+- Git-ignores the pool directory automatically, so it stays out of `git add`.
+- Is not reached by `treehouse prune --all`, which only sweeps the global root; in-project pools are removed with the project instead.
 
 ### Hooks
 

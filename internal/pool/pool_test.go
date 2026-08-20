@@ -1152,6 +1152,44 @@ func TestPruneRemovesAvailableWorktree(t *testing.T) {
 	}
 }
 
+func TestPruneRemovesCleanIdleSquashMergedWorktree(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	runGit(t, wtPath, "checkout", "-b", "squashed-feature")
+	if err := os.WriteFile(filepath.Join(wtPath, "feature.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, wtPath, "add", "feature.txt")
+	runGit(t, wtPath, "commit", "-m", "feature one")
+	if err := os.WriteFile(filepath.Join(wtPath, "feature.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, wtPath, "commit", "-am", "feature two")
+
+	runGit(t, repoDir, "merge", "--squash", "squashed-feature")
+	runGit(t, repoDir, "commit", "-m", "squash feature")
+	runGit(t, repoDir, "push", "origin", "main")
+
+	result, err := Prune(repoDir, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if len(result.Pruned) != 1 || result.Pruned[0].Path != wtPath {
+		t.Fatalf("expected squash-merged worktree %s to be pruned, got %#v", wtPath, result.Pruned)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("expected squash-merged worktree to be removed, stat err: %v", err)
+	}
+}
+
 func TestPrunePoolDerivesRepoContextFromManagedWorktree(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
@@ -1495,8 +1533,8 @@ func TestPruneRefreshesOriginBeforeMergeSafety(t *testing.T) {
 	if len(result.Pruned) != 0 {
 		t.Fatalf("worktree with remotely unmerged HEAD must not be pruned, got %#v", result.Pruned)
 	}
-	if !hasSkippedReason(result.Skipped, wtPath, "not merged") {
-		t.Fatalf("expected unmerged worktree skip after fetch, got %#v", result.Skipped)
+	if !hasSkippedCategory(result.Skipped, wtPath, pruneSkipCannotVerify) {
+		t.Fatalf("expected cannot-verify worktree skip after fetch, got %#v", result.Skipped)
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("expected remotely unmerged worktree to remain: %v", err)
@@ -1536,8 +1574,8 @@ func TestPruneUsesRemoteTrackingDefaultRefNotShadowingBranch(t *testing.T) {
 	if len(result.Pruned) != 0 {
 		t.Fatalf("shadowed default ref must not prune unmerged worktree, got %#v", result.Pruned)
 	}
-	if !hasSkippedReason(result.Skipped, wtPath, "not merged") {
-		t.Fatalf("expected unmerged worktree skip with shadowed ref, got %#v", result.Skipped)
+	if !hasSkippedCategory(result.Skipped, wtPath, pruneSkipCannotVerify) {
+		t.Fatalf("expected cannot-verify worktree skip with shadowed ref, got %#v", result.Skipped)
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("expected shadowed-ref worktree to remain: %v", err)
@@ -1572,8 +1610,8 @@ func TestPruneUsesFullLocalDefaultRefWithoutOrigin(t *testing.T) {
 	if len(result.Pruned) != 0 {
 		t.Fatalf("local shadowed default ref must not prune unmerged worktree, got %#v", result.Pruned)
 	}
-	if !hasSkippedReason(result.Skipped, wtPath, "refs/heads/main") {
-		t.Fatalf("expected local default branch skip, got %#v", result.Skipped)
+	if !hasSkippedCategory(result.Skipped, wtPath, pruneSkipCannotVerify) {
+		t.Fatalf("expected cannot-verify local default branch skip, got %#v", result.Skipped)
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("expected local shadowed-ref worktree to remain: %v", err)
@@ -1608,8 +1646,8 @@ func TestPruneIgnoresStaleOriginHeadWhenOriginIsAbsent(t *testing.T) {
 	if len(result.Pruned) != 0 {
 		t.Fatalf("stale origin HEAD must not choose local main, got %#v", result.Pruned)
 	}
-	if !hasSkippedReason(result.Skipped, wtPath, "refs/heads/trunk") {
-		t.Fatalf("expected local HEAD branch skip, got %#v", result.Skipped)
+	if !hasSkippedCategory(result.Skipped, wtPath, pruneSkipCannotVerify) {
+		t.Fatalf("expected cannot-verify local HEAD branch skip, got %#v", result.Skipped)
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("expected stale origin HEAD worktree to remain: %v", err)
