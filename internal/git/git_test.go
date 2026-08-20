@@ -22,7 +22,8 @@ func TestRunGitContextPreservesNormalOutputAndExitDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runGitContext failed: %v", err)
 	}
-	if out != repoDir {
+	// git reports --show-toplevel with forward slashes even on Windows.
+	if filepath.FromSlash(out) != repoDir {
 		t.Fatalf("expected trimmed repository path %q, got %q", repoDir, out)
 	}
 

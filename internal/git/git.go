@@ -344,7 +344,7 @@ func gitTimeoutError(dir string, args []string) error {
 	}
 	lockPath := filepath.Join(".git", "index.lock")
 	return fmt.Errorf(
-		"git %s timed out in %q; check for a stale %s, blocked credential prompts, or network connectivity",
+		"git %s timed out in \"%s\"; check for a stale %s, blocked credential prompts, or network connectivity",
 		strings.Join(args, " "),
 		workingDir,
 		lockPath,
