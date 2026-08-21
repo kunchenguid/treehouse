@@ -9,9 +9,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kunchenguid/treehouse/internal/git"
-	"github.com/kunchenguid/treehouse/internal/hooks"
-	"github.com/kunchenguid/treehouse/internal/process"
+	"github.com/kunchenguid/treehouse/v2/internal/git"
+	"github.com/kunchenguid/treehouse/v2/internal/hooks"
+	"github.com/kunchenguid/treehouse/v2/internal/process"
 )
 
 // PruneWorktree describes a stale or explicitly selected orphaned worktree that

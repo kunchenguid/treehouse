@@ -4,8 +4,8 @@ import (
 	"os"
 	"runtime/debug"
 
-	"github.com/kunchenguid/treehouse/cmd"
-	"github.com/kunchenguid/treehouse/internal/updater"
+	"github.com/kunchenguid/treehouse/v2/cmd"
+	"github.com/kunchenguid/treehouse/v2/internal/updater"
 )
 
 var version = ""

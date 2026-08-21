@@ -71,7 +71,7 @@ treehouse = {
 **Go**
 
 ```sh
-go install github.com/kunchenguid/treehouse@latest
+go install github.com/kunchenguid/treehouse/v2@latest
 ```
 
 **From source**

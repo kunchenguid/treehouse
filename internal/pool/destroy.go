@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/kunchenguid/treehouse/internal/git"
-	"github.com/kunchenguid/treehouse/internal/hooks"
-	"github.com/kunchenguid/treehouse/internal/process"
+	"github.com/kunchenguid/treehouse/v2/internal/git"
+	"github.com/kunchenguid/treehouse/v2/internal/hooks"
+	"github.com/kunchenguid/treehouse/v2/internal/process"
 )
 
 // DestroyClass is the safety classification of a worktree considered for

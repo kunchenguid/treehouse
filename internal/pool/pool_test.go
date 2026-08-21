@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kunchenguid/treehouse/internal/process"
+	"github.com/kunchenguid/treehouse/v2/internal/process"
 )
 
 func setupRepo(t *testing.T) (repoDir, poolDir string) {

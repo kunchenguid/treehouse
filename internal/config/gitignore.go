@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kunchenguid/treehouse/internal/git"
+	"github.com/kunchenguid/treehouse/v2/internal/git"
 )
 
 // EnsureExcluded arranges for treehouseDir to be ignored by the enclosing git

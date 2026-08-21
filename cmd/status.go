@@ -10,10 +10,10 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/kunchenguid/treehouse/internal/config"
-	"github.com/kunchenguid/treehouse/internal/git"
-	"github.com/kunchenguid/treehouse/internal/pool"
-	"github.com/kunchenguid/treehouse/internal/ui"
+	"github.com/kunchenguid/treehouse/v2/internal/config"
+	"github.com/kunchenguid/treehouse/v2/internal/git"
+	"github.com/kunchenguid/treehouse/v2/internal/pool"
+	"github.com/kunchenguid/treehouse/v2/internal/ui"
 )
 
 var statusJSON bool
