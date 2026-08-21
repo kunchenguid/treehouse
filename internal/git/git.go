@@ -324,16 +324,18 @@ func isHeadMergedIntoRefContext(ctx context.Context, worktreePath, ref string) (
 		return false, gitTimeoutError(worktreePath, args)
 	}
 	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-		return isHeadContentMergedIntoRef(worktreePath, ref)
+		return isHeadContentMergedIntoRefContext(ctx, worktreePath, ref)
 	}
 	return false, fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
 }
 
-func isHeadContentMergedIntoRef(worktreePath, ref string) (bool, error) {
-	cmd := exec.Command("git", "merge-base", "HEAD", ref)
-	cmd.Dir = worktreePath
-	out, err := cmd.CombinedOutput()
+func isHeadContentMergedIntoRefContext(ctx context.Context, worktreePath, ref string) (bool, error) {
+	args := []string{"merge-base", "HEAD", ref}
+	out, err := gitCommandContext(ctx, worktreePath, args...).CombinedOutput()
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return false, gitTimeoutError(worktreePath, args)
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			return false, fmt.Errorf("git merge-base HEAD %s returned no common ancestor", ref)
 		}
@@ -344,15 +346,15 @@ func isHeadContentMergedIntoRef(worktreePath, ref string) (bool, error) {
 		return false, fmt.Errorf("git merge-base HEAD %s returned no common ancestor", ref)
 	}
 
-	baseTree, err := readTree(worktreePath, base)
+	baseTree, err := readTreeContext(ctx, worktreePath, base)
 	if err != nil {
 		return false, err
 	}
-	headTree, err := readTree(worktreePath, "HEAD")
+	headTree, err := readTreeContext(ctx, worktreePath, "HEAD")
 	if err != nil {
 		return false, err
 	}
-	targetTree, err := readTree(worktreePath, ref)
+	targetTree, err := readTreeContext(ctx, worktreePath, ref)
 	if err != nil {
 		return false, err
 	}
@@ -382,8 +384,8 @@ func isHeadContentMergedIntoRef(worktreePath, ref string) (bool, error) {
 	return true, nil
 }
 
-func readTree(repoRoot, ref string) (map[string]string, error) {
-	out, err := runGitRaw(repoRoot, "ls-tree", "-r", "-z", "--full-tree", ref)
+func readTreeContext(ctx context.Context, repoRoot, ref string) (map[string]string, error) {
+	out, err := runGitRawContext(ctx, repoRoot, "ls-tree", "-r", "-z", "--full-tree", ref)
 	if err != nil {
 		return nil, err
 	}
@@ -479,11 +481,9 @@ func gitTimeoutError(dir string, args []string) error {
 			workingDir = "."
 		}
 	}
-	lockPath := filepath.Join(".git", "index.lock")
 	return fmt.Errorf(
-		"git %s timed out in \"%s\"; check for a stale %s, blocked credential prompts, or network connectivity",
+		"git %s timed out in \"%s\"; check for a stale index lock (locate it with 'git rev-parse --git-path index.lock'), blocked credential prompts, or network connectivity",
 		strings.Join(args, " "),
 		workingDir,
-		lockPath,
 	)
 }

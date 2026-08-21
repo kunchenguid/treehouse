@@ -50,7 +50,7 @@ func TestRunGitContextReportsActionableTimeout(t *testing.T) {
 	for _, want := range []string{
 		"git checkout --detach timed out",
 		repoDir,
-		filepath.Join(".git", "index.lock"),
+		"git rev-parse --git-path index.lock",
 		"credential",
 		"network",
 	} {
@@ -198,6 +198,20 @@ func TestIsHeadMergedIntoRefContextReportsTimeout(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "git merge-base --is-ancestor HEAD refs/heads/main timed out") {
 		t.Fatalf("expected merge-base timeout diagnostic, got %q", err)
+	}
+}
+
+func TestIsHeadContentMergedIntoRefContextReportsTimeout(t *testing.T) {
+	repoDir := t.TempDir()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	_, err := isHeadContentMergedIntoRefContext(ctx, repoDir, "refs/heads/main")
+	if err == nil {
+		t.Fatal("expected expired context to fail")
+	}
+	if !strings.Contains(err.Error(), "git merge-base HEAD refs/heads/main timed out") {
+		t.Fatalf("expected fallback merge-base timeout diagnostic, got %q", err)
 	}
 }
 
