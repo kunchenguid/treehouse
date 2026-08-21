@@ -2,11 +2,20 @@ package git
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+)
+
+const (
+	gitCommandTimeout   = 2 * time.Minute
+	gitCommandWaitDelay = 250 * time.Millisecond
 )
 
 // FindMainRepoRoot returns the main repository root for the current working
@@ -299,23 +308,34 @@ func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error
 // detects a squash merge without treating unrelated target-branch changes as a
 // mismatch.
 func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
-	cmd := exec.Command("git", "merge-base", "--is-ancestor", "HEAD", ref)
-	cmd.Dir = worktreePath
-	out, err := cmd.CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+	defer cancel()
+
+	return isHeadMergedIntoRefContext(ctx, worktreePath, ref)
+}
+
+func isHeadMergedIntoRefContext(ctx context.Context, worktreePath, ref string) (bool, error) {
+	args := []string{"merge-base", "--is-ancestor", "HEAD", ref}
+	out, err := gitCommandContext(ctx, worktreePath, args...).CombinedOutput()
 	if err == nil {
 		return true, nil
 	}
-	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-		return isHeadContentMergedIntoRef(worktreePath, ref)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return false, gitTimeoutError(worktreePath, args)
 	}
-	return false, fmt.Errorf("git merge-base --is-ancestor HEAD %s: %s", ref, strings.TrimSpace(string(out)))
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		return isHeadContentMergedIntoRefContext(ctx, worktreePath, ref)
+	}
+	return false, fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
 }
 
-func isHeadContentMergedIntoRef(worktreePath, ref string) (bool, error) {
-	cmd := exec.Command("git", "merge-base", "HEAD", ref)
-	cmd.Dir = worktreePath
-	out, err := cmd.CombinedOutput()
+func isHeadContentMergedIntoRefContext(ctx context.Context, worktreePath, ref string) (bool, error) {
+	args := []string{"merge-base", "HEAD", ref}
+	out, err := gitCommandContext(ctx, worktreePath, args...).CombinedOutput()
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return false, gitTimeoutError(worktreePath, args)
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			return false, fmt.Errorf("git merge-base HEAD %s returned no common ancestor", ref)
 		}
@@ -326,15 +346,15 @@ func isHeadContentMergedIntoRef(worktreePath, ref string) (bool, error) {
 		return false, fmt.Errorf("git merge-base HEAD %s returned no common ancestor", ref)
 	}
 
-	baseTree, err := readTree(worktreePath, base)
+	baseTree, err := readTreeContext(ctx, worktreePath, base)
 	if err != nil {
 		return false, err
 	}
-	headTree, err := readTree(worktreePath, "HEAD")
+	headTree, err := readTreeContext(ctx, worktreePath, "HEAD")
 	if err != nil {
 		return false, err
 	}
-	targetTree, err := readTree(worktreePath, ref)
+	targetTree, err := readTreeContext(ctx, worktreePath, ref)
 	if err != nil {
 		return false, err
 	}
@@ -364,8 +384,8 @@ func isHeadContentMergedIntoRef(worktreePath, ref string) (bool, error) {
 	return true, nil
 }
 
-func readTree(repoRoot, ref string) (map[string]string, error) {
-	out, err := runGitRaw(repoRoot, "ls-tree", "-r", "-z", "--full-tree", ref)
+func readTreeContext(ctx context.Context, repoRoot, ref string) (map[string]string, error) {
+	out, err := runGitRawContext(ctx, repoRoot, "ls-tree", "-r", "-z", "--full-tree", ref)
 	if err != nil {
 		return nil, err
 	}
@@ -406,24 +426,64 @@ func ShortHash(s string) string {
 }
 
 func runGit(dir string, args ...string) (string, error) {
-	out, err := runGitRaw(dir, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+	defer cancel()
+
+	return runGitContext(ctx, dir, args...)
+}
+
+func runGitContext(ctx context.Context, dir string, args ...string) (string, error) {
+	out, err := runGitRawContext(ctx, dir, args...)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
 
+// runGitRaw keeps upstream's byte-returning entry point but routes it through
+// the same timeout budget as runGit, so the ls-tree caller cannot hang either.
 func runGitRaw(dir string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	out, err := cmd.Output()
+	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+	defer cancel()
+
+	return runGitRawContext(ctx, dir, args...)
+}
+
+func runGitRawContext(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	out, err := gitCommandContext(ctx, dir, args...).Output()
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, gitTimeoutError(dir, args)
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(exitErr.Stderr)))
 		}
 		return nil, err
 	}
 	return out, nil
+}
+
+func gitCommandContext(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.WaitDelay = gitCommandWaitDelay
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	return cmd
+}
+
+func gitTimeoutError(dir string, args []string) error {
+	workingDir := dir
+	if workingDir == "" {
+		if currentDir, err := os.Getwd(); err == nil {
+			workingDir = currentDir
+		} else {
+			workingDir = "."
+		}
+	}
+	return fmt.Errorf(
+		"git %s timed out in \"%s\"; check for a stale index lock (locate it with 'git rev-parse --git-path index.lock'), blocked credential prompts, or network connectivity",
+		strings.Join(args, " "),
+		workingDir,
+	)
 }
