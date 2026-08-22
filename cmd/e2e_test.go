@@ -1039,6 +1039,85 @@ func TestGetRecoversFromStaleWorktreeRegistration(t *testing.T) {
 	}
 }
 
+func TestGetSkipsNonEmptyUnregisteredSlot(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "treehouse.toml"), []byte("max_trees = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, code := runTreehouse(t, repoDir, homeDir, nil, "status"); code != 0 {
+		t.Fatalf("initial status failed (code %d)", code)
+	}
+	matches, err := filepath.Glob(filepath.Join(homeDir, ".treehouse", filepath.Base(repoDir)+"-*"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("expected exactly one pool dir under %s/.treehouse, got %v: %v", homeDir, matches, err)
+	}
+	strayPath := filepath.Join(matches[0], "1", filepath.Base(repoDir))
+	if err := os.MkdirAll(strayPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(strayPath, "uncommitted.txt")
+	if err := os.WriteFile(marker, []byte("must survive\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease", "--no-fetch")
+	if code != 0 {
+		t.Fatalf("get --lease failed on non-empty unregistered slot (code %d): %s", code, stderr)
+	}
+	wantPath := filepath.Join(matches[0], "2", filepath.Base(repoDir))
+	if got := strings.TrimSpace(stdout); got != wantPath {
+		t.Fatalf("leased path = %q, want %q (stderr: %s)", got, wantPath, stderr)
+	}
+	if !strings.Contains(stderr, strayPath) || !strings.Contains(stderr, "trying the next slot") {
+		t.Fatalf("expected actionable warning naming %s, got: %s", strayPath, stderr)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "must survive\n" {
+		t.Fatalf("unmanaged work was not preserved: data=%q err=%v", data, err)
+	}
+	listOut := filepath.ToSlash(gitCmd(t, repoDir, "worktree", "list", "--porcelain"))
+	if !strings.Contains(listOut, filepath.ToSlash(wantPath)) {
+		t.Fatalf("new worktree is not registered at %s:\n%s", wantPath, listOut)
+	}
+	if strings.Contains(listOut, filepath.ToSlash(strayPath)) {
+		t.Fatalf("unmanaged slot was unexpectedly registered:\n%s", listOut)
+	}
+}
+
+func TestGetReclaimsEmptyUnregisteredSlot(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	if _, _, code := runTreehouse(t, repoDir, homeDir, nil, "status"); code != 0 {
+		t.Fatalf("initial status failed (code %d)", code)
+	}
+	matches, err := filepath.Glob(filepath.Join(homeDir, ".treehouse", filepath.Base(repoDir)+"-*"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("expected exactly one pool dir under %s/.treehouse, got %v: %v", homeDir, matches, err)
+	}
+	emptyPath := filepath.Join(matches[0], "1", filepath.Base(repoDir))
+	if err := os.MkdirAll(emptyPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease", "--no-fetch")
+	if code != 0 {
+		t.Fatalf("get --lease failed on empty unregistered slot (code %d): %s", code, stderr)
+	}
+	if got := strings.TrimSpace(stdout); got != emptyPath {
+		t.Fatalf("leased path = %q, want reclaimed path %q", got, emptyPath)
+	}
+	if strings.Contains(stderr, "blocked by an unmanaged path") {
+		t.Fatalf("empty slot should be reclaimed without a warning: %s", stderr)
+	}
+	listOut := filepath.ToSlash(gitCmd(t, repoDir, "worktree", "list", "--porcelain"))
+	if !strings.Contains(listOut, filepath.ToSlash(emptyPath)) {
+		t.Fatalf("reclaimed worktree is not registered at %s:\n%s", emptyPath, listOut)
+	}
+	if _, err := os.Stat(filepath.Join(emptyPath, "README.md")); err != nil {
+		t.Fatalf("reclaimed worktree was not populated: %v", err)
+	}
+}
+
 func TestReturnFromInsideWorktreeDoesNotTerminateCaller(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	env := []string{"SHELL=" + exitShellBin}

@@ -210,9 +210,11 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			return fmt.Errorf("all %d worktrees are in use or dirty (max_trees = %d). Run 'treehouse status' to see details, or increase max_trees in treehouse.toml", len(state.Worktrees), poolSize)
 		}
 
-		name := nextName(state)
 		repoName := filepath.Base(repoRoot)
-		wtPath := filepath.Join(poolDir, name, repoName)
+		name, wtPath, err := nextWorktreeTarget(state, poolDir, repoName, opts.hookStderr)
+		if err != nil {
+			return err
+		}
 
 		if err := os.MkdirAll(filepath.Dir(wtPath), 0755); err != nil {
 			return err
@@ -230,6 +232,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		// real error if one exists.
 		if err := vcs.PruneWorktrees(repoRoot); err != nil {
 			fmt.Fprintf(os.Stderr, "🌳 Warning: failed to prune stale worktrees: %v\n", err)
+		}
+		if err := validateWorktreeTarget(filepath.Dir(wtPath), wtPath); err != nil {
+			return err
 		}
 
 		if err := vcs.AddWorktree(repoRoot, wtPath, branch); err != nil {
@@ -544,12 +549,118 @@ func cwdInWorktree(cwd, worktreePath string) bool {
 	return rel == "." || !filepath.IsAbs(rel) && len(rel) >= 1 && rel[0] != '.'
 }
 
-func nextName(state State) string {
+func nextWorktreeTarget(state State, poolDir, repoName string, diagnostics io.Writer) (string, string, error) {
+	maxInt := int(^uint(0) >> 1)
 	max := 0
 	for _, wt := range state.Worktrees {
 		if n, err := strconv.Atoi(wt.Name); err == nil && n > max {
 			max = n
 		}
 	}
-	return strconv.Itoa(max + 1)
+
+	slots, err := os.ReadDir(poolDir)
+	if err != nil {
+		return "", "", fmt.Errorf("scan pool slots: %w", err)
+	}
+	maxOnDisk := max
+	for _, slot := range slots {
+		if n, err := strconv.Atoi(slot.Name()); err == nil && n > maxOnDisk {
+			maxOnDisk = n
+		}
+	}
+	if maxOnDisk == maxInt {
+		return "", "", fmt.Errorf("cannot allocate another numeric pool slot after %d", maxOnDisk)
+	}
+
+	upper := maxOnDisk + 1
+	const maxFrontierRetries = 16
+	frontierRetries := 0
+	for n := max + 1; ; n++ {
+		name := strconv.Itoa(n)
+		slotDir := filepath.Join(poolDir, name)
+		wtPath := filepath.Join(slotDir, repoName)
+
+		usable, obstaclePath, reason := prepareWorktreeTarget(slotDir, wtPath)
+		if usable {
+			return name, wtPath, nil
+		}
+		warnSkippedSlot(diagnostics, obstaclePath, name, reason)
+
+		if n == upper {
+			if frontierRetries == maxFrontierRetries || upper == maxInt {
+				return "", "", fmt.Errorf("no usable pool slot found after inspecting slots %d through %d", max+1, upper)
+			}
+			upper++
+			frontierRetries++
+		}
+	}
+}
+
+func prepareWorktreeTarget(slotDir, wtPath string) (bool, string, error) {
+	slotInfo, err := os.Lstat(slotDir)
+	switch {
+	case os.IsNotExist(err):
+		return true, "", nil
+	case err != nil:
+		return false, slotDir, err
+	case !slotInfo.IsDir():
+		return false, slotDir, fmt.Errorf("slot path is not an ordinary directory")
+	}
+
+	slotEntries, err := os.ReadDir(slotDir)
+	if err != nil {
+		return false, slotDir, err
+	}
+
+	info, err := os.Lstat(wtPath)
+	switch {
+	case os.IsNotExist(err):
+		if len(slotEntries) == 0 {
+			return true, "", nil
+		}
+		return false, slotDir, fmt.Errorf("slot contains unmanaged content")
+	case err != nil:
+		return false, wtPath, err
+	case !info.IsDir():
+		return false, wtPath, fmt.Errorf("worktree path is not an ordinary directory")
+	case len(slotEntries) != 1:
+		return false, slotDir, fmt.Errorf("slot contains unmanaged content alongside the worktree path")
+	}
+
+	entries, err := os.ReadDir(wtPath)
+	if err != nil {
+		return false, wtPath, err
+	}
+	if len(entries) != 0 {
+		return false, wtPath, fmt.Errorf("directory is not empty")
+	}
+
+	// os.Remove is the final emptiness check. If content appears after ReadDir,
+	// removal fails and the slot remains quarantined.
+	if err := os.Remove(wtPath); err != nil {
+		return false, wtPath, err
+	}
+	return true, "", nil
+}
+
+func validateWorktreeTarget(slotDir, wtPath string) error {
+	info, err := os.Lstat(slotDir)
+	if err != nil {
+		return fmt.Errorf("validate pool slot %s: %w", slotDir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("pool slot changed before worktree creation: %s is not an ordinary directory", slotDir)
+	}
+	entries, err := os.ReadDir(slotDir)
+	if err != nil {
+		return fmt.Errorf("validate pool slot %s: %w", slotDir, err)
+	}
+	if len(entries) != 0 {
+		return fmt.Errorf("pool slot changed before worktree creation: %s is no longer empty; leaving it in place", wtPath)
+	}
+	return nil
+}
+
+func warnSkippedSlot(diagnostics io.Writer, path, name string, reason error) {
+	fmt.Fprintf(diagnostics, "🌳 Warning: pool slot %s is blocked by an unmanaged path at %s; leaving it in place (%v). Inspect and move or remove it manually; trying the next slot.\n", name, path, reason)
 }

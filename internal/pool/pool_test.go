@@ -1,11 +1,13 @@
 package pool
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -116,6 +118,163 @@ func TestAcquire_HookFailureDoesNotFailAcquire(t *testing.T) {
 	// The second hook must still have run despite the first failing.
 	if _, err := os.Stat(filepath.Join(wtPath, "second-ran.txt")); err != nil {
 		t.Fatalf("expected second hook to run despite first failing: %v", err)
+	}
+}
+
+func TestNextWorktreeTargetReclaimsEmptyDirectory(t *testing.T) {
+	poolDir := t.TempDir()
+	repoName := "myrepo"
+	emptyPath := filepath.Join(poolDir, "1", repoName)
+	if err := os.MkdirAll(emptyPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var diagnostics bytes.Buffer
+	name, path, err := nextWorktreeTarget(State{}, poolDir, repoName, &diagnostics)
+	if err != nil {
+		t.Fatalf("nextWorktreeTarget failed: %v", err)
+	}
+	if name != "1" || path != emptyPath {
+		t.Fatalf("target = (%q, %q), want (%q, %q)", name, path, "1", emptyPath)
+	}
+	if _, err := os.Stat(emptyPath); !os.IsNotExist(err) {
+		t.Fatalf("empty remnant was not removed: %v", err)
+	}
+	if diagnostics.Len() != 0 {
+		t.Fatalf("unexpected diagnostics: %s", diagnostics.String())
+	}
+}
+
+func TestNextWorktreeTargetPreservesObstaclesAndUsesNextSlot(t *testing.T) {
+	tests := []struct {
+		name  string
+		plant func(t *testing.T, target string)
+	}{
+		{
+			name: "non-empty directory",
+			plant: func(t *testing.T, target string) {
+				t.Helper()
+				if err := os.MkdirAll(target, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(target, "work.txt"), []byte("preserve\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "file",
+			plant: func(t *testing.T, target string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(target, []byte("preserve\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "unexpected slot content",
+			plant: func(t *testing.T, target string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(filepath.Dir(target), "unknown.txt"), []byte("preserve\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "empty target with unexpected sibling",
+			plant: func(t *testing.T, target string) {
+				t.Helper()
+				if err := os.MkdirAll(target, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(filepath.Dir(target), "unknown.txt"), []byte("preserve\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			poolDir := t.TempDir()
+			repoName := "myrepo"
+			obstacle := filepath.Join(poolDir, "1", repoName)
+			tt.plant(t, obstacle)
+
+			var diagnostics bytes.Buffer
+			name, path, err := nextWorktreeTarget(State{}, poolDir, repoName, &diagnostics)
+			if err != nil {
+				t.Fatalf("nextWorktreeTarget failed: %v", err)
+			}
+			wantPath := filepath.Join(poolDir, "2", repoName)
+			if name != "2" || path != wantPath {
+				t.Fatalf("target = (%q, %q), want (%q, %q)", name, path, "2", wantPath)
+			}
+			if _, err := os.Lstat(filepath.Join(poolDir, "1")); err != nil {
+				t.Fatalf("slot obstacle was not preserved: %v", err)
+			}
+			if !strings.Contains(diagnostics.String(), filepath.Join(poolDir, "1")) ||
+				!strings.Contains(diagnostics.String(), "trying the next slot") {
+				t.Fatalf("diagnostic is not actionable: %s", diagnostics.String())
+			}
+		})
+	}
+}
+
+func TestNextWorktreeTargetSkipsConsecutiveObstacles(t *testing.T) {
+	poolDir := t.TempDir()
+	repoName := "myrepo"
+	for n := 1; n <= 3; n++ {
+		target := filepath.Join(poolDir, strconv.Itoa(n), repoName)
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(target, "work.txt"), []byte("preserve\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var diagnostics bytes.Buffer
+	name, path, err := nextWorktreeTarget(State{}, poolDir, repoName, &diagnostics)
+	if err != nil {
+		t.Fatalf("nextWorktreeTarget failed: %v", err)
+	}
+	wantPath := filepath.Join(poolDir, "4", repoName)
+	if name != "4" || path != wantPath {
+		t.Fatalf("target = (%q, %q), want (%q, %q)", name, path, "4", wantPath)
+	}
+	if got := strings.Count(diagnostics.String(), "trying the next slot"); got != 3 {
+		t.Fatalf("warning count = %d, want 3: %s", got, diagnostics.String())
+	}
+}
+
+func TestAcquireLeaseSkipsNonEmptyUnmanagedSlotWithoutConsumingCapacity(t *testing.T) {
+	repoDir, poolDir := setupLocalRepo(t)
+	obstacle := filepath.Join(poolDir, "1", filepath.Base(repoDir))
+	if err := os.MkdirAll(obstacle, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(obstacle, "work.txt")
+	if err := os.WriteFile(marker, []byte("preserve\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	leased, err := AcquireLeaseInfoWithOptions(repoDir, poolDir, 1, nil, "test", AcquireOptions{SkipFetch: true})
+	if err != nil {
+		t.Fatalf("AcquireLeaseInfoWithOptions failed: %v", err)
+	}
+	want := filepath.Join(poolDir, "2", filepath.Base(repoDir))
+	if leased.Path != want {
+		t.Fatalf("leased path = %q, want %q", leased.Path, want)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "preserve\n" {
+		t.Fatalf("unmanaged work was not preserved: data=%q err=%v", data, err)
 	}
 }
 
