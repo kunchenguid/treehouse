@@ -32,10 +32,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/kunchenguid/treehouse/internal/vcs/gitvcs"
 )
 
 // Backend implements the vcs.Backend interface for jj repositories.
 type Backend struct{}
+
+var prepareJJSeededCleanup = gitvcs.PrepareJJSeededCleanup
 
 // New returns the jj backend.
 func New() *Backend { return &Backend{} }
@@ -186,6 +190,22 @@ func (b *Backend) AddWorktree(repoRoot, path, branch string) error {
 	return makeRepoPointerAbsolute(absPath)
 }
 
+func (*Backend) SeedWorktree(repoRoot, worktreePath string) ([]string, error) {
+	head, err := worktreeHead(worktreePath)
+	if err != nil {
+		return nil, err
+	}
+	gitDir := filepath.Join(repoRoot, ".jj", "repo", "store", "git")
+	seeded, err := gitvcs.SeedWorktreeWithInventoryFromGitStore(repoRoot, worktreePath, gitDir, head)
+	if err != nil || len(seeded) == 0 {
+		return seeded, err
+	}
+	if err := prepareJJSeededCleanup(worktreePath); err != nil {
+		return seeded, err
+	}
+	return seeded, nil
+}
+
 // makeRepoPointerAbsolute rewrites the workspace's .jj/repo store pointer to
 // an absolute, symlink-canonicalized path. jj writes a relative pointer,
 // which breaks when the pool directory and the repository do not move
@@ -265,8 +285,14 @@ func (*Backend) RemoveWorktree(repoRoot, path string) error {
 			return fmt.Errorf("refusing to remove %s: main jj workspace, not a pooled secondary workspace", absPath)
 		}
 	}
+	if err := gitvcs.RemoveJJSeedAuthentication(absPath); err != nil {
+		return err
+	}
 	_, _ = runJJ(repoRoot, "workspace", "forget", workspaceNameFor(absPath))
-	return os.RemoveAll(absPath)
+	if err := os.RemoveAll(absPath); err != nil {
+		return err
+	}
+	return nil
 }
 
 // RemoveCleanWorktree removes a workspace, refusing if it has local changes.
@@ -305,6 +331,29 @@ func (b *Backend) ResetWorktree(worktreePath, branch string) error {
 	return b.ResetWorktreeToRef(worktreePath, ref, head, false)
 }
 
+func (b *Backend) ResetWorktreeWithSeededPaths(worktreePath, branch string, seededPaths []string) error {
+	if len(seededPaths) > 0 {
+		if err := gitvcs.AuthenticateJJSeededCleanup(worktreePath); err != nil {
+			return err
+		}
+	}
+	ref, err := resolveResetRef(worktreePath, branch)
+	if err != nil {
+		return err
+	}
+	head, err := worktreeHead(worktreePath)
+	if err != nil {
+		return err
+	}
+	if err := b.ResetWorktreeToRef(worktreePath, ref, head, false); err != nil {
+		return err
+	}
+	if seededPaths == nil {
+		return nil
+	}
+	return gitvcs.RemoveSeededPathsFromJJWorkspace(worktreePath, seededPaths)
+}
+
 // ResetWorktreeToRef resets worktreePath to an already resolved commit.
 // expectedHead is the working-copy commit recorded at check time.
 //
@@ -318,6 +367,7 @@ func (b *Backend) ResetWorktree(worktreePath, branch string) error {
 // before rebase/abandon so uncommitted working-copy changes that landed after
 // the caller's dirty check are not discarded.
 func (b *Backend) ResetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool) error {
+
 	// A sibling workspace may have moved the repo since this workspace was
 	// last used; recover first so the commands below see current state.
 	_, _ = runJJ(worktreePath, "workspace", "update-stale")
@@ -373,6 +423,21 @@ func (b *Backend) ResetWorktreeToRef(worktreePath, ref, expectedHead string, req
 	}
 	_, err = runJJ(worktreePath, "new", ref)
 	return err
+}
+
+func (b *Backend) ResetWorktreeToRefWithSeededPaths(worktreePath, ref, expectedHead string, requireClean bool, seededPaths []string) error {
+	if len(seededPaths) > 0 {
+		if err := gitvcs.AuthenticateJJSeededCleanup(worktreePath); err != nil {
+			return err
+		}
+	}
+	if err := b.ResetWorktreeToRef(worktreePath, ref, expectedHead, requireClean); err != nil {
+		return err
+	}
+	if seededPaths == nil {
+		return nil
+	}
+	return gitvcs.RemoveSeededPathsFromJJWorkspace(worktreePath, seededPaths)
 }
 
 func (b *Backend) parkedOnRef(worktreePath, ref string) (bool, error) {

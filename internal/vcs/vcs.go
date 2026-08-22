@@ -59,6 +59,10 @@ type Backend interface {
 	GetRemoteURL(repoRoot string) (string, error)
 	// AddWorktree creates a new worktree at path based on branch.
 	AddWorktree(repoRoot, path, branch string) error
+	// SeedWorktree copies backend-specific ignored files into a new worktree
+	// and returns their paths so they can be removed without trusting mutable
+	// worktree metadata.
+	SeedWorktree(repoRoot, worktreePath string) ([]string, error)
 	// PruneWorktrees clears bookkeeping for worktrees whose directories no
 	// longer exist. It never touches live worktrees or their data.
 	PruneWorktrees(repoRoot string) error
@@ -71,6 +75,9 @@ type Backend interface {
 	// ResetWorktree returns a worktree to a pristine checkout of branch,
 	// discarding local modifications.
 	ResetWorktree(worktreePath, branch string) error
+	// ResetWorktreeWithSeededPaths resets a worktree after removing its trusted
+	// seed inventory. A nil inventory does not authorize ignored-file deletion.
+	ResetWorktreeWithSeededPaths(worktreePath, branch string, seededPaths []string) error
 	// ResetWorktreeToRef resets worktreePath to an already resolved commit.
 	// Callers that verified safety must pass the reset target and worktree
 	// HEAD returned by IsWorktreeSafeToReset. The reset re-reads HEAD and,
@@ -79,6 +86,10 @@ type Backend interface {
 	// work is not discarded. Refuse if HEAD changed, the lock cannot be
 	// taken, or (when requireClean) the tree is dirty.
 	ResetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool) error
+	// ResetWorktreeToRefWithSeededPaths applies the same guarded reset after
+	// removing the trusted seed inventory. A nil inventory does not authorize
+	// ignored-file deletion.
+	ResetWorktreeToRefWithSeededPaths(worktreePath, ref, expectedHead string, requireClean bool, seededPaths []string) error
 	// IsWorktreeSafeToReset reports whether worktreePath can be reset to
 	// branch without discarding committed work. It returns the immutable
 	// reset target and the worktree HEAD recorded at check time. Callers
@@ -291,13 +302,32 @@ func RemoveCleanWorktree(repoRoot, path string) error {
 // colocated), so the marker identifies what the slot actually is regardless
 // of the repository's configured backend.
 func slotMarkerBackend(path string) Backend {
-	if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
+	name, _ := WorktreeBackendNameChecked(path)
+	switch name {
+	case "git":
 		return gitBackend
-	}
-	if info, err := os.Stat(filepath.Join(path, ".jj")); err == nil && info.IsDir() {
+	case "jj":
 		return jjBackend
 	}
 	return nil
+}
+
+// WorktreeBackendNameChecked names the backend identified by a worktree's
+// marker while preserving filesystem errors for callers that must fail closed.
+func WorktreeBackendNameChecked(path string) (string, error) {
+	if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
+		return "git", nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	if info, err := os.Stat(filepath.Join(path, ".jj")); err == nil {
+		if info.IsDir() {
+			return "jj", nil
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	return "", nil
 }
 
 // backendForWorktree dispatches per-worktree operations - the facts that
@@ -351,6 +381,28 @@ func ResetWorktree(worktreePath, branch string) error {
 	return b.ResetWorktree(worktreePath, branch)
 }
 
+// ResetWorktreeWithSeededPaths resets after removing trusted seeded files.
+func ResetWorktreeWithSeededPaths(worktreePath, branch string, seededPaths []string) error {
+	b, err := destructiveBackendForWorktree(worktreePath)
+	if err != nil {
+		return err
+	}
+	return b.ResetWorktreeWithSeededPaths(worktreePath, branch, seededPaths)
+}
+
+// SeedWorktree copies backend-specific ignored files into a new worktree.
+func SeedWorktree(repoRoot, worktreePath string) ([]string, error) {
+	return backendFor(repoRoot).SeedWorktree(repoRoot, worktreePath)
+}
+
+func JJSeedAuthenticationIdentity(worktreePath string) (string, error) {
+	return gitvcs.JJSeedAuthenticationIdentity(worktreePath)
+}
+
+func RemoveStaleJJSeedAuthentication(worktreePath, expectedIdentity string) error {
+	return gitvcs.RemoveStaleJJSeedAuthentication(worktreePath, expectedIdentity)
+}
+
 // ResetWorktreeToRef resets worktreePath to an already resolved commit.
 func ResetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool) error {
 	b, err := destructiveBackendForWorktree(worktreePath)
@@ -358,6 +410,15 @@ func ResetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean boo
 		return err
 	}
 	return b.ResetWorktreeToRef(worktreePath, ref, expectedHead, requireClean)
+}
+
+// ResetWorktreeToRefWithSeededPaths resets after removing trusted seeded files.
+func ResetWorktreeToRefWithSeededPaths(worktreePath, ref, expectedHead string, requireClean bool, seededPaths []string) error {
+	b, err := destructiveBackendForWorktree(worktreePath)
+	if err != nil {
+		return err
+	}
+	return b.ResetWorktreeToRefWithSeededPaths(worktreePath, ref, expectedHead, requireClean, seededPaths)
 }
 
 // IsWorktreeSafeToReset reports whether worktreePath can be reset to branch

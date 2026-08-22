@@ -262,7 +262,10 @@ func pruneSnapshot(poolDir string) ([]WorktreeEntry, error) {
 			return err
 		}
 
-		state = healState(state)
+		state, err = healState(poolDir, state)
+		if err != nil {
+			return err
+		}
 		if err := WriteState(poolDir, state); err != nil {
 			return err
 		}
@@ -423,7 +426,10 @@ func executePrune(poolDir string, plan prunePlan, options PruneOptions) (PruneRe
 		if err != nil {
 			return err
 		}
-		state = healState(state)
+		state, err = healState(poolDir, state)
+		if err != nil {
+			return err
+		}
 
 		for i := range state.Worktrees {
 			plannedWorktree, ok := plan.Planned[state.Worktrees[i].Path]

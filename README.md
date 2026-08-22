@@ -139,7 +139,8 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 - **In-use detection** — treehouse scans running processes and short-lived owner reservations to determine which worktrees are in-use. Reservations are persisted only while `get`, `destroy`, and `prune` lifecycle work is running.
 - **Durable leases** - `treehouse get --lease` reserves a worktree as a persistent home without keeping a process inside it. Each acquisition gets an immutable random lease identity, and the lease is recorded in treehouse's own state. The worktree is never handed out by a later `get` and never removed by `prune` until you release it with `treehouse return`. Unlike process-based in-use detection, a lease survives with zero processes running inside the worktree.
 - **State recovery** - treehouse writes pool state atomically via a temp file and replacement.
-  If an existing state file is empty or truncated, treehouse warns, rebuilds entries from worktrees still on disk, and marks those entries leased until you verify them with `treehouse status`.
+  If an existing state file is empty, truncated, or omits an on-disk worktree, treehouse rebuilds the missing entries and quarantines them for inspection and explicit destruction. See [Recovering missing pool state](#recovering-missing-pool-state).
+- **Gitignored file seeding** — commit a `.worktreeinclude` file to copy selected local files from the main checkout on every acquire. See [Seeding gitignored files](#seeding-gitignored-files).
 - **Dirty detection** - treehouse treats tracked changes and untracked files as dirty, even when repository config hides untracked files from normal `git status` output.
 - **Safe pruning** - By default, `treehouse prune` removes only idle managed worktrees whose HEAD is already merged into the default branch and whose working tree is clean.
   `treehouse prune --all` applies the same safety checks across every managed pool under the user-level treehouse root.
@@ -186,6 +187,22 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `destroy` | `--include-unlanded` | Also remove dirty, unmerged, or unverified worktrees (irreversible data loss) |
 | `destroy` | `--include-in-use` | Also remove worktrees with a running process or owner reservation (processes are terminated cleanly first) |
 | `destroy` | `--include-leased` | Also remove a leased worktree; only when the exact path is named, never via `--all` |
+
+### Seeding gitignored files
+
+Commit a `.worktreeinclude` file to seed selected gitignored files from the main checkout into each acquired Git worktree or jj workspace. This is useful for local configuration or generated files that every worktree needs but Git should not track.
+
+`.worktreeinclude` uses `.gitignore` pattern syntax. A file must be ignored by the repository and selected by `.worktreeinclude`; tracked files and unignored untracked files are never copied. Use `!` to exclude a broader match:
+
+```gitignore
+.env*
+!.env.local
+local-config/
+```
+
+Treehouse refreshes selected files whenever it creates or reuses a worktree. On Unix-like systems, it preserves regular-file permissions, including executable bits. A source symlink becomes a regular file containing the symlink target text; Treehouse never follows it or creates a destination symlink. Rooted filesystem operations prevent selected paths and existing destination symlinks from escaping either checkout.
+
+If seeding fails, acquisition fails too. A newly created worktree is removed; if cleanup fails, or if a reused worktree was only partly refreshed, Treehouse records it as leased and quarantined so a later `get` cannot hand it out silently. Inspect it with `treehouse status`. If Treehouse reports that its seeded-file inventory is unknown, remove it with `treehouse destroy <path> --include-leased --yes`; `treehouse return` refuses to reuse it. Other quarantined worktrees can be returned after they are safe to reuse.
 
 ### Leasing a worktree (no subshell)
 
@@ -241,15 +258,18 @@ Treehouse compares supplied conditions while holding the pool state lock. A miss
 
 For backward compatibility, `treehouse return <path>` without either condition keeps its original unconditional path-only behavior. Existing path-only scripts and `treehouse get --lease` stdout are unchanged.
 
-### Recovering a damaged pool state file
+### Recovering missing pool state
 
 Treehouse writes `treehouse-state.json` atomically, so a crash mid-write should leave the previous state file intact.
-If an existing state file is empty or truncated, commands do not fail just because the JSON cannot be parsed.
-They print a warning, rebuild the pool entries from worktree directories still on disk, and mark every recovered entry as `leased` because treehouse cannot know whether it was idle, in-use, or durably leased.
+If an existing state file is empty, truncated, or otherwise invalid, commands do not fail just because the JSON cannot be parsed.
+They print a warning and rebuild the pool entries from worktree directories still on disk.
+Commands also restore an on-disk worktree that is missing from an otherwise valid state file, covering the narrow case where worktree creation succeeded but recording its quarantine failed.
+Every restored entry is marked `leased` because treehouse cannot know whether it was idle, in-use, or durably leased.
 
 Run `treehouse status` to inspect recovered entries.
-After verifying a worktree is safe to reuse, run `treehouse return <path>` to clear the safety lease.
-To delete one instead, name its exact path with `treehouse destroy <path> --include-leased --yes`.
+Treehouse cannot safely return these entries to the pool because recovery cannot reconstruct the trusted inventory of seeded ignored files.
+State written by versions without inventory integrity data, or whose pool-local `treehouse-state.key` is missing or invalid, is handled the same way, including state rewritten after a downgrade.
+After inspecting a recovered worktree, remove it by naming its exact path with `treehouse destroy <path> --include-leased --yes`.
 Bulk `destroy --all` and prune leave recovered entries alone.
 
 ### Pruning stale worktrees and orphans

@@ -492,7 +492,11 @@ func TestDestructiveWrappersRefuseMarkerlessPath(t *testing.T) {
 		call func() error
 	}{
 		{"ResetWorktree", func() error { return ResetWorktree(slot, "main") }},
+		{"ResetWorktreeWithSeededPaths", func() error { return ResetWorktreeWithSeededPaths(slot, "main", nil) }},
 		{"ResetWorktreeToRef", func() error { return ResetWorktreeToRef(slot, "main", "", true) }},
+		{"ResetWorktreeToRefWithSeededPaths", func() error {
+			return ResetWorktreeToRefWithSeededPaths(slot, "main", "", true, nil)
+		}},
 		{"DetachWorktree", func() error { return DetachWorktree(slot) }},
 	}
 	for _, c := range calls {

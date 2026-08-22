@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/treehouse/internal/vcs/gitvcs"
 )
 
 // requireJJ skips the test when jj is not installed, so the suite stays green
@@ -175,6 +177,99 @@ func TestAddWorktreeCreatesUsableWorkspace(t *testing.T) {
 	}
 	if !filepath.IsAbs(strings.TrimSpace(string(contents))) {
 		t.Fatalf("expected absolute store pointer, got %q", contents)
+	}
+}
+
+func TestSeedWorktreeCopiesIgnoredManifestSelection(t *testing.T) {
+	requireJJ(t)
+	repoDir := newLocalRepo(t)
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), "*.env\n")
+	writeFile(t, filepath.Join(repoDir, ".worktreeinclude"), "selected.env\n")
+	writeFile(t, filepath.Join(repoDir, "selected.env"), "secret\n")
+	mustJJ(t, repoDir, "commit", "-m", "add seed manifest")
+	wtPath := addWorkspace(t, repoDir)
+
+	seeded, err := New().SeedWorktree(repoDir, wtPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seeded) != 1 || seeded[0] != "selected.env" {
+		t.Fatalf("seeded paths = %v, want [selected.env]", seeded)
+	}
+	data, err := os.ReadFile(filepath.Join(wtPath, "selected.env"))
+	if err != nil || string(data) != "secret\n" {
+		t.Fatalf("seeded file = %q, %v", data, err)
+	}
+}
+
+func TestSeedWorktreePreservesInventoryWhenAuthenticationFails(t *testing.T) {
+	requireJJ(t)
+	repoDir := newLocalRepo(t)
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), "*.env\n")
+	writeFile(t, filepath.Join(repoDir, ".worktreeinclude"), "selected.env\n")
+	writeFile(t, filepath.Join(repoDir, "selected.env"), "secret\n")
+	mustJJ(t, repoDir, "commit", "-m", "add seed manifest")
+	worktree := addWorkspace(t, repoDir)
+	oldPrepare := prepareJJSeededCleanup
+	prepareJJSeededCleanup = func(string) error { return errors.New("authentication failed") }
+	t.Cleanup(func() { prepareJJSeededCleanup = oldPrepare })
+
+	seeded, err := New().SeedWorktree(repoDir, worktree)
+	if err == nil {
+		t.Fatal("expected authentication failure")
+	}
+	if len(seeded) != 1 || seeded[0] != "selected.env" {
+		t.Fatalf("seeded paths = %v, want [selected.env]", seeded)
+	}
+}
+
+func TestResetWorktreeToRefFailurePreservesSeededPaths(t *testing.T) {
+	worktree := t.TempDir()
+	seed := filepath.Join(worktree, "selected.env")
+	writeFile(t, seed, "keep\n")
+
+	err := New().ResetWorktreeToRefWithSeededPaths(worktree, "target", "invalid", true, []string{"selected.env"})
+	if err == nil {
+		t.Fatal("expected guarded reset to fail")
+	}
+	data, readErr := os.ReadFile(seed)
+	if readErr != nil || string(data) != "keep\n" {
+		t.Fatalf("seeded file = %q, %v", data, readErr)
+	}
+}
+
+func TestResetWorktreeResolutionFailurePreservesSeededPaths(t *testing.T) {
+	worktree := t.TempDir()
+	seed := filepath.Join(worktree, "selected.env")
+	writeFile(t, seed, "keep\n")
+
+	err := New().ResetWorktreeWithSeededPaths(worktree, "main", []string{"selected.env"})
+	if err == nil {
+		t.Fatal("expected reset resolution to fail")
+	}
+	data, readErr := os.ReadFile(seed)
+	if readErr != nil || string(data) != "keep\n" {
+		t.Fatalf("seeded file = %q, %v", data, readErr)
+	}
+}
+
+func TestResetWorktreeWithSeededPathsRemovesSeedFromWorkspace(t *testing.T) {
+	requireJJ(t)
+	repoDir := newLocalRepo(t)
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), "*.env\n")
+	mustJJ(t, repoDir, "commit", "-m", "ignore environment files")
+	worktree := addWorkspace(t, repoDir)
+	seed := filepath.Join(worktree, "selected.env")
+	writeFile(t, seed, "secret\n")
+	if err := gitvcs.PrepareJJSeededCleanup(worktree); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := New().ResetWorktreeWithSeededPaths(worktree, "main", []string{"selected.env"}); err != nil {
+		t.Fatalf("ResetWorktreeWithSeededPaths failed: %v", err)
+	}
+	if _, err := os.Stat(seed); !os.IsNotExist(err) {
+		t.Fatalf("seeded file still exists: %v", err)
 	}
 }
 

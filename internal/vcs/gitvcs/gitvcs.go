@@ -2,9 +2,13 @@ package gitvcs
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -179,6 +183,313 @@ func PruneWorktrees(repoRoot string) error {
 	return err
 }
 
+// SeedWorktree copies ignored files selected by .worktreeinclude.
+func SeedWorktree(repoRoot, worktreePath string) error {
+	_, err := SeedWorktreeWithInventory(repoRoot, worktreePath)
+	return err
+}
+
+// SeedWorktreeWithInventory returns the paths it copied so the pool can remove
+// them later without trusting mutable content in the acquired worktree.
+func SeedWorktreeWithInventory(repoRoot, worktreePath string) ([]string, error) {
+	return seedWorktreeWithInventory(repoRoot, worktreePath, nil, nil)
+}
+
+func SeedWorktreeWithInventoryFromGitStore(repoRoot, worktreePath, gitDir, ref string) ([]string, error) {
+	env := append(os.Environ(), "GIT_DIR="+gitDir, "GIT_WORK_TREE="+repoRoot)
+	trackedOutput, err := gitOutputEnv(repoRoot, env, nil, "ls-tree", "-rz", "--name-only", ref)
+	if err != nil {
+		return nil, err
+	}
+	if trackedOutput == nil {
+		trackedOutput = []byte{}
+	}
+	return seedWorktreeWithInventory(repoRoot, worktreePath, env, trackedOutput)
+}
+
+func seedWorktreeWithInventory(repoRoot, worktreePath string, gitEnv []string, trackedOutput []byte) ([]string, error) {
+	selected, err := selectedSeedPathsEnv(repoRoot, gitEnv)
+	if err != nil || len(selected) == 0 {
+		return nil, err
+	}
+
+	// checkout-index uses --force to refresh old seeds, so remove paths tracked
+	// by the destination before building the temporary index.
+	if trackedOutput == nil {
+		trackedOutput, err = gitOutput(worktreePath, nil, "ls-files", "-z")
+		if err != nil {
+			return nil, err
+		}
+	}
+	ignoreCase, err := worktreeCaseInsensitive(worktreePath)
+	if err != nil {
+		return nil, err
+	}
+	canonical := func(name string) string {
+		if ignoreCase {
+			return strings.ToLower(name)
+		}
+		return name
+	}
+	tracked := make(map[string]bool)
+	for _, name := range bytes.Split(bytes.TrimSuffix(trackedOutput, []byte{0}), []byte{0}) {
+		tracked[canonical(string(name))] = true
+	}
+	isTracked := func(name string) bool {
+		name = canonical(name)
+		for trackedName := range tracked {
+			if strings.HasPrefix(trackedName, name+"/") {
+				return true
+			}
+		}
+		for {
+			if tracked[name] {
+				return true
+			}
+			separator := strings.LastIndexByte(name, '/')
+			if separator < 0 {
+				return false
+			}
+			name = name[:separator]
+		}
+	}
+	var eligible bytes.Buffer
+	for _, name := range bytes.Split(bytes.TrimSuffix(selected, []byte{0}), []byte{0}) {
+		if !isTracked(string(name)) {
+			eligible.Write(name)
+			eligible.WriteByte(0)
+		}
+	}
+	selected = eligible.Bytes()
+	if len(selected) == 0 {
+		return nil, nil
+	}
+
+	// Keep a no-follow handle open so a replaced root cannot inherit the expected identity.
+	destination, err := openDirectoryNoFollow(worktreePath)
+	if err != nil {
+		return nil, err
+	}
+	defer destination.Close()
+	expected, err := destination.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !expected.IsDir() || expected.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing to seed symlinked worktree %s", worktreePath)
+	}
+
+	// Rooted operations reject paths that escape either checkout.
+	sourceRoot, err := os.OpenRoot(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer sourceRoot.Close()
+
+	destinationRoot, err := openRootUnchanged(worktreePath, expected)
+	if err != nil {
+		return nil, err
+	}
+	defer destinationRoot.Close()
+	var copied []string
+	failed := func(err error) ([]string, error) { return copied, err }
+	for _, name := range bytes.Split(bytes.TrimSuffix(selected, []byte{0}), []byte{0}) {
+		rel := filepath.FromSlash(string(name))
+		info, err := sourceRoot.Lstat(rel)
+		if err != nil {
+			return failed(err)
+		}
+
+		var data []byte
+		mode := info.Mode().Perm()
+		switch {
+		case info.Mode().IsRegular():
+			data, err = sourceRoot.ReadFile(rel)
+		case info.Mode()&os.ModeSymlink != 0:
+			var target string
+			target, err = sourceRoot.Readlink(rel)
+			data = []byte(target)
+			mode = 0o666
+		default:
+			continue
+		}
+		if err != nil {
+			return failed(err)
+		}
+
+		// Copy through rooted filesystem operations rather than Git's index
+		// machinery, which can execute repository-configured content filters.
+		if err := ensureRootedDir(destinationRoot, filepath.Dir(rel)); err != nil {
+			return failed(err)
+		}
+		dst, err := destinationRoot.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+		if err != nil {
+			return failed(err)
+		}
+		// Once created, the path belongs in cleanup even if writing or closing it fails.
+		copied = append(copied, filepath.ToSlash(rel))
+		if _, err := dst.Write(data); err != nil {
+			dst.Close()
+			return failed(err)
+		}
+		if err := dst.Chmod(mode); err != nil {
+			dst.Close()
+			return failed(err)
+		}
+		if err := dst.Close(); err != nil {
+			return failed(err)
+		}
+	}
+	return copied, nil
+}
+
+func worktreeCaseInsensitive(worktreePath string) (bool, error) {
+	markerName := ".git"
+	marker, err := os.Stat(filepath.Join(worktreePath, markerName))
+	if os.IsNotExist(err) {
+		markerName = ".jj"
+		marker, err = os.Stat(filepath.Join(worktreePath, markerName))
+	}
+	if err != nil {
+		return false, err
+	}
+	// The filesystem, rather than a mutable Git setting, decides whether two
+	// differently cased destination paths can refer to the same tracked file.
+	alias, err := os.Stat(filepath.Join(worktreePath, strings.ToUpper(markerName)))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(marker, alias), nil
+}
+
+func selectedSeedPaths(repoRoot string) ([]byte, error) {
+	return selectedSeedPathsEnv(repoRoot, nil)
+}
+
+func selectedSeedPathsEnv(repoRoot string, gitEnv []string) ([]byte, error) {
+	manifest, err := os.ReadFile(filepath.Join(repoRoot, ".worktreeinclude"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	return selectedSeedPathsWithManifestEnv(repoRoot, manifest, gitEnv)
+}
+
+func selectedSeedPathsWithManifest(repoRoot string, manifest []byte) ([]byte, error) {
+	return selectedSeedPathsWithManifestEnv(repoRoot, manifest, nil)
+}
+
+func selectedSeedPathsWithManifestEnv(repoRoot string, manifest []byte, gitEnv []string) ([]byte, error) {
+	selected, err := manifestSelectedPathsEnv(repoRoot, manifest, gitEnv)
+	if err != nil || len(selected) == 0 {
+		return selected, err
+	}
+	ignored, err := gitOutputEnv(repoRoot, gitEnv, nil,
+		"ls-files", "-z", "--others", "--ignored", "--exclude-standard")
+	if err != nil {
+		return nil, err
+	}
+	ignoredPaths := make(map[string]bool)
+	for _, name := range bytes.Split(bytes.TrimSuffix(ignored, []byte{0}), []byte{0}) {
+		ignoredPaths[string(name)] = true
+	}
+	var eligible bytes.Buffer
+	for _, name := range bytes.Split(bytes.TrimSuffix(selected, []byte{0}), []byte{0}) {
+		if ignoredPaths[string(name)] {
+			eligible.Write(name)
+			eligible.WriteByte(0)
+		}
+	}
+	return eligible.Bytes(), nil
+}
+
+func manifestSelectedPaths(repoRoot string, manifest []byte) ([]byte, error) {
+	return manifestSelectedPathsEnv(repoRoot, manifest, nil)
+}
+
+func manifestSelectedPathsEnv(repoRoot string, manifest []byte, gitEnv []string) ([]byte, error) {
+	excludeFile, err := os.CreateTemp("", "treehouse-worktreeinclude-")
+	if err != nil {
+		return nil, err
+	}
+	excludePath := excludeFile.Name()
+	defer os.Remove(excludePath)
+	if _, err := excludeFile.Write(manifest); err != nil {
+		excludeFile.Close()
+		return nil, err
+	}
+	if err := excludeFile.Close(); err != nil {
+		return nil, err
+	}
+
+	// Git owns the pattern language so .worktreeinclude behaves exactly like
+	// an exclude file, including negation, escaping, and ** patterns.
+	return gitOutputEnv(repoRoot, gitEnv, nil,
+		"ls-files", "-z", "--others", "--ignored", "--exclude-from="+excludePath)
+}
+
+func openRootUnchanged(path string, expected os.FileInfo) (*os.Root, error) {
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return nil, err
+	}
+	reject := func() (*os.Root, error) {
+		root.Close()
+		return nil, fmt.Errorf("refusing to seed replaced worktree %s", path)
+	}
+	actual, err := root.Stat(".")
+	if err != nil {
+		root.Close()
+		return nil, err
+	}
+	if !os.SameFile(expected, actual) {
+		return reject()
+	}
+
+	// Re-open without following the final component so an alias to the same
+	// directory cannot pass the identity check. The rooted handle remains safe
+	// if the pathname changes after this validation.
+	current, err := openDirectoryNoFollow(path)
+	if err != nil {
+		return reject()
+	}
+	defer current.Close()
+	currentInfo, err := current.Stat()
+	if err != nil || !currentInfo.IsDir() || !os.SameFile(actual, currentInfo) {
+		return reject()
+	}
+	return root, nil
+}
+
+func ensureRootedDir(root *os.Root, name string) error {
+	if name == "." {
+		return nil
+	}
+	current := ""
+	for _, part := range strings.Split(name, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := root.Lstat(current)
+		if os.IsNotExist(err) {
+			if err := root.Mkdir(current, 0o755); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			continue
+		}
+		return fmt.Errorf("refusing to replace existing seed ancestor %s", name)
+	}
+	return nil
+}
+
 func RemoveWorktree(repoRoot, path string) error {
 	_, err := runGit(repoRoot, "worktree", "remove", "--force", path)
 	return err
@@ -199,6 +510,12 @@ func Fetch(repoRoot string) error {
 }
 
 func ResetWorktree(worktreePath, branch string) error {
+	return ResetWorktreeWithSeededPaths(worktreePath, branch, nil)
+}
+
+// ResetWorktreeWithSeededPaths resolves the branch once, records the current
+// HEAD, then performs the same guarded reset used by pool reuse.
+func ResetWorktreeWithSeededPaths(worktreePath, branch string, seededPaths []string) error {
 	ref, err := resolveResetRef(worktreePath, branch)
 	if err != nil {
 		return err
@@ -207,7 +524,7 @@ func ResetWorktree(worktreePath, branch string) error {
 	if err != nil {
 		return err
 	}
-	return ResetWorktreeToRef(worktreePath, ref, head, false)
+	return ResetWorktreeToRefWithSeededPaths(worktreePath, ref, head, false, seededPaths)
 }
 
 // ResetWorktreeToRef resets worktreePath to an already resolved commit.
@@ -223,8 +540,31 @@ func ResetWorktree(worktreePath, branch string) error {
 // which do not need HEAD.lock; HEAD itself is committed by renaming the
 // lock file onto HEAD, the same protocol git uses.
 func ResetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool) error {
+	return resetWorktreeToRef(worktreePath, ref, expectedHead, requireClean, nil, false)
+}
+
+// ResetWorktreeToRefWithSeededPaths removes the pool's trusted seed inventory
+// before restoring tracked content. A nil inventory does not authorize any
+// ignored-file deletion.
+func ResetWorktreeToRefWithSeededPaths(worktreePath, ref, expectedHead string, requireClean bool, seededPaths []string) error {
+	return resetWorktreeToRef(worktreePath, ref, expectedHead, requireClean, seededPaths, true)
+}
+
+func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool, seededPaths []string, cleanSeeds bool) error {
 	if !isCommitID(expectedHead) || !isCommitID(ref) {
 		return fmt.Errorf("worktree reset requires resolved commit IDs")
+	}
+	var cleanupIdentity os.FileInfo
+	if cleanSeeds && seededPaths != nil {
+		worktree, err := openDirectoryNoFollow(worktreePath)
+		if err != nil {
+			return err
+		}
+		defer worktree.Close()
+		cleanupIdentity, err = worktree.Stat()
+		if err != nil || !cleanupIdentity.IsDir() {
+			return fmt.Errorf("refusing to clean replaced worktree %s", worktreePath)
+		}
 	}
 	headPath, err := gitPath(worktreePath, "HEAD")
 	if err != nil {
@@ -257,6 +597,14 @@ func ResetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean boo
 		}
 		if dirty {
 			return fmt.Errorf("worktree became dirty after safety check")
+		}
+	}
+	if cleanSeeds {
+		if seededPaths != nil {
+			err = removeSeededPaths(worktreePath, seededPaths, cleanupIdentity)
+		}
+		if err != nil {
+			return err
 		}
 	}
 
@@ -346,6 +694,230 @@ func IsWorktreeSafeToReset(worktreePath, branch string) (bool, string, string, e
 	}
 	safe, err := IsHeadMergedIntoRef(worktreePath, ref)
 	return safe, ref, head, err
+}
+
+func removeSeededPaths(worktreePath string, paths []string, expected os.FileInfo) error {
+	return removeSeededPathsAuthenticated(worktreePath, paths, expected, authenticateLinkedWorktree)
+}
+
+func removeSeededPathsAuthenticated(worktreePath string, paths []string, expected os.FileInfo, authenticate func(*os.Root, string) error) error {
+	for _, name := range paths {
+		if name == "" || path.IsAbs(name) || path.Clean(name) != name || strings.ContainsAny(name, "\\\x00") {
+			return fmt.Errorf("invalid seeded path %q", name)
+		}
+		first := strings.SplitN(name, "/", 2)[0]
+		if strings.EqualFold(first, ".git") || strings.EqualFold(first, ".jj") {
+			return fmt.Errorf("invalid seeded path %q", name)
+		}
+	}
+	root, worktree, err := openCleanupRoot(worktreePath, expected, authenticate)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	defer worktree.Close()
+	for _, name := range paths {
+		if err := root.Remove(filepath.FromSlash(name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func RemoveSeededPaths(worktreePath string, paths []string) error {
+	return removeSeededPathsFromWorktree(worktreePath, paths, authenticateLinkedWorktree)
+}
+
+func RemoveSeededPathsFromJJWorkspace(worktreePath string, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	if err := removeSeededPathsFromWorktree(worktreePath, paths, authenticateJJWorkspace); err != nil {
+		return err
+	}
+	return RemoveJJSeedAuthentication(worktreePath)
+}
+
+func PrepareJJSeededCleanup(worktreePath string) error {
+	authPath := jjSeedAuthenticationPath(worktreePath)
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
+		return fmt.Errorf("creating jj seed authentication directory: %w", err)
+	}
+	markerPath := filepath.Join(worktreePath, ".jj", "repo")
+	if err := os.Link(markerPath, authPath); err != nil {
+		marker, markerErr := os.Stat(markerPath)
+		auth, authErr := os.Stat(authPath)
+		if markerErr == nil && authErr == nil && os.SameFile(marker, auth) {
+			return nil
+		}
+		return fmt.Errorf("authenticating seeded jj workspace: %w", err)
+	}
+	return nil
+}
+
+func AuthenticateJJSeededCleanup(worktreePath string) error {
+	worktree, err := openDirectoryNoFollow(worktreePath)
+	if err != nil {
+		return err
+	}
+	defer worktree.Close()
+	expected, err := worktree.Stat()
+	if err != nil {
+		return err
+	}
+	root, pinned, err := openCleanupRoot(worktreePath, expected, authenticateJJWorkspace)
+	if err != nil {
+		return err
+	}
+	root.Close()
+	return pinned.Close()
+}
+
+func RemoveJJSeedAuthentication(worktreePath string) error {
+	authPath := jjSeedAuthenticationPath(worktreePath)
+	return quarantineAndRemoveJJAuthentication(authPath, func(candidate string) bool {
+		auth, authErr := os.Stat(candidate)
+		marker, markerErr := os.Stat(filepath.Join(worktreePath, ".jj", "repo"))
+		return authErr == nil && markerErr == nil && os.SameFile(marker, auth)
+	})
+}
+
+func JJSeedAuthenticationIdentity(worktreePath string) (string, error) {
+	return fileIdentity(jjSeedAuthenticationPath(worktreePath))
+}
+
+func RemoveStaleJJSeedAuthentication(worktreePath, expectedIdentity string) error {
+	authPath := jjSeedAuthenticationPath(worktreePath)
+	if _, err := os.Stat(worktreePath); err == nil || !os.IsNotExist(err) {
+		return fmt.Errorf("refusing to remove jj seed authentication while workspace exists at %s", worktreePath)
+	}
+	return quarantineAndRemoveJJAuthentication(authPath, func(candidate string) bool {
+		info, statErr := os.Lstat(candidate)
+		identity, identityErr := fileIdentity(candidate)
+		return statErr == nil && info.Mode().IsRegular() && identityErr == nil && identity == expectedIdentity
+	})
+}
+
+var jjAuthenticationQuarantined = func(string) {}
+
+func quarantineAndRemoveJJAuthentication(authPath string, verify func(string) bool) error {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return err
+	}
+	quarantinePath := filepath.Join(filepath.Dir(authPath), ".quarantine-"+hex.EncodeToString(nonce[:]))
+	if err := os.Rename(authPath, quarantinePath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	jjAuthenticationQuarantined(authPath)
+	if !verify(quarantinePath) {
+		if err := os.Link(quarantinePath, authPath); err == nil {
+			_ = os.Remove(quarantinePath)
+		}
+		return fmt.Errorf("refusing to remove unowned jj seed authentication %s", authPath)
+	}
+	return os.Remove(quarantinePath)
+}
+
+func jjSeedAuthenticationPath(worktreePath string) string {
+	abs, err := filepath.Abs(worktreePath)
+	if err != nil {
+		abs = filepath.Clean(worktreePath)
+	}
+	digest := sha256.Sum256([]byte(abs))
+	return filepath.Join(filepath.Dir(abs), ".treehouse-jj-seed-auth", fmt.Sprintf("%x", digest[:16]))
+}
+
+func removeSeededPathsFromWorktree(worktreePath string, paths []string, authenticate func(*os.Root, string) error) error {
+	worktree, err := openDirectoryNoFollow(worktreePath)
+	if err != nil {
+		return err
+	}
+	defer worktree.Close()
+	expected, err := worktree.Stat()
+	if err != nil {
+		return err
+	}
+	return removeSeededPathsAuthenticated(worktreePath, paths, expected, authenticate)
+}
+
+func openCleanupRoot(worktreePath string, expected os.FileInfo, authenticate func(*os.Root, string) error) (*os.Root, *os.File, error) {
+	// Keep the no-follow handle open so a pathname swap cannot redirect cleanup.
+	worktree, err := openDirectoryNoFollow(worktreePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	current, err := worktree.Stat()
+	if err != nil || !current.IsDir() || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(expected, current) {
+		worktree.Close()
+		return nil, nil, fmt.Errorf("refusing to clean replaced worktree %s", worktreePath)
+	}
+	root, err := openRootUnchanged(worktreePath, expected)
+	if err != nil {
+		worktree.Close()
+		return nil, nil, err
+	}
+	if err := authenticate(root, worktreePath); err != nil {
+		root.Close()
+		worktree.Close()
+		return nil, nil, err
+	}
+	return root, worktree, nil
+}
+
+func authenticateJJWorkspace(root *os.Root, worktreePath string) error {
+	marker, err := root.Lstat(".jj")
+	if err != nil || !marker.IsDir() || marker.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to clean unregistered worktree %s", worktreePath)
+	}
+	repo, err := root.Lstat(filepath.Join(".jj", "repo"))
+	if err != nil || !repo.Mode().IsRegular() {
+		return fmt.Errorf("refusing to clean unregistered worktree %s", worktreePath)
+	}
+	markerFile, err := root.Open(filepath.Join(".jj", "repo"))
+	if err != nil {
+		return err
+	}
+	defer markerFile.Close()
+	markerInfo, err := markerFile.Stat()
+	if err != nil {
+		return err
+	}
+	authInfo, err := os.Stat(jjSeedAuthenticationPath(worktreePath))
+	if err != nil || !os.SameFile(markerInfo, authInfo) {
+		return fmt.Errorf("refusing to clean unregistered worktree %s", worktreePath)
+	}
+	return nil
+}
+
+func authenticateLinkedWorktree(root *os.Root, worktreePath string) error {
+	marker, err := root.Lstat(".git")
+	if err != nil || !marker.Mode().IsRegular() {
+		return fmt.Errorf("refusing to clean unregistered worktree %s", worktreePath)
+	}
+	contents, err := root.ReadFile(".git")
+	if err != nil {
+		return err
+	}
+	gitDir, ok := strings.CutPrefix(strings.TrimSpace(string(contents)), "gitdir: ")
+	if !ok || gitDir == "" {
+		return fmt.Errorf("refusing to clean unregistered worktree %s", worktreePath)
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(worktreePath, gitDir)
+	}
+	backlink, err := os.ReadFile(filepath.Join(filepath.Clean(gitDir), "gitdir"))
+	if err != nil {
+		return fmt.Errorf("refusing to clean unregistered worktree %s", worktreePath)
+	}
+	backlinkInfo, err := os.Stat(filepath.Clean(string(bytes.TrimSpace(backlink))))
+	if err != nil || !os.SameFile(marker, backlinkInfo) {
+		return fmt.Errorf("refusing to clean unregistered worktree %s", worktreePath)
+	}
+	return nil
 }
 
 func DetachWorktree(worktreePath string) error {
@@ -578,6 +1150,9 @@ func (*Backend) GetRemoteURL(repoRoot string) (string, error) { return GetRemote
 func (*Backend) AddWorktree(repoRoot, path, branch string) error {
 	return AddWorktree(repoRoot, path, branch)
 }
+func (*Backend) SeedWorktree(repoRoot, worktreePath string) ([]string, error) {
+	return SeedWorktreeWithInventory(repoRoot, worktreePath)
+}
 func (*Backend) PruneWorktrees(repoRoot string) error { return PruneWorktrees(repoRoot) }
 func (*Backend) RemoveWorktree(repoRoot, path string) error {
 	return RemoveWorktree(repoRoot, path)
@@ -589,8 +1164,14 @@ func (*Backend) Fetch(repoRoot string) error { return Fetch(repoRoot) }
 func (*Backend) ResetWorktree(worktreePath, branch string) error {
 	return ResetWorktree(worktreePath, branch)
 }
+func (*Backend) ResetWorktreeWithSeededPaths(worktreePath, branch string, seededPaths []string) error {
+	return ResetWorktreeWithSeededPaths(worktreePath, branch, seededPaths)
+}
 func (*Backend) ResetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool) error {
 	return ResetWorktreeToRef(worktreePath, ref, expectedHead, requireClean)
+}
+func (*Backend) ResetWorktreeToRefWithSeededPaths(worktreePath, ref, expectedHead string, requireClean bool, seededPaths []string) error {
+	return ResetWorktreeToRefWithSeededPaths(worktreePath, ref, expectedHead, requireClean, seededPaths)
 }
 func (*Backend) IsWorktreeSafeToReset(worktreePath, branch string) (bool, string, string, error) {
 	return IsWorktreeSafeToReset(worktreePath, branch)
@@ -617,4 +1198,19 @@ func IsOriginAccessError(err error) bool {
 		strings.Contains(detail, "Could not read from remote repository") ||
 		strings.Contains(detail, "does not appear to be a git repository") ||
 		strings.Contains(detail, "repository") && strings.Contains(detail, "not found")
+}
+
+func gitOutput(dir string, stdin []byte, args ...string) ([]byte, error) {
+	return gitOutputEnv(dir, nil, stdin, args...)
+}
+
+func gitOutputEnv(dir string, env []string, stdin []byte, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if env != nil {
+		cmd.Env = env
+	}
+	cmd.Stdin = bytes.NewReader(stdin)
+	out, err := cmd.Output()
+	return out, err
 }

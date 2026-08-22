@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -526,6 +527,799 @@ func setupSafeResetWorktree(t *testing.T) (wtPath, resetRef, head string) {
 	return wtPath, resetRef, head
 }
 
+func TestSeedWorktreeUsesGitExcludePatterns(t *testing.T) {
+	tests := []struct {
+		name     string
+		manifest string
+		want     []string
+		notWant  []string
+	}{
+		{
+			name:     "wildcard",
+			manifest: "*.env\n",
+			want:     []string{".env", "nested/app.env"},
+			notWant:  []string{"app.txt"},
+		},
+		{
+			name:     "negation",
+			manifest: "*.env\n!important.env\n",
+			want:     []string{"app.env"},
+			notWant:  []string{"important.env"},
+		},
+		{
+			name:     "anchored",
+			manifest: "/root.env\n",
+			want:     []string{"root.env"},
+			notWant:  []string{"nested/root.env"},
+		},
+		{
+			name:     "directory",
+			manifest: "config/\n",
+			want:     []string{"config/dev/settings.json"},
+			notWant:  []string{"other/settings.json"},
+		},
+		{
+			name:     "double star",
+			manifest: "build/**/cache/*.json\n",
+			want:     []string{"build/cache/a.json", "build/one/two/cache/b.json"},
+			notWant:  []string{"build/one/data.json"},
+		},
+		{
+			name:     "escaped leading marker",
+			manifest: "\\!literal\n\\#literal\n",
+			want:     []string{"!literal", "#literal"},
+			notWant:  []string{"literal"},
+		},
+		{
+			name:     "spaces and comments",
+			manifest: "# ignored comment\nname with space\n",
+			want:     []string{"name with space"},
+			notWant:  []string{"ignored comment"},
+		},
+	}
+
+	allFiles := []string{
+		".env", "nested/app.env", "app.txt", "app.env", "important.env",
+		"root.env", "nested/root.env", "config/dev/settings.json",
+		"other/settings.json", "build/cache/a.json",
+		"build/one/two/cache/b.json", "build/one/data.json",
+		"!literal", "#literal", "literal", "name with space", "ignored comment",
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, worktree := setupSeedWorktree(t, tt.manifest)
+			for _, name := range allFiles {
+				writeTestFile(t, repo, name, name+"\n")
+			}
+
+			if err := SeedWorktree(repo, worktree); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range tt.want {
+				assertTestFile(t, worktree, name, name+"\n")
+			}
+			for _, name := range tt.notWant {
+				if _, err := os.Lstat(filepath.Join(worktree, filepath.FromSlash(name))); !os.IsNotExist(err) {
+					t.Fatalf("%s was unexpectedly seeded: %v", name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestSeedWorktreeCopiesOnlyManifestSelections(t *testing.T) {
+	repo, worktree := setupSeedWorktree(t, "selected.env\n")
+	writeTestFile(t, repo, ".gitignore", "*.env\n*.secret\n")
+	mustGit(t, repo, "add", "-f", ".gitignore")
+	mustGit(t, repo, "commit", "-m", "narrow ignored files")
+	writeTestFile(t, repo, "selected.env", "selected\n")
+	writeTestFile(t, repo, "unrelated.secret", "secret\n")
+
+	if err := SeedWorktree(repo, worktree); err != nil {
+		t.Fatal(err)
+	}
+	assertTestFile(t, worktree, "selected.env", "selected\n")
+	if _, err := os.Lstat(filepath.Join(worktree, "unrelated.secret")); !os.IsNotExist(err) {
+		t.Fatalf("unselected ignored file was unexpectedly seeded: %v", err)
+	}
+}
+
+func TestSeedWorktreeDoesNotCopyManifestSelectedUnignoredFile(t *testing.T) {
+	repo, worktree := setupSeedWorktree(t, "selected.env\ncredentials.txt\n")
+	writeTestFile(t, repo, ".gitignore", "*.env\n")
+	mustGit(t, repo, "add", "-f", ".gitignore")
+	mustGit(t, repo, "commit", "-m", "narrow ignored files")
+	writeTestFile(t, repo, "selected.env", "selected\n")
+	writeTestFile(t, repo, "credentials.txt", "credentials\n")
+
+	if err := SeedWorktree(repo, worktree); err != nil {
+		t.Fatal(err)
+	}
+	assertTestFile(t, worktree, "selected.env", "selected\n")
+	if _, err := os.Lstat(filepath.Join(worktree, "credentials.txt")); !os.IsNotExist(err) {
+		t.Fatalf("unignored file was unexpectedly seeded: %v", err)
+	}
+}
+
+func TestSeedWorktreeFlattensSourceSymlink(t *testing.T) {
+	repo, worktree := setupSeedWorktree(t, "linked.env\n")
+	outside := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(outside, []byte("secret contents\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(repo, "linked.env")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if err := SeedWorktree(repo, worktree); err != nil {
+		t.Fatal(err)
+	}
+	seeded := filepath.Join(worktree, "linked.env")
+	if info, err := os.Lstat(seeded); err != nil {
+		t.Fatal(err)
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("source symlink was recreated in the worktree")
+	}
+	assertTestFile(t, worktree, "linked.env", outside)
+}
+
+func TestSeedWorktreePreservesPrivatePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
+	repo, worktree := setupSeedWorktree(t, "private.env\n")
+	source := filepath.Join(repo, "private.env")
+	if err := os.WriteFile(source, []byte("private\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SeedWorktree(repo, worktree); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(worktree, "private.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("seeded permissions = %o, want 600", got)
+	}
+}
+
+func TestSeedWorktreeDoesNotExecuteGitFilters(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test filter command uses a Unix shell")
+	}
+	repo, worktree := setupSeedWorktree(t, "filtered.env\n")
+	marker := filepath.Join(t.TempDir(), "filter-ran")
+	writeTestFile(t, repo, ".gitattributes", "*.env filter=seed-test\n")
+	mustGit(t, repo, "add", "-f", ".gitattributes")
+	mustGit(t, repo, "commit", "-m", "add seed filter")
+	mustGit(t, repo, "config", "filter.seed-test.clean", "sh -c 'touch \"$1\"; cat' - "+marker)
+	mustGit(t, repo, "config", "filter.seed-test.smudge", "cat")
+	writeTestFile(t, repo, "filtered.env", "source\n")
+
+	if err := SeedWorktree(repo, worktree); err != nil {
+		t.Fatal(err)
+	}
+	assertTestFile(t, worktree, "filtered.env", "source\n")
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("Git content filter executed during seeding: %v", err)
+	}
+}
+
+func TestSeedWorktreeDoesNotCopyFilesIgnoredOutsideManifest(t *testing.T) {
+	repo, worktree := setupSeedWorktree(t, "selected.env\n")
+	writeTestFile(t, repo, ".gitignore", "*.env\n")
+	writeTestFile(t, repo, "selected.env", "selected\n")
+	writeTestFile(t, repo, "unselected.env", "unselected\n")
+
+	if err := SeedWorktree(repo, worktree); err != nil {
+		t.Fatal(err)
+	}
+	assertTestFile(t, worktree, "selected.env", "selected\n")
+	if _, err := os.Stat(filepath.Join(worktree, "unselected.env")); !os.IsNotExist(err) {
+		t.Fatalf("file ignored outside .worktreeinclude was seeded: %v", err)
+	}
+}
+
+func TestSeedWorktreeHonorsCaseInsensitiveTrackedPathsWhenGitConfigIsFalse(t *testing.T) {
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	worktree := filepath.Join(base, "worktree")
+	mustGit(t, "", "init", "--initial-branch=main", repo)
+	mustGit(t, repo, "config", "user.email", "test@test.com")
+	mustGit(t, repo, "config", "user.name", "Test")
+	writeTestFile(t, repo, "Config.env", "tracked\n")
+	mustGit(t, repo, "add", "Config.env")
+	mustGit(t, repo, "commit", "-m", "track config")
+	mustGit(t, repo, "checkout", "-b", "seed-source")
+	mustGit(t, repo, "rm", "Config.env")
+	writeTestFile(t, repo, ".gitignore", "config.env\n")
+	writeTestFile(t, repo, ".worktreeinclude", "config.env\n")
+	mustGit(t, repo, "add", ".gitignore", ".worktreeinclude")
+	mustGit(t, repo, "commit", "-m", "seed differently cased config")
+	writeTestFile(t, repo, "config.env", "ignored\n")
+	mustGit(t, repo, "worktree", "add", "--detach", worktree, "main")
+	trackedInfo, err := os.Stat(filepath.Join(worktree, "Config.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasInfo, err := os.Stat(filepath.Join(worktree, "config.env"))
+	if err != nil || !os.SameFile(trackedInfo, aliasInfo) {
+		t.Skip("case-insensitive filesystem required")
+	}
+	mustGit(t, worktree, "config", "core.ignoreCase", "false")
+
+	if err := SeedWorktree(repo, worktree); err != nil {
+		t.Fatal(err)
+	}
+	assertGitCheckoutFile(t, worktree, "Config.env", "tracked\n")
+	if dirty, err := IsDirty(worktree); err != nil {
+		t.Fatal(err)
+	} else if dirty {
+		t.Fatal("case-folded tracked path was overwritten")
+	}
+}
+
+func TestSeedWorktreePreservesTrackedAncestor(t *testing.T) {
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	worktree := filepath.Join(base, "worktree")
+	mustGit(t, "", "init", "--initial-branch=main", repo)
+	mustGit(t, repo, "config", "user.email", "test@test.com")
+	mustGit(t, repo, "config", "user.name", "Test")
+	writeTestFile(t, repo, "config", "tracked\n")
+	mustGit(t, repo, "add", "config")
+	mustGit(t, repo, "commit", "-m", "track config file")
+	mustGit(t, repo, "checkout", "-b", "seed-source")
+	mustGit(t, repo, "rm", "config")
+	writeTestFile(t, repo, ".gitignore", "config/\n")
+	writeTestFile(t, repo, ".worktreeinclude", "config/settings.env\n")
+	mustGit(t, repo, "add", ".gitignore", ".worktreeinclude")
+	mustGit(t, repo, "commit", "-m", "seed nested config")
+	writeTestFile(t, repo, "config/settings.env", "ignored\n")
+	mustGit(t, repo, "worktree", "add", "--detach", worktree, "main")
+
+	if err := SeedWorktree(repo, worktree); err != nil {
+		t.Fatal(err)
+	}
+	assertGitCheckoutFile(t, worktree, "config", "tracked\n")
+	if dirty, err := IsDirty(worktree); err != nil {
+		t.Fatal(err)
+	} else if dirty {
+		t.Fatal("seeding made the target worktree dirty")
+	}
+}
+
+func TestSeedWorktreePreservesTrackedDescendant(t *testing.T) {
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	worktree := filepath.Join(base, "worktree")
+	mustGit(t, "", "init", "--initial-branch=main", repo)
+	mustGit(t, repo, "config", "user.email", "test@test.com")
+	mustGit(t, repo, "config", "user.name", "Test")
+	writeTestFile(t, repo, "config/settings.json", "tracked\n")
+	mustGit(t, repo, "add", "config/settings.json")
+	mustGit(t, repo, "commit", "-m", "track config file")
+	mustGit(t, repo, "checkout", "-b", "seed-source")
+	mustGit(t, repo, "rm", "config/settings.json")
+	writeTestFile(t, repo, ".gitignore", "config\n")
+	writeTestFile(t, repo, ".worktreeinclude", "config\n")
+	mustGit(t, repo, "add", ".gitignore", ".worktreeinclude")
+	mustGit(t, repo, "commit", "-m", "seed config file")
+	writeTestFile(t, repo, "config", "ignored\n")
+	mustGit(t, repo, "worktree", "add", "--detach", worktree, "main")
+
+	if err := SeedWorktree(repo, worktree); err != nil {
+		t.Fatal(err)
+	}
+	assertGitCheckoutFile(t, worktree, "config/settings.json", "tracked\n")
+	if dirty, err := IsDirty(worktree); err != nil {
+		t.Fatal(err)
+	} else if dirty {
+		t.Fatal("seeding made the target worktree dirty")
+	}
+}
+
+func TestResetWorktreeRemovesSeedHiddenByModifiedManifest(t *testing.T) {
+	repo, worktree := setupSeedWorktree(t, "secret.env\n")
+	writeTestFile(t, repo, "secret.env", "secret\n")
+	if err := SeedWorktree(repo, worktree); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, worktree, ".worktreeinclude", "")
+
+	if err := ResetWorktreeWithSeededPaths(worktree, "main", []string{"secret.env"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, "secret.env")); !os.IsNotExist(err) {
+		t.Fatalf("obsolete seed survived reset: %v", err)
+	}
+}
+
+func TestResetWorktreeRemovesInventoriedSeedWhenCurrentRevisionDoesNotIgnoreIt(t *testing.T) {
+	repo, worktree := setupSeedWorktree(t, "secret.env\n")
+	writeTestFile(t, repo, "secret.env", "secret\n")
+	if err := SeedWorktree(repo, worktree); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, worktree, ".gitignore", "other.env\n")
+	mustGit(t, worktree, "add", ".gitignore")
+	mustGit(t, worktree, "commit", "-m", "stop ignoring seed")
+
+	if err := ResetWorktreeWithSeededPaths(worktree, "main", []string{"secret.env"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, "secret.env")); !os.IsNotExist(err) {
+		t.Fatalf("legacy seed survived reset after ignore rules changed: %v", err)
+	}
+}
+
+func TestEmptySeedInventoryPreservesUnignoredManifestSelection(t *testing.T) {
+	repo, worktree := setupSeedWorktree(t, "notes.txt\n")
+	writeTestFile(t, repo, ".gitignore", "*.env\n")
+	mustGit(t, repo, "add", ".gitignore")
+	mustGit(t, repo, "commit", "-m", "stop ignoring notes")
+	mustGit(t, worktree, "reset", "--hard", "main")
+	writeTestFile(t, worktree, "notes.txt", "keep me\n")
+
+	identity, err := os.Stat(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := removeSeededPaths(worktree, []string{}, identity); err != nil {
+		t.Fatal(err)
+	}
+	assertTestFile(t, worktree, "notes.txt", "keep me\n")
+}
+
+func TestSeedInventoryRemovesSeedWhoseSourceWasDeleted(t *testing.T) {
+	repo, worktree := setupSeedWorktree(t, "secret.env\n")
+	writeTestFile(t, repo, "secret.env", "secret\n")
+	if err := SeedWorktree(repo, worktree); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(repo, "secret.env")); err != nil {
+		t.Fatal(err)
+	}
+
+	identity, err := os.Stat(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := removeSeededPaths(worktree, []string{"secret.env"}, identity); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, "secret.env")); !os.IsNotExist(err) {
+		t.Fatalf("obsolete seed survived after its source was deleted: %v", err)
+	}
+}
+
+func TestResetWorktreeRejectsControlPathSeedInventory(t *testing.T) {
+	worktree, _, _ := setupSafeResetWorktree(t)
+
+	if err := ResetWorktreeWithSeededPaths(worktree, "main", []string{".git"}); err == nil {
+		t.Fatal("reset accepted a control path as seeded inventory")
+	}
+	if _, err := os.Stat(filepath.Join(worktree, ".git")); err != nil {
+		t.Fatalf("invalid inventory damaged worktree marker: %v", err)
+	}
+}
+
+func TestRemoveSeededPathsRejectsSymlinkedRoot(t *testing.T) {
+	outside := t.TempDir()
+	writeTestFile(t, outside, "secret.env", "keep me\n")
+	alias := filepath.Join(t.TempDir(), "worktree")
+	if err := os.Symlink(outside, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	identity, err := os.Stat(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := removeSeededPaths(alias, []string{"secret.env"}, identity); err == nil {
+		t.Fatal("expected symlinked worktree root to be rejected")
+	}
+	assertTestFile(t, outside, "secret.env", "keep me\n")
+}
+
+func TestRemoveSeededPathsRejectsReplacementDirectory(t *testing.T) {
+	parent := t.TempDir()
+	worktree := filepath.Join(parent, "worktree")
+	if err := os.Mkdir(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	originalHandle, err := openDirectoryNoFollow(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer originalHandle.Close()
+	original, err := originalHandle.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(worktree, worktree+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, worktree, "secret.env", "keep me\n")
+
+	if err := removeSeededPaths(worktree, []string{"secret.env"}, original); err == nil {
+		t.Fatal("expected replaced worktree root to be rejected")
+	}
+	assertTestFile(t, worktree, "secret.env", "keep me\n")
+}
+
+func TestRemoveSeededPathsRejectsUnregisteredReplacementDirectory(t *testing.T) {
+	replacement := t.TempDir()
+	writeTestFile(t, replacement, "secret.env", "keep me\n")
+
+	if err := RemoveSeededPaths(replacement, []string{"secret.env"}); err == nil {
+		t.Fatal("expected cleanup to reject an unregistered replacement directory")
+	}
+	assertTestFile(t, replacement, "secret.env", "keep me\n")
+}
+
+func TestRemoveSeededPathsRejectsCopiedJJWorkspaceMarker(t *testing.T) {
+	parent := t.TempDir()
+	worktree := filepath.Join(parent, "worktree")
+	marker := filepath.Join(worktree, ".jj", "repo")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("store"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := PrepareJJSeededCleanup(worktree); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(worktree); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("store"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, worktree, "secret.env", "keep me\n")
+
+	if err := RemoveSeededPathsFromJJWorkspace(worktree, []string{"secret.env"}); err == nil {
+		t.Fatal("expected cleanup to reject a copied jj workspace marker")
+	}
+	assertTestFile(t, worktree, "secret.env", "keep me\n")
+}
+
+func TestPrepareJJSeededCleanupDoesNotClaimAdjacentUserFile(t *testing.T) {
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	marker := filepath.Join(worktree, ".jj", "repo")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("store"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	adjacent := worktree + ".treehouse-jj-seed-auth"
+	if err := os.WriteFile(adjacent, []byte("user data\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := PrepareJJSeededCleanup(worktree); err != nil {
+		t.Fatalf("PrepareJJSeededCleanup failed: %v", err)
+	}
+	assertTestFile(t, filepath.Dir(adjacent), filepath.Base(adjacent), "user data\n")
+}
+
+func TestRemoveJJSeedAuthenticationRejectsUnownedFile(t *testing.T) {
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	marker := filepath.Join(worktree, ".jj", "repo")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("store"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	authPath := jjSeedAuthenticationPath(worktree)
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authPath, []byte("user data\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemoveJJSeedAuthentication(worktree); err == nil {
+		t.Fatal("expected unowned authentication file to be rejected")
+	}
+	assertTestFile(t, filepath.Dir(authPath), filepath.Base(authPath), "user data\n")
+}
+
+func TestRemoveStaleJJSeedAuthenticationAllowsWorkspaceRecreation(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	store := filepath.Join(repo, ".jj", "repo")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(parent, "worktree")
+	marker := filepath.Join(worktree, ".jj", "repo")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte(store), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := PrepareJJSeededCleanup(worktree); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := JJSeedAuthenticationIdentity(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(worktree); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemoveStaleJJSeedAuthentication(worktree, identity); err != nil {
+		t.Fatalf("RemoveStaleJJSeedAuthentication failed: %v", err)
+	}
+	if _, err := os.Stat(jjSeedAuthenticationPath(worktree)); !os.IsNotExist(err) {
+		t.Fatalf("stale authentication still exists: %v", err)
+	}
+}
+
+func TestRemoveJJSeedAuthenticationPreservesConcurrentReplacement(t *testing.T) {
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	marker := filepath.Join(worktree, ".jj", "repo")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("store"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := PrepareJJSeededCleanup(worktree); err != nil {
+		t.Fatal(err)
+	}
+	oldHook := jjAuthenticationQuarantined
+	jjAuthenticationQuarantined = func(path string) {
+		if err := os.WriteFile(path, []byte("replacement\n"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { jjAuthenticationQuarantined = oldHook })
+
+	if err := RemoveJJSeedAuthentication(worktree); err != nil {
+		t.Fatal(err)
+	}
+	assertTestFile(t, filepath.Dir(jjSeedAuthenticationPath(worktree)), filepath.Base(jjSeedAuthenticationPath(worktree)), "replacement\n")
+}
+
+func TestRemoveSeededPathsFromJJWorkspacePreservesConcurrentReplacement(t *testing.T) {
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	marker := filepath.Join(worktree, ".jj", "repo")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("store"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, worktree, "secret.env", "seeded\n")
+	if err := PrepareJJSeededCleanup(worktree); err != nil {
+		t.Fatal(err)
+	}
+	oldHook := jjAuthenticationQuarantined
+	jjAuthenticationQuarantined = func(path string) {
+		if err := os.WriteFile(path, []byte("replacement\n"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { jjAuthenticationQuarantined = oldHook })
+
+	if err := RemoveSeededPathsFromJJWorkspace(worktree, []string{"secret.env"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, "secret.env")); !os.IsNotExist(err) {
+		t.Fatalf("seeded file still exists: %v", err)
+	}
+	assertTestFile(t, filepath.Dir(jjSeedAuthenticationPath(worktree)), filepath.Base(jjSeedAuthenticationPath(worktree)), "replacement\n")
+}
+
+func TestRemoveStaleJJSeedAuthenticationPreservesConcurrentReplacement(t *testing.T) {
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	marker := filepath.Join(worktree, ".jj", "repo")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("store"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := PrepareJJSeededCleanup(worktree); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := JJSeedAuthenticationIdentity(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(worktree); err != nil {
+		t.Fatal(err)
+	}
+	oldHook := jjAuthenticationQuarantined
+	jjAuthenticationQuarantined = func(path string) {
+		if err := os.WriteFile(path, []byte("replacement\n"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { jjAuthenticationQuarantined = oldHook })
+
+	if err := RemoveStaleJJSeedAuthentication(worktree, identity); err != nil {
+		t.Fatal(err)
+	}
+	assertTestFile(t, filepath.Dir(jjSeedAuthenticationPath(worktree)), filepath.Base(jjSeedAuthenticationPath(worktree)), "replacement\n")
+}
+
+func TestSeedWorktreeRefusesDestinationSymlink(t *testing.T) {
+	repo, worktree := setupSeedWorktree(t, "config/settings.env\n")
+	writeTestFile(t, repo, "config/settings.env", "seeded\n")
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(worktree, "config")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if err := SeedWorktree(repo, worktree); err == nil {
+		t.Fatal("expected destination symlink to reject seeding")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "settings.env")); !os.IsNotExist(err) {
+		t.Fatalf("seed escaped through destination symlink: %v", err)
+	}
+}
+
+func TestSeedWorktreeRefusesToOverwriteUnmanagedDestination(t *testing.T) {
+	repo, worktree := setupSeedWorktree(t, "secret.env\n")
+	writeTestFile(t, repo, "secret.env", "seeded\n")
+	writeTestFile(t, worktree, "secret.env", "local\n")
+
+	if err := SeedWorktree(repo, worktree); err == nil {
+		t.Fatal("expected existing unmanaged file to reject seeding")
+	}
+	assertTestFile(t, worktree, "secret.env", "local\n")
+}
+
+func TestSeedWorktreeRefusesToOverwriteUnmanagedAncestor(t *testing.T) {
+	repo, worktree := setupSeedWorktree(t, "config/secret.env\n")
+	writeTestFile(t, repo, "config/secret.env", "seeded\n")
+	writeTestFile(t, worktree, "config", "local\n")
+
+	if err := SeedWorktree(repo, worktree); err == nil {
+		t.Fatal("expected existing unmanaged ancestor to reject seeding")
+	}
+	assertTestFile(t, worktree, "config", "local\n")
+}
+
+func TestSeedWorktreeRejectsSymlinkedRoot(t *testing.T) {
+	repo, worktree := setupSeedWorktree(t, ".env\n")
+	writeTestFile(t, repo, ".env", "seeded\n")
+	alias := filepath.Join(t.TempDir(), "worktree")
+	if err := os.Symlink(worktree, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := SeedWorktree(repo, alias); err == nil {
+		t.Fatal("expected symlinked worktree root to be rejected")
+	}
+}
+
+func TestOpenRootUnchangedRejectsReplacedDirectory(t *testing.T) {
+	parent := t.TempDir()
+	path := filepath.Join(parent, "worktree")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	originalHandle, err := openDirectoryNoFollow(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer originalHandle.Close()
+	original, err := originalHandle.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path, path+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := openRootUnchanged(path, original)
+	if root != nil {
+		root.Close()
+	}
+	if err == nil {
+		t.Fatal("expected replaced worktree root to be rejected")
+	}
+}
+
+func TestOpenRootUnchangedRejectsSymlinkToOriginalDirectory(t *testing.T) {
+	parent := t.TempDir()
+	path := filepath.Join(parent, "worktree")
+	oldPath := path + ".old"
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	originalHandle, err := openDirectoryNoFollow(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer originalHandle.Close()
+	original, err := originalHandle.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path, oldPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(oldPath, path); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	root, err := openRootUnchanged(path, original)
+	if root != nil {
+		root.Close()
+	}
+	if err == nil {
+		t.Fatal("expected symlink to original worktree root to be rejected")
+	}
+}
+
+func setupSeedWorktree(t *testing.T, manifest string) (string, string) {
+	t.Helper()
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	worktree := filepath.Join(base, "worktree")
+	mustGit(t, "", "init", "--initial-branch=main", repo)
+	mustGit(t, repo, "config", "user.email", "test@test.com")
+	mustGit(t, repo, "config", "user.name", "Test")
+	writeTestFile(t, repo, ".gitignore", "*\n")
+	writeTestFile(t, repo, ".worktreeinclude", manifest)
+	mustGit(t, repo, "add", "-f", ".gitignore", ".worktreeinclude")
+	mustGit(t, repo, "commit", "-m", "seed manifest")
+	mustGit(t, repo, "worktree", "add", "--detach", worktree)
+	return repo, worktree
+}
+
+func writeTestFile(t *testing.T, root, name, contents string) {
+	t.Helper()
+	filename := filepath.Join(root, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filename, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertTestFile(t *testing.T, root, name, want string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != want {
+		t.Fatalf("%s = %q, want %q", name, data, want)
+	}
+}
+
+func assertGitCheckoutFile(t *testing.T, root, name, want string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.ReplaceAll(string(data), "\r\n", "\n"); got != want {
+		t.Fatalf("%s = %q, want %q", name, data, want)
+	}
+}
 func mustGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)

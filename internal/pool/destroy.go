@@ -141,7 +141,10 @@ func DestroyWorktree(poolDir, worktreePath string, opts DestroyOptions) (Destroy
 		if err != nil {
 			return err
 		}
-		state = healState(state)
+		state, err = healState(poolDir, state)
+		if err != nil {
+			return err
+		}
 		if err := WriteState(poolDir, state); err != nil {
 			return err
 		}
@@ -174,7 +177,10 @@ func DestroyPool(poolDir string, opts DestroyOptions) (DestroyResult, error) {
 		if err != nil {
 			return err
 		}
-		state = healState(state)
+		state, err = healState(poolDir, state)
+		if err != nil {
+			return err
+		}
 		if err := WriteState(poolDir, state); err != nil {
 			return err
 		}
@@ -388,7 +394,10 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 		if err != nil {
 			return err
 		}
-		state = healState(state)
+		state, err = healState(poolDir, state)
+		if err != nil {
+			return err
+		}
 		for i := range state.Worktrees {
 			if _, ok := plannedByPath[state.Worktrees[i].Path]; !ok {
 				continue
