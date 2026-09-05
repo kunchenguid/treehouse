@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.4.0](https://github.com/kunchenguid/treehouse/compare/v2.3.0...v2.4.0) (2026-09-05)
+
+
+### Features
+
+* add Nix package manager install support ([#113](https://github.com/kunchenguid/treehouse/issues/113)) ([4307a30](https://github.com/kunchenguid/treehouse/commit/4307a30f6d18457200dbd15954a56d75749454b8))
+* **pool:** add lease command to durably lease an existing worktree ([#128](https://github.com/kunchenguid/treehouse/issues/128)) ([b227e59](https://github.com/kunchenguid/treehouse/commit/b227e59cf73fd15d69f00b580da0f5bee6b38fce))
+* **pool:** seed ignored files from .worktreeinclude ([#129](https://github.com/kunchenguid/treehouse/issues/129)) ([0e87c62](https://github.com/kunchenguid/treehouse/commit/0e87c62b0494fd08bc5df230797cfb44a10dd814))
+* **pool:** support configurable base branch for get ([#119](https://github.com/kunchenguid/treehouse/issues/119)) ([c98e9de](https://github.com/kunchenguid/treehouse/commit/c98e9de0a8ad85d9551ccce85ecd96c8b9a8dff5))
+
+
+### Bug Fixes
+
+* **cmd:** paste-safe dirty non-TTY return --force hints ([#122](https://github.com/kunchenguid/treehouse/issues/122)) ([59762c9](https://github.com/kunchenguid/treehouse/commit/59762c9dd545cca29517e6b7333ec5a23e67ee85))
+* **shell:** start supported user shells as interactive login sessions ([#120](https://github.com/kunchenguid/treehouse/issues/120)) ([db06078](https://github.com/kunchenguid/treehouse/commit/db06078c6f5569e539b8cdb7703f38fdefe06382))
+* **updater:** replace a running Windows exe without a fixed .old backup ([#121](https://github.com/kunchenguid/treehouse/issues/121)) ([bdbd0f8](https://github.com/kunchenguid/treehouse/commit/bdbd0f89164ba87cda5d48b53dfb3e04836dc6f7))
+
 ## [2.3.0](https://github.com/kunchenguid/treehouse/compare/v2.2.1...v2.3.0) (2026-08-21)
 
 
