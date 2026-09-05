@@ -232,7 +232,10 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		repoName := filepath.Base(repoRoot)
 		wtPath := filepath.Join(poolDir, name, repoName)
 
-		if err := os.MkdirAll(filepath.Dir(wtPath), 0755); err != nil {
+		slotDir := filepath.Dir(wtPath)
+		_, slotStatErr := os.Stat(slotDir)
+		slotDirIsNew := errors.Is(slotStatErr, os.ErrNotExist)
+		if err := os.MkdirAll(slotDir, 0755); err != nil {
 			return err
 		}
 
@@ -246,11 +249,20 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		// (e.g. a temporary .git/worktrees lock or permission issue) must not
 		// wedge a get that would otherwise succeed; let AddWorktree surface the
 		// real error if one exists.
-		if err := vcs.PruneWorktrees(repoRoot); err != nil {
+		if err := vcs.PruneWorktreeAt(repoRoot, wtPath); err != nil {
 			fmt.Fprintf(os.Stderr, "🌳 Warning: failed to prune stale worktrees: %v\n", err)
 		}
 
 		if err := vcs.AddWorktree(repoRoot, wtPath, branch); err != nil {
+			// A failed add (timeout, interrupted checkout, full disk) can leave
+			// a partial directory and a registration behind. No state entry is
+			// written, so nextName would hand out the same slot again and every
+			// later get would fail with "already exists". Removing what this
+			// attempt created is only safe when the slot did not exist before,
+			// which guarantees nothing under it predates this call.
+			if slotDirIsNew {
+				cleanupPartialWorktree(repoRoot, slotDir, wtPath)
+			}
 			return fmt.Errorf("failed to create worktree: %w", err)
 		}
 
@@ -647,6 +659,20 @@ func cwdInWorktree(cwd, worktreePath string) bool {
 		return false
 	}
 	return rel == "." || !filepath.IsAbs(rel) && len(rel) >= 1 && rel[0] != '.'
+}
+
+func cleanupPartialWorktree(repoRoot, slotDir, wtPath string) {
+	if err := os.RemoveAll(slotDir); err != nil {
+		fmt.Fprintf(os.Stderr, "🌳 Warning: failed to remove partially created worktree %s: %v\n", slotDir, err)
+		return
+	}
+	// PruneWorktreeAt, not PruneWorktrees: git locks a worktree while it
+	// creates it and unlocks it only on success, and a plain prune skips
+	// locked registrations. Leaving that lock behind would keep the slot
+	// registered and wedge every later get on this pool.
+	if err := vcs.PruneWorktreeAt(repoRoot, wtPath); err != nil {
+		fmt.Fprintf(os.Stderr, "🌳 Warning: failed to prune the registration for partially created worktree %s: %v\n", slotDir, err)
+	}
 }
 
 func nextName(state State) string {

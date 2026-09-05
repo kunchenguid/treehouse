@@ -62,6 +62,11 @@ type Backend interface {
 	// PruneWorktrees clears bookkeeping for worktrees whose directories no
 	// longer exist. It never touches live worktrees or their data.
 	PruneWorktrees(repoRoot string) error
+	// PruneWorktreeAt does what PruneWorktrees does and additionally
+	// clears the registration for path when the VCS locked it while
+	// creating the worktree and the creation never finished. It never
+	// touches a worktree whose directory still exists.
+	PruneWorktreeAt(repoRoot, path string) error
 	// RemoveWorktree removes a worktree even if it has local changes.
 	RemoveWorktree(repoRoot, path string) error
 	// RemoveCleanWorktree removes a worktree, refusing if it is not clean.
@@ -298,6 +303,13 @@ func AddWorktree(repoRoot, path, branch string) error {
 // PruneWorktrees clears bookkeeping for worktrees whose directories no longer
 // exist.
 func PruneWorktrees(repoRoot string) error { return backendFor(repoRoot).PruneWorktrees(repoRoot) }
+
+// PruneWorktreeAt clears bookkeeping for worktrees whose directories no
+// longer exist, including the registration for path when an interrupted
+// worktree creation left the VCS's own lock on it.
+func PruneWorktreeAt(repoRoot, path string) error {
+	return backendFor(repoRoot).PruneWorktreeAt(repoRoot, path)
+}
 
 // RemoveWorktree removes a worktree even if it has local changes.
 func RemoveWorktree(repoRoot, path string) error {

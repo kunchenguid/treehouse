@@ -2,12 +2,49 @@ package gitvcs
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"time"
 )
+
+const (
+	// defaultGitCommandTimeout bounds metadata commands, whose runtime does
+	// not scale with repository size or network conditions.
+	defaultGitCommandTimeout = 2 * time.Minute
+	// defaultGitLongCommandTimeout bounds commands whose legitimate runtime
+	// does scale that way (fetching, and writing out a working tree through
+	// smudge/LFS filters). They stay bounded so a stalled command still
+	// surfaces, but generously enough that a merely slow one is not killed
+	// part-way through creating a worktree.
+	defaultGitLongCommandTimeout = 30 * time.Minute
+	gitCommandWaitDelay          = 250 * time.Millisecond
+
+	gitTimeoutEnv     = "TREEHOUSE_GIT_TIMEOUT"
+	gitLongTimeoutEnv = "TREEHOUSE_GIT_LONG_TIMEOUT"
+
+	// worktreeInitializingLock is the lock reason git writes while
+	// "git worktree add" is creating a worktree.
+	worktreeInitializingLock = "initializing"
+)
+
+var longRunningGitCommands = map[string]bool{
+	"checkout":  true,
+	"clean":     true,
+	"fetch":     true,
+	"ls-remote": true,
+	"read-tree": true,
+}
+
+var longRunningGitSubcommands = map[string]map[string]bool{
+	"worktree": {"add": true, "remove": true},
+}
 
 // FindMainRepoRoot returns the main repository root for the current working
 // directory. Inside a linked worktree it resolves back to the owning
@@ -213,6 +250,92 @@ func AddWorktree(repoRoot, path, branch string) error {
 func PruneWorktrees(repoRoot string) error {
 	_, err := runGit(repoRoot, "worktree", "prune")
 	return err
+}
+
+// PruneWorktreeAt prunes stale worktree bookkeeping like PruneWorktrees and,
+// in addition, clears the registration for path when an interrupted
+// "git worktree add" left git's own lock behind. Git locks a worktree while
+// it creates it and unlocks it only on success, and "git worktree prune"
+// silently skips every locked registration, so a timed-out or crashed add
+// leaves the path registered forever and later adds fail with "is a missing
+// but locked worktree". Only git's own initializing lock is cleared, and only
+// while the worktree directory is gone, so a lock a user took (for example on
+// a worktree stored on removable media) is never disturbed.
+func PruneWorktreeAt(repoRoot, path string) error {
+	if err := PruneWorktrees(repoRoot); err != nil {
+		return err
+	}
+	locked, err := initializingLockedWorktree(repoRoot, path)
+	if err != nil || locked == "" {
+		return err
+	}
+	if _, err := runGit(repoRoot, "worktree", "unlock", locked); err != nil {
+		return err
+	}
+	return PruneWorktrees(repoRoot)
+}
+
+// initializingLockedWorktree returns git's own spelling of path when it is
+// still registered, gone from disk, and locked with the reason git writes
+// while creating a worktree. It returns an empty path in every other case,
+// including a creation still in flight (its directory already exists).
+func initializingLockedWorktree(repoRoot, path string) (string, error) {
+	out, err := runGit(repoRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	want := resolveDeepestExisting(path)
+	current := ""
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if registered, ok := strings.CutPrefix(line, "worktree "); ok {
+			current = registered
+			continue
+		}
+		if line != "locked "+worktreeInitializingLock || current == "" {
+			continue
+		}
+		if !samePath(resolveDeepestExisting(current), want) {
+			continue
+		}
+		if _, err := os.Stat(current); err == nil {
+			return "", nil
+		}
+		return current, nil
+	}
+	return "", nil
+}
+
+// resolveDeepestExisting canonicalizes p for comparison with the paths git
+// prints, which are symlink-resolved. The worktree is already gone by the
+// time this runs, so it resolves the deepest ancestor that still exists and
+// re-appends the rest: a component that does not exist cannot be a symlink.
+func resolveDeepestExisting(p string) string {
+	abs, err := filepath.Abs(filepath.FromSlash(p))
+	if err != nil {
+		return filepath.Clean(filepath.FromSlash(p))
+	}
+	rest := ""
+	for cur := abs; ; {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return abs
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
+}
+
+// samePath compares two already canonicalized paths, honoring the
+// case-insensitive file systems Windows uses.
+func samePath(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 func RemoveWorktree(repoRoot, path string) error {
@@ -469,42 +592,53 @@ func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error
 // detects a squash merge without treating unrelated target-branch changes as a
 // mismatch.
 func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
-	cmd := exec.Command("git", "merge-base", "--is-ancestor", "HEAD", ref)
-	cmd.Dir = worktreePath
-	out, err := cmd.CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeoutFor("merge-base"))
+	defer cancel()
+
+	return isHeadMergedIntoRefContext(ctx, worktreePath, ref)
+}
+
+func isHeadMergedIntoRefContext(ctx context.Context, worktreePath, ref string) (bool, error) {
+	args := []string{"merge-base", "--is-ancestor", "HEAD", ref}
+	out, err := gitCommandContext(ctx, worktreePath, args...).CombinedOutput()
 	if err == nil {
 		return true, nil
 	}
-	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-		return isHeadContentMergedIntoRef(worktreePath, ref)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return false, gitTimeoutError(worktreePath, args)
 	}
-	return false, fmt.Errorf("git merge-base --is-ancestor HEAD %s: %s", ref, strings.TrimSpace(string(out)))
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		return isHeadContentMergedIntoRefContext(ctx, worktreePath, ref)
+	}
+	return false, gitCombinedOutputError(worktreePath, args, out, err)
 }
 
-func isHeadContentMergedIntoRef(worktreePath, ref string) (bool, error) {
-	cmd := exec.Command("git", "merge-base", "HEAD", ref)
-	cmd.Dir = worktreePath
-	out, err := cmd.CombinedOutput()
+func isHeadContentMergedIntoRefContext(ctx context.Context, worktreePath, ref string) (bool, error) {
+	args := []string{"merge-base", "HEAD", ref}
+	out, err := gitCommandContext(ctx, worktreePath, args...).CombinedOutput()
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return false, gitTimeoutError(worktreePath, args)
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			return false, fmt.Errorf("git merge-base HEAD %s returned no common ancestor", ref)
 		}
-		return false, fmt.Errorf("git merge-base HEAD %s: %s", ref, strings.TrimSpace(string(out)))
+		return false, gitCombinedOutputError(worktreePath, args, out, err)
 	}
 	base := strings.TrimSpace(string(out))
 	if base == "" {
 		return false, fmt.Errorf("git merge-base HEAD %s returned no common ancestor", ref)
 	}
 
-	baseTree, err := readTree(worktreePath, base)
+	baseTree, err := readTreeContext(ctx, worktreePath, base)
 	if err != nil {
 		return false, err
 	}
-	headTree, err := readTree(worktreePath, "HEAD")
+	headTree, err := readTreeContext(ctx, worktreePath, "HEAD")
 	if err != nil {
 		return false, err
 	}
-	targetTree, err := readTree(worktreePath, ref)
+	targetTree, err := readTreeContext(ctx, worktreePath, ref)
 	if err != nil {
 		return false, err
 	}
@@ -534,8 +668,8 @@ func isHeadContentMergedIntoRef(worktreePath, ref string) (bool, error) {
 	return true, nil
 }
 
-func readTree(repoRoot, ref string) (map[string]string, error) {
-	out, err := runGitRaw(repoRoot, "ls-tree", "-r", "-z", "--full-tree", ref)
+func readTreeContext(ctx context.Context, repoRoot, ref string) (map[string]string, error) {
+	out, err := runGitRawContext(ctx, repoRoot, "ls-tree", "-r", "-z", "--full-tree", ref)
 	if err != nil {
 		return nil, err
 	}
@@ -571,26 +705,159 @@ func IsDirty(worktreePath string) (bool, error) {
 }
 
 func runGit(dir string, args ...string) (string, error) {
-	out, err := runGitRaw(dir, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeoutFor(args...))
+	defer cancel()
+
+	return runGitContext(ctx, dir, args...)
+}
+
+func runGitContext(ctx context.Context, dir string, args ...string) (string, error) {
+	out, err := runGitRawContext(ctx, dir, args...)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
 
-func runGitRaw(dir string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	out, err := cmd.Output()
+func runGitRawContext(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	out, err := gitCommandContext(ctx, dir, args...).Output()
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, gitTimeoutError(dir, args)
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(exitErr.Stderr)))
 		}
-		return nil, err
+		if errors.Is(err, exec.ErrWaitDelay) {
+			return nil, fmt.Errorf(
+				"git %s in %q left its output pipe open past %s, most likely held by a background helper (fsmonitor, credential cache, or a smudge/clean filter): %w",
+				strings.Join(args, " "),
+				gitWorkingDir(dir),
+				gitCommandWaitDelay,
+				err,
+			)
+		}
+		return nil, fmt.Errorf("git %s in %q: %w", strings.Join(args, " "), gitWorkingDir(dir), err)
 	}
 	return out, nil
+}
+
+func gitCommandContext(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.WaitDelay = gitCommandWaitDelay
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	return cmd
+}
+
+func gitTimeoutError(dir string, args []string) error {
+	return fmt.Errorf(
+		"git %s timed out in \"%s\"; check for a stale index lock (locate it with 'git rev-parse --git-path index.lock'), blocked credential prompts, or network connectivity. Raise %s if this repository legitimately needs longer",
+		strings.Join(args, " "),
+		gitWorkingDir(dir),
+		gitTimeoutEnvFor(args...),
+	)
+}
+
+// gitCombinedOutputError reports a CombinedOutput failure. git's own message
+// is the best diagnostic when it produced one; otherwise the subcommand, the
+// working directory, and the underlying exec error keep the failure
+// identifiable instead of collapsing to an empty suffix.
+func gitCombinedOutputError(dir string, args []string, out []byte, err error) error {
+	detail := strings.TrimSpace(string(out))
+	if detail != "" {
+		if _, isExit := err.(*exec.ExitError); isExit {
+			return fmt.Errorf("git %s: %s", strings.Join(args, " "), detail)
+		}
+		return fmt.Errorf("git %s in %q: %w: %s", strings.Join(args, " "), gitWorkingDir(dir), err, detail)
+	}
+	return fmt.Errorf("git %s in %q: %w", strings.Join(args, " "), gitWorkingDir(dir), err)
+}
+
+func gitWorkingDir(dir string) string {
+	if dir != "" {
+		return dir
+	}
+	if currentDir, err := os.Getwd(); err == nil {
+		return currentDir
+	}
+	return "."
+}
+
+// gitCommandTimeoutFor resolves the deadline for a git invocation. Commands
+// whose runtime scales with repository size or network conditions get the
+// longer budget, and either budget can be overridden for repositories that
+// legitimately need more time.
+func gitCommandTimeoutFor(args ...string) time.Duration {
+	if isLongRunningGitCommand(args) {
+		return gitTimeoutFromEnv(gitLongTimeoutEnv, defaultGitLongCommandTimeout)
+	}
+	return gitTimeoutFromEnv(gitTimeoutEnv, defaultGitCommandTimeout)
+}
+
+func gitTimeoutEnvFor(args ...string) string {
+	if isLongRunningGitCommand(args) {
+		return gitLongTimeoutEnv
+	}
+	return gitTimeoutEnv
+}
+
+func isLongRunningGitCommand(args []string) bool {
+	command, subcommand := gitSubcommand(args)
+	if longRunningGitCommands[command] {
+		return true
+	}
+	return longRunningGitSubcommands[command][subcommand]
+}
+
+// gitSubcommand skips leading global options ("-c foo=bar", "--exec-path=...")
+// so classification sees the actual command.
+func gitSubcommand(args []string) (string, string) {
+	command := ""
+	subcommand := ""
+	skipValue := false
+	for _, arg := range args {
+		if skipValue {
+			skipValue = false
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			if arg == "-c" || arg == "-C" {
+				skipValue = true
+			}
+			continue
+		}
+		if command == "" {
+			command = arg
+			continue
+		}
+		subcommand = arg
+		break
+	}
+	return command, subcommand
+}
+
+func gitTimeoutFromEnv(name string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil || timeout <= 0 {
+		warnOnce(name+"="+raw, fmt.Sprintf("🌳 Warning: ignoring invalid %s=%q; using %s\n", name, raw, fallback))
+		return fallback
+	}
+	return timeout
+}
+
+var warnedTimeoutValues sync.Map
+
+func warnOnce(key, message string) {
+	if _, seen := warnedTimeoutValues.LoadOrStore(key, struct{}{}); seen {
+		return
+	}
+	fmt.Fprint(os.Stderr, message)
 }
 
 // Backend adapts this package's functions to the vcs.Backend interface. All
@@ -615,6 +882,9 @@ func (*Backend) AddWorktree(repoRoot, path, branch string) error {
 	return AddWorktree(repoRoot, path, branch)
 }
 func (*Backend) PruneWorktrees(repoRoot string) error { return PruneWorktrees(repoRoot) }
+func (*Backend) PruneWorktreeAt(repoRoot, path string) error {
+	return PruneWorktreeAt(repoRoot, path)
+}
 func (*Backend) RemoveWorktree(repoRoot, path string) error {
 	return RemoveWorktree(repoRoot, path)
 }

@@ -157,7 +157,9 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
   `treehouse prune --all` applies the same safety checks across every managed pool under the user-level treehouse root.
   Backing-repository-missing orphans are reported by default; `--prune-orphans` includes them as unverified prune candidates, and `--yes` is required before deletion.
   It is a dry run unless you pass `--yes`.
-- **Self-healing get** - `treehouse get` prunes stale git worktree bookkeeping (e.g. left behind by a crashed or forcibly removed worktree) before adding a new worktree, so a prunable registration never wedges the pool with a "missing but already registered worktree" error.
+- **Self-healing get** - `treehouse get` prunes stale git worktree bookkeeping (e.g. left behind by a crashed or forcibly removed worktree) before adding a new worktree, so a leftover registration never wedges the pool with a "missing but already registered worktree" error.
+  This includes the registration an interrupted `git worktree add` leaves locked, which a plain `git worktree prune` skips; a worktree you locked yourself is never touched.
+  If creating the worktree fails, `get` also removes the partial slot directory it just created, so the same slot name is not permanently poisoned.
 
 ## CLI Reference
 
@@ -414,6 +416,7 @@ jj-backend notes:
 - Merge detection uses ancestry; squash-merged work is treated as unmerged, so lifecycle commands err on the side of keeping it.
 - The default branch resolves to the `main`/`master`/`trunk` bookmark, preferring origin.
 - A pooled jj workspace whose backing repository was deleted is classified as an orphan just like a git worktree: `prune` reports it, and `prune --prune-orphans --yes` reclaims it.
+- The command deadlines in [Git command timeouts](#git-command-timeouts) bound the git backend only; jj subprocesses are not bounded yet.
 
 ### Worktree root
 
@@ -426,6 +429,17 @@ The worktree root can also be set without a config file, and the resolved value 
 5. The default, `~/.treehouse`
 
 A relative value (including `.`) is resolved from the repo root, exactly like a relative `root` in config; `treehouse` is always appended, so `--root .` places the pool at `<repo>/.treehouse/`.
+
+### Git command timeouts
+
+Every `git` subprocess runs under a deadline, so a stalled command (stale index lock, a blocked credential prompt, an unreachable remote) fails with an actionable error instead of hanging forever. Two budgets apply:
+
+| Budget | Default | Applies to | Override |
+| ------ | ------- | ---------- | -------- |
+| Standard | 2 minutes | metadata commands (`rev-parse`, `status`, `merge-base`, `symbolic-ref`, ...) | `TREEHOUSE_GIT_TIMEOUT` |
+| Long | 30 minutes | commands that scale with repository size or the network (`fetch`, `ls-remote`, `worktree add`, `worktree remove`, `checkout`, `read-tree`, `clean`) | `TREEHOUSE_GIT_LONG_TIMEOUT` |
+
+Both accept a Go duration (`export TREEHOUSE_GIT_LONG_TIMEOUT=2h`). An unparseable or non-positive value is ignored with a warning and the default is used.
 
 ### In-project storage
 

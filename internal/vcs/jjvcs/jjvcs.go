@@ -243,6 +243,11 @@ func workspaceNameFor(path string) string {
 // AddWorktree forgets a same-path stale registration before re-adding.
 func (*Backend) PruneWorktrees(repoRoot string) error { return nil }
 
+// PruneWorktreeAt is a no-op for the same reason, and jj has no equivalent of
+// git's initializing lock: AddWorktree forgets a same-path stale registration
+// before re-adding.
+func (*Backend) PruneWorktreeAt(repoRoot, path string) error { return nil }
+
 // RemoveWorktree forgets the workspace and deletes its directory even if it
 // has local changes.
 func (*Backend) RemoveWorktree(repoRoot, path string) error {

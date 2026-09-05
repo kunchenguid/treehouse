@@ -10,6 +10,211 @@ import (
 	"time"
 )
 
+func TestRunGitContextPreservesNormalOutputAndExitDiagnostics(t *testing.T) {
+	repoDir := t.TempDir()
+	repoDir, err := filepath.EvalSymlinks(repoDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, "", "init", "--initial-branch=main", repoDir)
+
+	out, err := runGitContext(context.Background(), repoDir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		t.Fatalf("runGitContext failed: %v", err)
+	}
+	// git reports --show-toplevel with forward slashes even on Windows.
+	if filepath.FromSlash(out) != repoDir {
+		t.Fatalf("expected trimmed repository path %q, got %q", repoDir, out)
+	}
+
+	_, err = runGitContext(context.Background(), repoDir, "rev-parse", "--verify", "missing-ref")
+	if err == nil {
+		t.Fatal("expected missing ref to fail")
+	}
+	if !strings.Contains(err.Error(), "git rev-parse --verify missing-ref:") {
+		t.Fatalf("expected ordinary git exit diagnostic, got %q", err)
+	}
+}
+
+func TestRunGitContextReportsActionableTimeout(t *testing.T) {
+	repoDir := t.TempDir()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	_, err := runGitContext(ctx, repoDir, "checkout", "--detach")
+	if err == nil {
+		t.Fatal("expected expired context to fail")
+	}
+
+	message := err.Error()
+	for _, want := range []string{
+		"git checkout --detach timed out",
+		repoDir,
+		"git rev-parse --git-path index.lock",
+		"credential",
+		"network",
+	} {
+		if !strings.Contains(message, want) {
+			t.Errorf("expected timeout diagnostic to contain %q, got %q", want, message)
+		}
+	}
+}
+
+func TestRunGitContextDoesNotReportCancellationAsTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := runGitContext(ctx, t.TempDir(), "status")
+	if err == nil {
+		t.Fatal("expected canceled context to fail")
+	}
+	if strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected cancellation to remain distinct from timeout, got %q", err)
+	}
+}
+
+func TestRunGitContextBoundsDescendantHeldOutputPipe(t *testing.T) {
+	helperDir := t.TempDir()
+	helperName := "git-pipeholder"
+	if filepath.Ext(os.Args[0]) == ".exe" {
+		helperName += ".exe"
+	}
+	helperPath := filepath.Join(helperDir, helperName)
+	testBinary, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(helperPath, testBinary, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	readyPath := filepath.Join(t.TempDir(), "ready")
+	stopPath := filepath.Join(t.TempDir(), "stop")
+	donePath := filepath.Join(t.TempDir(), "done")
+	t.Setenv("TREEHOUSE_GIT_PIPE_HOLDER", "1")
+	t.Setenv("TREEHOUSE_GIT_PIPE_READY", readyPath)
+	t.Setenv("TREEHOUSE_GIT_PIPE_STOP", stopPath)
+	t.Setenv("TREEHOUSE_GIT_PIPE_DONE", donePath)
+	defer os.WriteFile(stopPath, nil, 0o644) //nolint:errcheck -- best-effort helper cleanup
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err = runGitContext(ctx, "", "--exec-path="+helperDir, "pipeholder", "-test.run=^TestGitPipeHolderHelper$")
+	elapsed := time.Since(started)
+	if writeErr := os.WriteFile(stopPath, nil, 0o644); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if !waitForFile(donePath, 2*time.Second) {
+		t.Error("git helper did not exit after its output pipe was released")
+	}
+	if err == nil {
+		t.Fatal("expected pipe-holding git command to time out")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout diagnostic, got %q", err)
+	}
+	if _, statErr := os.Stat(readyPath); statErr != nil {
+		t.Fatalf("expected git helper and its descendant to start: %v", statErr)
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("runGitContext remained blocked by an inherited output pipe for %v", elapsed)
+	}
+}
+
+func TestGitPipeHolderHelper(t *testing.T) {
+	if os.Getenv("TREEHOUSE_GIT_PIPE_HOLDER") != "1" {
+		return
+	}
+
+	stopPath := os.Getenv("TREEHOUSE_GIT_PIPE_STOP")
+	if os.Getenv("TREEHOUSE_GIT_PIPE_DESCENDANT") == "1" {
+		waitForFile(stopPath, 15*time.Second)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestGitPipeHolderHelper$")
+	cmd.Env = append(os.Environ(), "TREEHOUSE_GIT_PIPE_DESCENDANT=1")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("TREEHOUSE_GIT_PIPE_READY"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	waitForFile(stopPath, 15*time.Second)
+	_ = cmd.Wait() // The command's inherited output pipe is intentionally closed on timeout.
+	if err := os.WriteFile(os.Getenv("TREEHOUSE_GIT_PIPE_DONE"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForFile(path string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+func TestIsHeadMergedIntoRefPreservesUnmergedExitCode(t *testing.T) {
+	repoDir := t.TempDir()
+	mustGit(t, "", "init", "--initial-branch=main", repoDir)
+	mustGit(t, repoDir, "config", "user.email", "test@test.com")
+	mustGit(t, repoDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repoDir, "add", "README.md")
+	mustGit(t, repoDir, "commit", "-m", "main")
+	mustGit(t, repoDir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repoDir, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repoDir, "add", "feature.txt")
+	mustGit(t, repoDir, "commit", "-m", "feature")
+
+	merged, err := IsHeadMergedIntoRef(repoDir, "refs/heads/main")
+	if err != nil {
+		t.Fatalf("IsHeadMergedIntoRef failed: %v", err)
+	}
+	if merged {
+		t.Fatal("expected feature HEAD not to be merged into main")
+	}
+}
+
+func TestIsHeadMergedIntoRefContextReportsTimeout(t *testing.T) {
+	repoDir := t.TempDir()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	_, err := isHeadMergedIntoRefContext(ctx, repoDir, "refs/heads/main")
+	if err == nil {
+		t.Fatal("expected expired context to fail")
+	}
+	if !strings.Contains(err.Error(), "git merge-base --is-ancestor HEAD refs/heads/main timed out") {
+		t.Fatalf("expected merge-base timeout diagnostic, got %q", err)
+	}
+}
+
+func TestIsHeadContentMergedIntoRefContextReportsTimeout(t *testing.T) {
+	repoDir := t.TempDir()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	_, err := isHeadContentMergedIntoRefContext(ctx, repoDir, "refs/heads/main")
+	if err == nil {
+		t.Fatal("expected expired context to fail")
+	}
+	if !strings.Contains(err.Error(), "git merge-base HEAD refs/heads/main timed out") {
+		t.Fatalf("expected fallback merge-base timeout diagnostic, got %q", err)
+	}
+}
+
 func TestRepoRootFromCommonGitDirHandlesForwardSlashPath(t *testing.T) {
 	root, ok := repoRootFromCommonGitDir("C:/Users/runner/AppData/Local/Temp/repo/.git")
 	if !ok {
@@ -535,5 +740,137 @@ func mustGit(t *testing.T, dir string, args ...string) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
+func TestGitCommandTimeoutForSeparatesLongRunningCommands(t *testing.T) {
+	cases := []struct {
+		args []string
+		want time.Duration
+	}{
+		{[]string{"rev-parse", "--show-toplevel"}, defaultGitCommandTimeout},
+		{[]string{"status", "--porcelain"}, defaultGitCommandTimeout},
+		{[]string{"worktree", "prune"}, defaultGitCommandTimeout},
+		{[]string{"fetch", "origin"}, defaultGitLongCommandTimeout},
+		{[]string{"ls-remote", "--symref", "origin", "HEAD"}, defaultGitLongCommandTimeout},
+		{[]string{"worktree", "add", "--detach", "path", "ref"}, defaultGitLongCommandTimeout},
+		{[]string{"worktree", "remove", "--force", "path"}, defaultGitLongCommandTimeout},
+		{[]string{"read-tree", "--reset", "-u", "ref"}, defaultGitLongCommandTimeout},
+		{[]string{"clean", "-fd"}, defaultGitLongCommandTimeout},
+		{[]string{"checkout", "--detach"}, defaultGitLongCommandTimeout},
+		{[]string{"-c", "fetch.parallel=1", "fetch", "origin"}, defaultGitLongCommandTimeout},
+		{[]string{"-c", "core.pager=cat", "rev-parse", "HEAD"}, defaultGitCommandTimeout},
+	}
+	for _, tc := range cases {
+		if got := gitCommandTimeoutFor(tc.args...); got != tc.want {
+			t.Errorf("gitCommandTimeoutFor(%q) = %s, want %s", tc.args, got, tc.want)
+		}
+	}
+}
+
+func TestGitCommandTimeoutForHonorsEnvironmentOverrides(t *testing.T) {
+	t.Setenv(gitTimeoutEnv, "45s")
+	t.Setenv(gitLongTimeoutEnv, "3h")
+
+	if got := gitCommandTimeoutFor("status"); got != 45*time.Second {
+		t.Errorf("expected overridden standard budget, got %s", got)
+	}
+	if got := gitCommandTimeoutFor("fetch", "origin"); got != 3*time.Hour {
+		t.Errorf("expected overridden long budget, got %s", got)
+	}
+
+	t.Setenv(gitTimeoutEnv, "not-a-duration")
+	t.Setenv(gitLongTimeoutEnv, "0")
+	if got := gitCommandTimeoutFor("status"); got != defaultGitCommandTimeout {
+		t.Errorf("expected unparseable override to fall back, got %s", got)
+	}
+	if got := gitCommandTimeoutFor("fetch", "origin"); got != defaultGitLongCommandTimeout {
+		t.Errorf("expected non-positive override to fall back, got %s", got)
+	}
+}
+
+func TestGitTimeoutErrorNamesTheOverridableBudget(t *testing.T) {
+	err := gitTimeoutError("/tmp/repo", []string{"fetch", "origin"})
+	if !strings.Contains(err.Error(), gitLongTimeoutEnv) {
+		t.Errorf("expected long-budget override hint, got %q", err)
+	}
+	err = gitTimeoutError("/tmp/repo", []string{"status"})
+	if !strings.Contains(err.Error(), gitTimeoutEnv) {
+		t.Errorf("expected standard-budget override hint, got %q", err)
+	}
+}
+
+func TestRunGitRawContextIdentifiesNonExitFailures(t *testing.T) {
+	repoDir := t.TempDir()
+	missingGitDir := filepath.Join(repoDir, "gone")
+
+	_, err := runGitRawContext(context.Background(), missingGitDir, "rev-parse", "--show-toplevel")
+	if err == nil {
+		t.Fatal("expected a missing working directory to fail")
+	}
+	if !strings.Contains(err.Error(), "git rev-parse --show-toplevel in") {
+		t.Fatalf("expected the failing subcommand in the error, got %q", err)
+	}
+	if !strings.Contains(err.Error(), missingGitDir) {
+		t.Fatalf("expected the working directory in the error, got %q", err)
+	}
+}
+
+// TestPruneWorktreeAtClearsInterruptedCreationLock covers the recovery path
+// for an interrupted "git worktree add" and its two guards: a lock a user
+// took and a worktree still on disk are both left registered.
+func TestPruneWorktreeAtClearsInterruptedCreationLock(t *testing.T) {
+	tests := []struct {
+		name        string
+		lockReason  string
+		removeDir   bool
+		wantCleared bool
+	}{
+		{name: "interrupted creation", lockReason: worktreeInitializingLock, removeDir: true, wantCleared: true},
+		{name: "unlocked stale registration", removeDir: true, wantCleared: true},
+		{name: "user lock", lockReason: "on removable media", removeDir: true},
+		{name: "creation still in flight", lockReason: worktreeInitializingLock},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := t.TempDir()
+			base, err := filepath.EvalSymlinks(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			repoDir := filepath.Join(base, "repo")
+			wtPath := filepath.Join(base, "slot", "worktree")
+
+			mustGit(t, "", "init", "--initial-branch=main", repoDir)
+			mustGit(t, repoDir, "config", "user.email", "test@test.com")
+			mustGit(t, repoDir, "config", "user.name", "Test")
+			if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			mustGit(t, repoDir, "add", ".")
+			mustGit(t, repoDir, "commit", "-m", "initial")
+			mustGit(t, repoDir, "worktree", "add", "--detach", wtPath, "main")
+			if tt.lockReason != "" {
+				mustGit(t, repoDir, "worktree", "lock", "--reason", tt.lockReason, wtPath)
+			}
+			if tt.removeDir {
+				if err := os.RemoveAll(filepath.Dir(wtPath)); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := PruneWorktreeAt(repoDir, wtPath); err != nil {
+				t.Fatalf("PruneWorktreeAt failed: %v", err)
+			}
+
+			out, err := exec.Command("git", "-C", repoDir, "worktree", "list", "--porcelain").CombinedOutput()
+			if err != nil {
+				t.Fatalf("git worktree list failed: %v\n%s", err, out)
+			}
+			if got := strings.Contains(string(out), wtPath); got == tt.wantCleared {
+				t.Fatalf("registration cleared=%v, want cleared=%v; list:\n%s", !got, tt.wantCleared, out)
+			}
+		})
 	}
 }

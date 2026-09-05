@@ -2761,3 +2761,103 @@ func TestPrune_MarkerlessSlotSkippedAsCannotVerify(t *testing.T) {
 		t.Fatalf("markerless slot must stay on disk: %v", err)
 	}
 }
+
+func TestCleanupPartialWorktreeRemovesSlotAndRegistration(t *testing.T) {
+	repoDir, poolDir := setupLocalRepo(t)
+
+	slotDir := filepath.Join(poolDir, "1")
+	wtPath := filepath.Join(slotDir, filepath.Base(repoDir))
+	if err := os.MkdirAll(slotDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repoDir, "worktree", "add", "--detach", wtPath, "HEAD")
+
+	cleanupPartialWorktree(repoDir, slotDir, wtPath)
+
+	if _, err := os.Stat(slotDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected the partial slot to be removed, got %v", err)
+	}
+	out, err := exec.Command("git", "-C", repoDir, "worktree", "list", "--porcelain").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git worktree list failed: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), wtPath) {
+		t.Fatalf("expected the stale registration to be pruned, got:\n%s", out)
+	}
+}
+
+func TestAcquireReusesSlotNameAfterFailedWorktreeCreation(t *testing.T) {
+	repoDir, poolDir := setupLocalRepo(t)
+
+	slotDir := filepath.Join(poolDir, "1")
+	wtPath := filepath.Join(slotDir, filepath.Base(repoDir))
+	if err := os.MkdirAll(slotDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repoDir, "worktree", "add", "--detach", wtPath, "HEAD")
+	cleanupPartialWorktree(repoDir, slotDir, wtPath)
+
+	got, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire after a cleaned-up failure should succeed: %v", err)
+	}
+	if got != wtPath {
+		t.Fatalf("expected the freed slot %q to be reused, got %q", wtPath, got)
+	}
+}
+
+func TestAcquireKeepsPreexistingSlotContentWhenCreationFails(t *testing.T) {
+	repoDir, poolDir := setupLocalRepo(t)
+
+	wtPath := filepath.Join(poolDir, "1", filepath.Base(repoDir))
+	if err := os.MkdirAll(wtPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(wtPath, "unlanded.txt")
+	if err := os.WriteFile(keep, []byte("do not delete\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Acquire(repoDir, poolDir, 4, nil); err == nil {
+		t.Fatal("expected worktree creation over an occupied slot to fail")
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("expected pre-existing slot content to survive a failed create: %v", err)
+	}
+}
+
+// TestCleanupPartialWorktreeClearsInitializingLock pins recovery from an
+// interrupted worktree creation. Git locks a worktree while it is being
+// created ("initializing") and unlocks it only on success, while
+// `git worktree prune` silently skips every locked registration. Without
+// clearing that lock the slot stays registered forever and every later
+// Acquire fails with "is a missing but locked worktree".
+func TestCleanupPartialWorktreeClearsInitializingLock(t *testing.T) {
+	repoDir, poolDir := setupLocalRepo(t)
+
+	slotDir := filepath.Join(poolDir, "1")
+	wtPath := filepath.Join(slotDir, filepath.Base(repoDir))
+	if err := os.MkdirAll(slotDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repoDir, "worktree", "add", "--detach", wtPath, "HEAD")
+	runGit(t, repoDir, "worktree", "lock", "--reason", "initializing", wtPath)
+
+	cleanupPartialWorktree(repoDir, slotDir, wtPath)
+
+	out, err := exec.Command("git", "-C", repoDir, "worktree", "list", "--porcelain").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git worktree list failed: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), wtPath) {
+		t.Fatalf("expected the locked registration to be cleared, got:\n%s", out)
+	}
+
+	got, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire after a cleaned-up interrupted creation should succeed: %v", err)
+	}
+	if got != wtPath {
+		t.Fatalf("expected the freed slot %q to be reused, got %q", wtPath, got)
+	}
+}
