@@ -413,7 +413,7 @@ func TestExpectedReleaseOutputsIncludesConfiguredExtraFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{".release-please-manifest.json", "CHANGELOG.md", "flake.nix"}
+	want := []string{".release-please-manifest.json", "CHANGELOG.md", "default.nix", "flake.nix", "package.nix"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("expected %v, got %v", want, got)
 	}

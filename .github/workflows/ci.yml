@@ -11,7 +11,9 @@ on:
     paths-ignore:
       - .release-please-manifest.json
       - CHANGELOG.md
+      - default.nix
       - flake.nix
+      - package.nix
 
 jobs:
   check:

@@ -30,45 +30,13 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          treehouse = pkgs.buildGoModule {
-            pname = "treehouse";
-            inherit version;
-            src = pkgs.lib.cleanSource ./.;
-            vendorHash = "sha256-z8IndcHcZ6nLqhLtAYul3ppddpOA4AHGQWIlfYY/pfI=";
-            ldflags = [
-              "-X main.version=v${version}"
-            ];
-            # python3 is required by .github/scripts/no-mistakes-gate.sh,
-            # which the test suite (TestNoMistakesGateDecisions) executes via
-            # bash to parse pipeline attestation JSON. Without it the gate
-            # falls through to the wrong error path and tests fail in the
-            # Nix sandbox.
-            nativeCheckInputs = [
-              pkgs.git
-              pkgs.python3
-            ];
-            # The cmd/ package's e2e tests (cmd/e2e_test.go) build the
-            # treehouse binary, create git repos with bare remotes, and
-            # spawn treehouse as a subprocess — all of which require network
-            # access and unrestricted filesystem that the Nix sandbox does
-            # not provide. The project's own CI (.github/workflows/ci.yml)
-            # runs `go test ./...` on ubuntu, macOS, and Windows, which is
-            # more comprehensive than the Nix sandbox can do. The Nix CI
-            # workflow (.github/workflows/nix.yml) validates the binary with
-            # `nix run .#default -- --version` instead.
-            doCheck = false;
-            meta = {
-              description = "Git worktree pool manager for parallel AI coding agent workflows";
-              homepage = "https://github.com/kunchenguid/treehouse";
-              license = pkgs.lib.licenses.mit;
-              mainProgram = "treehouse";
-              platforms = systems;
-            };
+          treehouse = import ./default.nix {
+            inherit pkgs version;
           };
         in
         {
           default = treehouse;
-          treehouse = treehouse;
+          inherit treehouse;
         }
       );
 

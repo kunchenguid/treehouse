@@ -20,6 +20,8 @@ on:
     paths:
       - "flake.nix"
       - "flake.lock"
+      - "default.nix"
+      - "package.nix"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/nix.yml"
@@ -28,14 +30,16 @@ on:
     # release-please opens its release PR with GITHUB_TOKEN, which creates a
     # pull_request run that can only sit in action_required. Its output set
     # is exactly these files (release-please-config.json extra-files includes
-    # flake.nix), so excluding them means no run is ever created on a release
-    # PR. Mirrors ci.yml. A flake.nix-only logic change that doesn't touch
+    # the Nix package files), so excluding them means no run is ever created
+    # on a release PR. Mirrors ci.yml. A flake.nix-only logic change that doesn't touch
     # any other file won't trigger PR CI here — the push trigger above covers
     # it post-merge, and workflow_dispatch allows manual runs.
     paths-ignore:
       - .release-please-manifest.json
       - CHANGELOG.md
+      - default.nix
       - flake.nix
+      - package.nix
   workflow_dispatch: {}
 
 permissions:
