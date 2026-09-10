@@ -8,6 +8,8 @@
     # nixpkgs-unstable input covers all four target systems. Revisit when
     # nixpkgs-unstable drops x86_64-darwin and a -darwin branch with Go
     # 1.25+ exists.
+    flake-compat.url = "github:edolstra/flake-compat";
+    flake-compat.flake = false;
   };
 
   outputs =
@@ -30,9 +32,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          treehouse = import ./default.nix {
-            inherit pkgs version;
-          };
+          treehouse = pkgs.callPackage ./package.nix { inherit version; };
         in
         {
           default = treehouse;
