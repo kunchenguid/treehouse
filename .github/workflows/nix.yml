@@ -31,7 +31,7 @@ on:
     # pull_request run that can only sit in action_required. Its output set
     # is exactly these files (release-please-config.json extra-files includes
     # the Nix package files), so excluding them means no run is ever created
-    # on a release PR. Mirrors ci.yml. A flake.nix-only logic change that doesn't touch
+    # on a release PR. Mirrors ci.yml. A Nix-package-file-only logic change that doesn't touch
     # any other file won't trigger PR CI here — the push trigger above covers
     # it post-merge, and workflow_dispatch allows manual runs.
     paths-ignore:
