@@ -278,6 +278,24 @@ func GetRemoteURL(repoRoot string) (string, error) {
 	return backendFor(repoRoot).GetRemoteURL(repoRoot)
 }
 
+// CheckedOutBranch reports which branch a pool slot is on, so callers can see
+// what work is in a slot without a second git command.
+//
+// Like VerifyBaseBranch it sits outside the Backend interface: reading a
+// checked-out branch is git-specific, and jj slots answer with an empty string
+// rather than a guess. An empty string also means detached HEAD, which is the
+// default for `treehouse get`; callers must not treat empty as an error.
+func CheckedOutBranch(worktreePath string) string {
+	if backendForWorktree(worktreePath).Name() != "git" {
+		return ""
+	}
+	branch, err := gitvcs.CheckedOutBranch(worktreePath)
+	if err != nil {
+		return ""
+	}
+	return branch
+}
+
 // VerifyBaseBranch checks that an explicitly requested base branch resolves,
 // before anything is created or reset. An unresolvable base is an error rather
 // than a fallback to the inferred default, which would hand back a worktree cut
