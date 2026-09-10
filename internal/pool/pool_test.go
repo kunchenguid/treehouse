@@ -76,10 +76,18 @@ func TestStaleJJAuthenticationRequiresSignedInventory(t *testing.T) {
 	if err := os.RemoveAll(worktree); err != nil {
 		t.Fatal(err)
 	}
+	// Create the forged file at a temporary path before removing the original
+	// auth file so the new file is guaranteed a different inode. On Linux tmpfs
+	// a remove-then-create at the same path can reuse the freed inode, which
+	// would make fileIdentity match and the fail-closed check non-deterministic.
+	forgedPath := authPath + ".forged"
+	if err := os.WriteFile(forgedPath, []byte("forged user data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Remove(authPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(authPath, []byte("forged user data"), 0o600); err != nil {
+	if err := os.Rename(forgedPath, authPath); err != nil {
 		t.Fatal(err)
 	}
 
