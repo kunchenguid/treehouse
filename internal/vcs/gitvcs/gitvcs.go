@@ -180,18 +180,21 @@ func branchRef(repoRoot, branch string) string {
 // returns an error instead of masquerading as a detached HEAD, so callers can
 // tell the two apart.
 func CheckedOutBranch(worktreePath string) (string, error) {
-	out, err := runGit(worktreePath, "symbolic-ref", "--short", "HEAD")
-	if err != nil {
-		// symbolic-ref fails with exactly this message when HEAD is detached
-		// (HEAD is not a symbolic ref but a direct commit). That is not a
-		// failure to report; it is the report. Every other failure exits with
-		// a different fatal and is a genuine read error.
-		if strings.Contains(err.Error(), "ref HEAD is not a symbolic ref") {
-			return "", nil
-		}
-		return "", err
+	cmd := exec.Command("git", "symbolic-ref", "-q", "--short", "HEAD")
+	cmd.Dir = worktreePath
+	out, err := cmd.Output()
+	if err == nil {
+		return strings.TrimSpace(string(out)), nil
 	}
-	return out, nil
+	// With --quiet, a detached HEAD (a direct commit rather than a symbolic
+	// ref) exits 1 and prints nothing: that is the report, not a failure.
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		return "", nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return "", fmt.Errorf("git symbolic-ref -q --short HEAD: %s", strings.TrimSpace(string(exitErr.Stderr)))
+	}
+	return "", err
 }
 
 func BranchExists(repoRoot, branch string) bool {
