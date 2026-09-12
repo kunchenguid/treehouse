@@ -30,6 +30,6 @@ func main() {
 
 	cmd.SetVersion(version)
 	if err := cmd.Execute(); err != nil {
-		os.Exit(1)
+		os.Exit(cmd.ExitCode(err))
 	}
 }

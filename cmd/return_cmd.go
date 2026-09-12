@@ -75,13 +75,19 @@ var returnCmd = &cobra.Command{
 				})
 			}
 		}
+		// An abort is not a success: the worktree, and any lease on it, are
+		// exactly as they were found. Reporting exit 0 here let a caller
+		// conclude the slot was released, so a leaked lease starved the pool
+		// with nothing in the exit status to detect it.
 		if errors.Is(err, errReturnAbortedNonTTY) {
-			fmt.Fprintf(os.Stderr, "🌳 Aborted. Dirty worktree left in place; prune will not reclaim this slot. Use treehouse return --force %s to clean and return it.\n", quoteReturnPath(wtPath))
-			return nil
+			return withExitCode(ExitNotReturned, fmt.Errorf(
+				"worktree not returned: it has uncommitted changes and the confirmation could not be answered (stdin reached EOF); prune will not reclaim this slot. Use treehouse return --force %s to clean and return it",
+				quoteReturnPath(wtPath)))
 		}
 		if errors.Is(err, errReturnAborted) {
-			fmt.Fprintln(os.Stderr, "🌳 Aborted.")
-			return nil
+			return withExitCode(ExitNotReturned, fmt.Errorf(
+				"worktree not returned: cleaning declined, so its uncommitted changes remain and prune will not reclaim this slot. Use treehouse return --force %s to clean and return it",
+				quoteReturnPath(wtPath)))
 		}
 		if err != nil {
 			return fmt.Errorf("failed to return worktree: %w", err)

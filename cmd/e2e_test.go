@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -1334,8 +1335,13 @@ func TestReturnConditionalDirtyPromptDoesNotHoldPoolLock(t *testing.T) {
 	if err := stdin.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := returnProcess.Wait(); err != nil {
-		t.Fatalf("aborted return failed: %v", err)
+	err = returnProcess.Wait()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected a declined return to exit non-zero, got: %v", err)
+	}
+	if exitErr.ExitCode() != ExitNotReturned {
+		t.Fatalf("expected a declined return to exit %d, got %d", ExitNotReturned, exitErr.ExitCode())
 	}
 }
 
@@ -1694,8 +1700,8 @@ func TestReturnNonTTYDirtyExplainsUnreclaimableSlot(t *testing.T) {
 	}
 
 	_, returnErr, code := runTreehouse(t, repoDir, homeDir, nil, "return", wtPath)
-	if code != 0 {
-		t.Fatalf("expected non-TTY dirty abort to exit 0, got %d: %s", code, returnErr)
+	if code != ExitNotReturned {
+		t.Fatalf("expected non-TTY dirty abort to exit %d, got %d: %s", ExitNotReturned, code, returnErr)
 	}
 	t.Logf("non-TTY dirty abort stderr:\n%s", returnErr)
 	if !strings.Contains(returnErr, "prune will not reclaim this slot") {
@@ -2703,5 +2709,88 @@ func TestEnterPrintPathPrintsOnlyPathToStdout(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(path, "README.md")); err != nil {
 		t.Errorf("printed path is not a valid worktree: %s (%v)", path, err)
+	}
+}
+
+// The failure this exit code exists for: a dirty leased worktree that a
+// non-interactive caller cannot confirm. Exit 0 told the caller its slot was
+// released while the lease stayed held, so nothing short of re-reading status
+// could detect the leak. The status must be distinct from a generic failure,
+// and the lease must be reported as still held.
+func TestReturnDirtyNonTTYKeepsLeaseAndExitsNotReturned(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	lease := acquireLeaseJSON(t, repoDir, homeDir, "automation-A")
+
+	if err := os.WriteFile(filepath.Join(lease.Path, "stray.txt"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, returnErr, code := runTreehouse(t, repoDir, homeDir, nil,
+		"return", "--if-lease-id", lease.LeaseID, lease.Path)
+	if code != ExitNotReturned {
+		t.Fatalf("expected exit %d for a dirty worktree left in place, got %d: %s", ExitNotReturned, code, returnErr)
+	}
+	if code == ExitFailure {
+		t.Fatal("the unreturned status must be distinguishable from a generic failure")
+	}
+	if !strings.Contains(returnErr, "not returned") {
+		t.Fatalf("expected stderr to say the worktree was not returned, got: %s", returnErr)
+	}
+
+	statusOut, statusErr, code := runTreehouse(t, repoDir, homeDir, nil, "status", "--json")
+	if code != 0 {
+		t.Fatalf("status --json failed (code %d): %s", code, statusErr)
+	}
+	var entries []statusJSONResult
+	if err := json.Unmarshal([]byte(statusOut), &entries); err != nil {
+		t.Fatalf("status --json returned invalid JSON: %v\n%s", err, statusOut)
+	}
+	var held *statusJSONResult
+	for i := range entries {
+		if entries[i].Path == lease.Path {
+			held = &entries[i]
+		}
+	}
+	if held == nil {
+		t.Fatalf("leased worktree missing from status:\n%s", statusOut)
+	}
+	if held.Status != "leased" || held.LeaseID != lease.LeaseID {
+		t.Fatalf("expected the lease to survive an aborted return, got %+v", *held)
+	}
+}
+
+// --force is the documented way out of the aborted state, so the hint the
+// abort prints must actually clear it.
+func TestReturnForceClearsLeaseAfterDirtyAbort(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	lease := acquireLeaseJSON(t, repoDir, homeDir, "automation-A")
+
+	if err := os.WriteFile(filepath.Join(lease.Path, "stray.txt"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, returnErr, code := runTreehouse(t, repoDir, homeDir, nil,
+		"return", "--if-lease-id", lease.LeaseID, lease.Path); code != ExitNotReturned {
+		t.Fatalf("expected the dirty return to abort, got %d: %s", code, returnErr)
+	}
+
+	_, returnErr, code := runTreehouse(t, repoDir, homeDir, nil,
+		"return", "--force", "--if-lease-id", lease.LeaseID, lease.Path)
+	if code != 0 {
+		t.Fatalf("return --force failed (code %d): %s", code, returnErr)
+	}
+
+	statusOut, statusErr, code := runTreehouse(t, repoDir, homeDir, nil, "status", "--json")
+	if code != 0 {
+		t.Fatalf("status --json failed (code %d): %s", code, statusErr)
+	}
+	var entries []statusJSONResult
+	if err := json.Unmarshal([]byte(statusOut), &entries); err != nil {
+		t.Fatalf("status --json returned invalid JSON: %v\n%s", err, statusOut)
+	}
+	for _, entry := range entries {
+		if entry.Path == lease.Path && entry.Status == "leased" {
+			t.Fatalf("expected return --force to clear the lease, got %+v", entry)
+		}
 	}
 }
