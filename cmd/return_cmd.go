@@ -81,12 +81,12 @@ var returnCmd = &cobra.Command{
 		// with nothing in the exit status to detect it.
 		if errors.Is(err, errReturnAbortedNonTTY) {
 			return withExitCode(ExitNotReturned, fmt.Errorf(
-				"worktree not returned: it has uncommitted changes and the confirmation could not be answered (stdin reached EOF); prune will not reclaim this slot. Use treehouse return --force %s to clean and return it",
+				"🌳 worktree not returned: it has uncommitted changes and the confirmation could not be answered (stdin reached EOF); prune will not reclaim this slot. Use treehouse return --force %s to clean and return it",
 				quoteReturnPath(wtPath)))
 		}
 		if errors.Is(err, errReturnAborted) {
 			return withExitCode(ExitNotReturned, fmt.Errorf(
-				"worktree not returned: cleaning declined, so its uncommitted changes remain and prune will not reclaim this slot. Use treehouse return --force %s to clean and return it",
+				"🌳 worktree not returned: cleaning declined, so its uncommitted changes remain and prune will not reclaim this slot. Use treehouse return --force %s to clean and return it",
 				quoteReturnPath(wtPath)))
 		}
 		if err != nil {

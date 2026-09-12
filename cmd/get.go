@@ -171,7 +171,7 @@ func getRunE(cmd *cobra.Command, args []string) error {
 			// never this session's to return - not returning it is the
 			// designed outcome.
 			return withExitCode(ExitNotReturned, fmt.Errorf(
-				"worktree left dirty and not returned to the pool; prune will not reclaim this slot. Use treehouse return --force %s to clean it later",
+				"🌳 worktree left dirty and not returned to the pool; prune will not reclaim this slot. Use treehouse return --force %s to clean it later",
 				quoteReturnPath(wtPath)))
 		}
 	}
