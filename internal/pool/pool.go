@@ -23,6 +23,12 @@ const (
 	StatusLeased    = "leased"
 	StatusHere      = "you're here"
 	StatusDamaged   = "damaged"
+	// StatusUnverified is a slot whose process table could not be read: the
+	// question "is anything running here?" has no answer, so nothing decided
+	// from the process list (in-use) or from its absence (damaged, dirty,
+	// available) is reported. Leased, a live owner reservation, and "you're
+	// here" are facts known without a scan and still outrank it.
+	StatusUnverified = "unverified"
 )
 
 // WorktreeStatus describes one managed worktree as reported by List.
@@ -32,7 +38,10 @@ type WorktreeStatus struct {
 	Status string
 	// Flavor is the backend the worktree's own marker identifies ("git" or
 	// "jj"), independent of what the repository currently selects.
-	Flavor    string
+	Flavor string
+	// Processes is the set `return` would terminate in this worktree: the
+	// scan minus the caller and its ancestors. See List for why that is not
+	// the raw scan.
 	Processes []process.ProcessInfo
 	// LeaseID identifies the current acquisition of a leased worktree.
 	LeaseID string
@@ -764,6 +773,13 @@ func validateReleasePreconditions(wt WorktreeEntry, preconditions ReleasePrecond
 // dirtiness is never read, because dispatch on a markerless path falls back to
 // the configured backend, which in an in-project pool answers with the facts
 // of the repository ENCLOSING the pool.
+//
+// Reported processes are the set `return` would terminate, not every process
+// whose cwd is in the slot: run from inside a pooled worktree, the raw scan
+// answers with the caller's own process tree, so the column listed the
+// invoking shell and the status process itself as tenants of the slot they
+// were merely observing. Those PIDs are gone by the time anyone checks them,
+// which reads as a stale snapshot of real leftover processes.
 func List(poolDir string) ([]WorktreeStatus, error) {
 	var result []WorktreeStatus
 
@@ -794,9 +810,27 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 				Flavor: vcs.WorktreeBackendName(wt.Path),
 			}
 
-			procs, _ := process.FindProcessesInWorktree(wt.Path)
+			// The two failure modes get different answers, which is why the
+			// scan and the filter run as separate steps here. An
+			// ancestry-lookup failure keeps the raw scan rather than falling
+			// back to an empty list: listing a process the caller owns costs a
+			// confusing line, while reporting a slot quiet that is not is a
+			// wrong answer to the only question this column exists to answer.
+			// A failed process-table read cannot be answered at all: the slot
+			// is reported StatusUnverified (the machine-readable half) and the
+			// error is warned loudly on stderr (the diagnostic half), instead
+			// of silently presenting every slot as quiet.
+			procs, scanErr := findProcessesInWorktree(wt.Path)
+			if scanErr != nil {
+				fmt.Fprintf(os.Stderr, "treehouse: WARNING: could not read the process table to see what is running in %s (%v); it is reported %s with no processes.\n", wt.Path, scanErr, StatusUnverified)
+			} else if unprotected, filterErr := dropProtectedProcesses(procs); filterErr == nil {
+				procs = unprotected
+			}
 			ws.Processes = procs
 
+			// "you're here" is now read from the caller's cwd alone. It used
+			// to require a process in the slot, which was only ever the
+			// caller's own shell - the very entry this list stopped reporting.
 			if wt.Leased {
 				ws.Status = StatusLeased
 				ws.LeaseID = wt.LeaseID
@@ -804,11 +838,12 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 				ws.LeasedAt = wt.LeasedAt
 			} else if ownerAlive(wt) {
 				ws.Status = StatusInUse
+			} else if process.WorktreeContainsCwd(wt.Path, cwd) {
+				ws.Status = StatusHere
+			} else if scanErr != nil {
+				ws.Status = StatusUnverified
 			} else if len(procs) > 0 {
 				ws.Status = StatusInUse
-				if cwdInWorktree(cwd, wt.Path) {
-					ws.Status = StatusHere
-				}
 			} else if ws.Flavor == "" {
 				ws.Status = StatusDamaged
 			} else if dirty, _ := vcs.IsDirty(wt.Path); dirty {
@@ -943,22 +978,6 @@ func sameDestroyReservation(current, reserved WorktreeEntry) bool {
 		current.Destroying &&
 		current.OwnerPID == reserved.OwnerPID &&
 		current.OwnerStartedAt == reserved.OwnerStartedAt
-}
-
-func cwdInWorktree(cwd, worktreePath string) bool {
-	absCwd, err := filepath.Abs(cwd)
-	if err != nil {
-		return false
-	}
-	absWt, err := filepath.Abs(worktreePath)
-	if err != nil {
-		return false
-	}
-	rel, err := filepath.Rel(absWt, absCwd)
-	if err != nil {
-		return false
-	}
-	return rel == "." || !filepath.IsAbs(rel) && len(rel) >= 1 && rel[0] != '.'
 }
 
 func nextName(state State) string {

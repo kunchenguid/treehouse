@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -3721,4 +3722,326 @@ func TestValidateReleasePreconditions_GuardsTheActionUnderTheStateLock(t *testin
 	if ran {
 		t.Fatal("the guarded action ran on a slot a durable lease had taken over")
 	}
+}
+
+// status must show what return would act on. The raw scan answers with the
+// caller's own process tree whenever status runs from inside a pooled
+// worktree, so the column reported the invoking shell and the status process
+// itself as processes attached to the slot - a set return would never target.
+func TestList_ReportsOnlyProcessesReturnWouldTerminate(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	clearOwnerReservation(t, poolDir, wtPath)
+
+	caller := process.ProcessInfo{PID: 200, Name: "treehouse"}
+	foreign := process.ProcessInfo{PID: 4321, Name: "agent"}
+	restore := swapListProcessSeams(
+		func(string) ([]process.ProcessInfo, error) {
+			return []process.ProcessInfo{caller, foreign}, nil
+		},
+		func(procs []process.ProcessInfo) ([]process.ProcessInfo, error) {
+			return []process.ProcessInfo{procs[1]}, nil
+		},
+	)
+	t.Cleanup(restore)
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected one worktree, got %#v", statuses)
+	}
+	if len(statuses[0].Processes) != 1 || statuses[0].Processes[0] != foreign {
+		t.Fatalf("expected only the unprotected process to be reported, got %#v", statuses[0].Processes)
+	}
+	if statuses[0].Status != StatusInUse {
+		t.Fatalf("expected a slot with a foreign process to read in-use, got %q", statuses[0].Status)
+	}
+}
+
+// An ancestry-lookup failure must not read as a quiet slot: "is anything still
+// running here?" is the one question this column answers, and a wrong "no" is
+// worse than a line the caller has to interpret.
+func TestList_FallsBackToRawScanWhenFilteringFails(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	clearOwnerReservation(t, poolDir, wtPath)
+
+	unfiltered := process.ProcessInfo{PID: 4321, Name: "agent"}
+	restore := swapListProcessSeams(
+		func(string) ([]process.ProcessInfo, error) {
+			return []process.ProcessInfo{unfiltered}, nil
+		},
+		func([]process.ProcessInfo) ([]process.ProcessInfo, error) {
+			return nil, errors.New("cannot resolve ancestry of process 200")
+		},
+	)
+	t.Cleanup(restore)
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected one worktree, got %#v", statuses)
+	}
+	if len(statuses[0].Processes) != 1 || statuses[0].Processes[0] != unfiltered {
+		t.Fatalf("expected the raw scan to stand in when filtering fails, got %#v", statuses[0].Processes)
+	}
+	if statuses[0].Status != StatusInUse {
+		t.Fatalf("expected a slot with an unfiltered process to read in-use, got %q", statuses[0].Status)
+	}
+}
+
+// A process table that cannot be read is a different failure from an ancestry
+// walk that cannot be completed: there is no list to fall back to, so the slot
+// must not quietly present as available. It reads unverified (so status --json
+// carries the fact too), warns on stderr, and never re-runs the scan that just
+// failed.
+func TestList_ReportsUnverifiedWhenTheProcessTableCannotBeRead(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	clearOwnerReservation(t, poolDir, wtPath)
+
+	scans := 0
+	restore := swapListProcessSeams(
+		func(string) ([]process.ProcessInfo, error) {
+			scans++
+			return nil, errors.New("cannot read the process table")
+		},
+		func([]process.ProcessInfo) ([]process.ProcessInfo, error) {
+			t.Error("List must not filter a scan that failed")
+			return nil, nil
+		},
+	)
+	t.Cleanup(restore)
+
+	var statuses []WorktreeStatus
+	stderr := captureStderr(t, func() {
+		statuses, err = List(poolDir)
+	})
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if scans != 1 {
+		t.Fatalf("expected the failing scan to run once, ran %d times", scans)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected one worktree, got %#v", statuses)
+	}
+	if len(statuses[0].Processes) != 0 {
+		t.Fatalf("expected no processes when the scan failed, got %#v", statuses[0].Processes)
+	}
+	if statuses[0].Status != StatusUnverified {
+		t.Fatalf("expected %q when the scan failed, got %q", StatusUnverified, statuses[0].Status)
+	}
+	if !strings.Contains(stderr, "WARNING") || !strings.Contains(stderr, wtPath) {
+		t.Fatalf("expected a warning naming %s, got stderr %q", wtPath, stderr)
+	}
+}
+
+// Unverified stands in only for what the process list would have decided. A
+// lease, a live owner reservation, and the caller's own cwd are known without
+// a scan, and a failed scan must not hide them.
+func TestList_KnownFactsOutrankUnverified(t *testing.T) {
+	restore := swapListProcessSeams(
+		func(string) ([]process.ProcessInfo, error) {
+			return nil, errors.New("cannot read the process table")
+		},
+		func([]process.ProcessInfo) ([]process.ProcessInfo, error) {
+			t.Error("List must not filter a scan that failed")
+			return nil, nil
+		},
+	)
+	t.Cleanup(restore)
+
+	t.Run("leased", func(t *testing.T) {
+		repoDir, poolDir := setupRepo(t)
+		if _, err := AcquireLease(repoDir, poolDir, 4, nil, "home"); err != nil {
+			t.Fatalf("AcquireLease failed: %v", err)
+		}
+		assertSingleStatus(t, poolDir, StatusLeased)
+	})
+
+	t.Run("owner reservation", func(t *testing.T) {
+		repoDir, poolDir := setupRepo(t)
+		// Acquire leaves this test process's own reservation in place.
+		if _, err := Acquire(repoDir, poolDir, 4, nil); err != nil {
+			t.Fatalf("Acquire failed: %v", err)
+		}
+		assertSingleStatus(t, poolDir, StatusInUse)
+	})
+
+	t.Run("you're here", func(t *testing.T) {
+		repoDir, poolDir := setupRepo(t)
+		wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+		if err != nil {
+			t.Fatalf("Acquire failed: %v", err)
+		}
+		clearOwnerReservation(t, poolDir, wtPath)
+		t.Chdir(wtPath)
+		assertSingleStatus(t, poolDir, StatusHere)
+	})
+}
+
+func assertSingleStatus(t *testing.T, poolDir, want string) {
+	t.Helper()
+	var statuses []WorktreeStatus
+	var err error
+	captureStderr(t, func() {
+		statuses, err = List(poolDir)
+	})
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected one worktree, got %#v", statuses)
+	}
+	if statuses[0].Status != want {
+		t.Fatalf("expected %q, got %q", want, statuses[0].Status)
+	}
+}
+
+// "you're here" used to be read from the caller's own shell turning up in the
+// scan. With that entry filtered out it must come from the cwd itself, or
+// standing in a slot would stop reporting it.
+func TestList_ReportsYoureHereWithoutACallerProcess(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	clearOwnerReservation(t, poolDir, wtPath)
+
+	restore := swapListProcessSeams(
+		func(string) ([]process.ProcessInfo, error) { return nil, nil },
+		func([]process.ProcessInfo) ([]process.ProcessInfo, error) { return nil, nil },
+	)
+	t.Cleanup(restore)
+
+	// setupRepo resolves symlinks, so this is the path List will compare against.
+	t.Chdir(wtPath)
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected one worktree, got %#v", statuses)
+	}
+	if statuses[0].Status != StatusHere {
+		t.Fatalf("expected %q for the slot the caller is standing in, got %q", StatusHere, statuses[0].Status)
+	}
+	if len(statuses[0].Processes) != 0 {
+		t.Fatalf("expected no processes to be attributed to the slot, got %#v", statuses[0].Processes)
+	}
+}
+
+// A pool rooted under a symlink (root = "/tmp/th" on macOS, say) records the
+// unresolved path in state while the caller's shell reports the physical one,
+// so "you're here" has to resolve both sides. Nothing else reports the caller
+// standing in the slot: enter takes no owner reservation and no lease, and the
+// caller's own process is deliberately filtered out of the process list.
+func TestList_ReportsYoureHereThroughASymlinkedPoolPath(t *testing.T) {
+	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	poolDir := filepath.Join(base, "pool")
+	physicalSlot := filepath.Join(base, "slots", "1", "repo")
+	for _, dir := range []string{poolDir, physicalSlot} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(filepath.Join(base, "slots"), link); err != nil {
+		t.Skipf("cannot create symlinks here: %v", err)
+	}
+	symlinkedSlot := filepath.Join(link, "1", "repo")
+
+	entry := WorktreeEntry{Name: "1", Path: symlinkedSlot}
+	setSeedInventory(&entry, nil, true)
+	if err := WriteState(poolDir, State{Worktrees: []WorktreeEntry{entry}}); err != nil {
+		t.Fatal(err)
+	}
+
+	restore := swapListProcessSeams(
+		func(string) ([]process.ProcessInfo, error) { return nil, nil },
+		func([]process.ProcessInfo) ([]process.ProcessInfo, error) { return nil, nil },
+	)
+	t.Cleanup(restore)
+
+	t.Chdir(physicalSlot)
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected one worktree, got %#v", statuses)
+	}
+	if statuses[0].Status != StatusHere {
+		t.Fatalf("expected %q for a slot reached through a symlink, got %q", StatusHere, statuses[0].Status)
+	}
+}
+
+func swapListProcessSeams(
+	scan func(string) ([]process.ProcessInfo, error),
+	filter func([]process.ProcessInfo) ([]process.ProcessInfo, error),
+) func() {
+	origScan, origFilter := findProcessesInWorktree, dropProtectedProcesses
+	findProcessesInWorktree = scan
+	dropProtectedProcesses = filter
+	return func() {
+		findProcessesInWorktree = origScan
+		dropProtectedProcesses = origFilter
+	}
+}
+
+// captureStderr collects what f writes to os.Stderr, which is where this
+// package's loud warnings go.
+func captureStderr(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+
+	done := make(chan string, 1)
+	go func() {
+		var sb strings.Builder
+		_, _ = io.Copy(&sb, r)
+		done <- sb.String()
+	}()
+
+	f()
+
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out := <-done
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

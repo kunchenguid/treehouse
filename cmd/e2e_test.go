@@ -23,6 +23,11 @@ type leaseJSONResult struct {
 	BaseBranch  string    `json:"base_branch"`
 }
 
+type statusJSONProcessResult struct {
+	PID  int32  `json:"pid"`
+	Name string `json:"name"`
+}
+
 type statusJSONResult struct {
 	Name        string          `json:"name"`
 	Path        string          `json:"path"`
@@ -2704,4 +2709,135 @@ func TestEnterPrintPathPrintsOnlyPathToStdout(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(path, "README.md")); err != nil {
 		t.Errorf("printed path is not a valid worktree: %s (%v)", path, err)
 	}
+}
+
+// The reported repro: status run from inside a pooled worktree listed its own
+// process tree as processes attached to that slot. The PIDs were consecutive
+// and gone a moment later, which reads as a stale snapshot of real leftover
+// processes rather than as the observer looking at itself.
+func TestStatusFromInsideWorktreeReportsNoCallerProcesses(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	env := []string{"SHELL=" + exitShellBin}
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get failed (code %d): %s", code, getErr)
+	}
+	wtPath := extractWorktreePath(getErr, homeDir)
+	if wtPath == "" {
+		t.Fatal("could not extract worktree path")
+	}
+
+	slot := statusEntryForPath(t, repoDir, wtPath, homeDir, wtPath)
+	if procs := decodeStatusProcesses(t, slot.Processes); len(procs) != 0 {
+		t.Fatalf("expected no processes attributed to the slot the caller is standing in, got %+v", procs)
+	}
+	if slot.Status != "you're here" {
+		t.Fatalf("expected the slot the caller is standing in to read %q, got %q", "you're here", slot.Status)
+	}
+}
+
+// The column must not simply have been blanked: a process return would
+// terminate still has to be reported, from inside the worktree as much as
+// from outside it.
+func TestStatusFromInsideWorktreeReportsForeignProcesses(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	env := []string{"SHELL=" + exitShellBin}
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != 0 {
+		t.Fatalf("get failed (code %d): %s", code, getErr)
+	}
+	wtPath := extractWorktreePath(getErr, homeDir)
+	if wtPath == "" {
+		t.Fatal("could not extract worktree path")
+	}
+
+	foreignPID := startForeignWorktreeProcess(t, wtPath)
+
+	slot := statusEntryForPath(t, repoDir, wtPath, homeDir, wtPath)
+	procs := decodeStatusProcesses(t, slot.Processes)
+	var found bool
+	for _, proc := range procs {
+		if proc.PID == foreignPID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the foreign process %d to be reported, got %+v", foreignPID, procs)
+	}
+
+	// From outside the worktree the same foreign process must still show, and
+	// the slot reads in-use rather than "you're here".
+	outside := statusEntryForPath(t, repoDir, repoDir, homeDir, wtPath)
+	if outside.Status != "in-use" {
+		t.Fatalf("expected a slot with a foreign process to read in-use from outside, got %q", outside.Status)
+	}
+}
+
+// startForeignWorktreeProcess runs a process whose cwd is the worktree and
+// which is not an ancestor of the treehouse subprocesses under test, so it is
+// exactly what return would terminate. It returns once the process reports it
+// is running.
+func startForeignWorktreeProcess(t *testing.T, wtPath string) int32 {
+	t.Helper()
+
+	signals := t.TempDir()
+	readyFile := filepath.Join(signals, "ready")
+	releaseFile := filepath.Join(signals, "release")
+
+	proc := exec.Command(waitShellBin)
+	proc.Dir = wtPath
+	proc.Env = append(os.Environ(),
+		"TREEHOUSE_TEST_READY="+readyFile,
+		"TREEHOUSE_TEST_RELEASE="+releaseFile,
+	)
+	if err := proc.Start(); err != nil {
+		t.Fatalf("failed to start a foreign worktree process: %v", err)
+	}
+	t.Cleanup(func() {
+		os.WriteFile(releaseFile, nil, 0o644)
+		proc.Wait()
+	})
+
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(readyFile); err == nil && len(b) > 0 {
+			return int32(proc.Process.Pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("the foreign worktree process never reported itself running")
+	return 0
+}
+
+// statusEntryForPath runs status --json from workDir and returns the entry for
+// wtPath.
+func statusEntryForPath(t *testing.T, repoDir, workDir, homeDir, wtPath string) statusJSONResult {
+	t.Helper()
+
+	statusOut, statusErr, code := runTreehouseFromDir(t, repoDir, workDir, homeDir, nil, "status", "--json")
+	if code != 0 {
+		t.Fatalf("status --json failed (code %d): %s", code, statusErr)
+	}
+	var entries []statusJSONResult
+	if err := json.Unmarshal([]byte(statusOut), &entries); err != nil {
+		t.Fatalf("status --json returned invalid JSON: %v\n%s", err, statusOut)
+	}
+	for _, entry := range entries {
+		if entry.Path == wtPath {
+			return entry
+		}
+	}
+	t.Fatalf("worktree %s missing from status:\n%s", wtPath, statusOut)
+	return statusJSONResult{}
+}
+
+func decodeStatusProcesses(t *testing.T, raw json.RawMessage) []statusJSONProcessResult {
+	t.Helper()
+	var procs []statusJSONProcessResult
+	if err := json.Unmarshal(raw, &procs); err != nil {
+		t.Fatalf("status processes %s is not a list of processes: %v", raw, err)
+	}
+	return procs
 }

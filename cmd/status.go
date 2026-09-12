@@ -76,7 +76,8 @@ var statusCmd = &cobra.Command{
 			return nil
 		}
 
-		// statusWidth must be >= longest status string ("you're here" = 11)
+		// statusWidth must be >= longest status string ("you're here" = 11;
+		// "unverified" = 10)
 		const statusWidth = 11
 
 		for _, wt := range worktrees {
@@ -93,6 +94,8 @@ var statusCmd = &cobra.Command{
 			case pool.StatusHere:
 				status = cyan(wt.Status)
 			case pool.StatusDamaged:
+				status = red(wt.Status)
+			case pool.StatusUnverified:
 				status = red(wt.Status)
 			}
 
