@@ -758,3 +758,40 @@ func TestVerifyChecksumNoURL(t *testing.T) {
 		t.Fatal("expected error when checksum URL is empty")
 	}
 }
+
+// The update-check child outlives the command that spawned it. Inheriting the
+// caller's directory made it a process whose cwd sat inside whatever pooled
+// worktree treehouse was invoked from, so treehouse reported a process of its
+// own making as a tenant of that slot.
+func TestBackgroundCheckCommandRunsOutsideTheCallersDirectory(t *testing.T) {
+	caller := t.TempDir()
+	t.Chdir(caller)
+
+	cmd := backgroundCheckCommand("/usr/local/bin/treehouse", "v1.0.0")
+
+	if cmd.Dir == "" {
+		t.Fatal("expected the update-check child to be given a working directory of its own")
+	}
+	rel, err := filepath.Rel(cmd.Dir, caller)
+	if err == nil && rel == "." {
+		t.Fatalf("expected a directory outside the caller's, got %q", cmd.Dir)
+	}
+	if info, err := os.Stat(cmd.Dir); err != nil || !info.IsDir() {
+		t.Fatalf("expected %q to be an existing directory: %v", cmd.Dir, err)
+	}
+}
+
+// The child must still be told not to spawn a check of its own.
+func TestBackgroundCheckCommandSuppressesRecursiveChecks(t *testing.T) {
+	cmd := backgroundCheckCommand("/usr/local/bin/treehouse", "v1.0.0")
+
+	var found bool
+	for _, kv := range cmd.Env {
+		if kv == "TREEHOUSE_NO_UPDATE_CHECK=1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected TREEHOUSE_NO_UPDATE_CHECK=1 in the child environment")
+	}
+}

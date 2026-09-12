@@ -3722,3 +3722,127 @@ func TestValidateReleasePreconditions_GuardsTheActionUnderTheStateLock(t *testin
 		t.Fatal("the guarded action ran on a slot a durable lease had taken over")
 	}
 }
+
+// status must show what return would act on. The raw scan answers with the
+// caller's own process tree whenever status runs from inside a pooled
+// worktree, so the column reported the invoking shell and the status process
+// itself as processes attached to the slot - a set return would never target.
+func TestList_ReportsOnlyProcessesReturnWouldTerminate(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	clearOwnerReservation(t, poolDir, wtPath)
+
+	foreign := process.ProcessInfo{PID: 4321, Name: "agent"}
+	restore := swapListProcessSeams(
+		func(string) ([]process.ProcessInfo, error) {
+			return []process.ProcessInfo{foreign}, nil
+		},
+		func(string) ([]process.ProcessInfo, error) {
+			t.Fatal("List must not fall back to the raw scan when filtering succeeds")
+			return nil, nil
+		},
+	)
+	t.Cleanup(restore)
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected one worktree, got %#v", statuses)
+	}
+	if len(statuses[0].Processes) != 1 || statuses[0].Processes[0] != foreign {
+		t.Fatalf("expected only the unprotected process to be reported, got %#v", statuses[0].Processes)
+	}
+	if statuses[0].Status != StatusInUse {
+		t.Fatalf("expected a slot with a foreign process to read in-use, got %q", statuses[0].Status)
+	}
+}
+
+// An ancestry-lookup failure must not read as a quiet slot: "is anything still
+// running here?" is the one question this column answers, and a wrong "no" is
+// worse than a line the caller has to interpret.
+func TestList_FallsBackToRawScanWhenFilteringFails(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	clearOwnerReservation(t, poolDir, wtPath)
+
+	unfiltered := process.ProcessInfo{PID: 4321, Name: "agent"}
+	restore := swapListProcessSeams(
+		func(string) ([]process.ProcessInfo, error) {
+			return nil, errors.New("cannot resolve ancestry of process 200")
+		},
+		func(string) ([]process.ProcessInfo, error) {
+			return []process.ProcessInfo{unfiltered}, nil
+		},
+	)
+	t.Cleanup(restore)
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected one worktree, got %#v", statuses)
+	}
+	if len(statuses[0].Processes) != 1 || statuses[0].Processes[0] != unfiltered {
+		t.Fatalf("expected the raw scan to stand in when filtering fails, got %#v", statuses[0].Processes)
+	}
+}
+
+// "you're here" used to be read from the caller's own shell turning up in the
+// scan. With that entry filtered out it must come from the cwd itself, or
+// standing in a slot would stop reporting it.
+func TestList_ReportsYoureHereWithoutACallerProcess(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	clearOwnerReservation(t, poolDir, wtPath)
+
+	restore := swapListProcessSeams(
+		func(string) ([]process.ProcessInfo, error) { return nil, nil },
+		func(string) ([]process.ProcessInfo, error) { return nil, nil },
+	)
+	t.Cleanup(restore)
+
+	// setupRepo resolves symlinks, so this is the path List will compare against.
+	t.Chdir(wtPath)
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected one worktree, got %#v", statuses)
+	}
+	if statuses[0].Status != StatusHere {
+		t.Fatalf("expected %q for the slot the caller is standing in, got %q", StatusHere, statuses[0].Status)
+	}
+	if len(statuses[0].Processes) != 0 {
+		t.Fatalf("expected no processes to be attributed to the slot, got %#v", statuses[0].Processes)
+	}
+}
+
+func swapListProcessSeams(
+	unprotected func(string) ([]process.ProcessInfo, error),
+	raw func(string) ([]process.ProcessInfo, error),
+) func() {
+	origUnprotected, origRaw := unprotectedProcessesInWorktree, findProcessesInWorktree
+	unprotectedProcessesInWorktree = unprotected
+	findProcessesInWorktree = raw
+	return func() {
+		unprotectedProcessesInWorktree = origUnprotected
+		findProcessesInWorktree = origRaw
+	}
+}

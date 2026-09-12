@@ -175,11 +175,7 @@ func SpawnBackgroundCheck(currentVersion string) error {
 		return fmt.Errorf("resolving symlinks: %w", err)
 	}
 
-	cmd := exec.Command(self, "--update-check", currentVersion)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.Stdin = nil
-	cmd.Env = append(os.Environ(), "TREEHOUSE_NO_UPDATE_CHECK=1")
+	cmd := backgroundCheckCommand(self, currentVersion)
 
 	devNull, err := os.Open(os.DevNull)
 	if err == nil {
@@ -200,6 +196,36 @@ func SpawnBackgroundCheck(currentVersion string) error {
 	}()
 
 	return nil
+}
+
+// backgroundCheckCommand builds the detached update-check child. It runs from
+// a directory of its own rather than inheriting the caller's: the child
+// outlives the command that spawned it, and a cwd inside a pooled worktree
+// makes it a process attached to that slot - one treehouse itself created,
+// reported by status and targeted by return. Detaching the cwd also stops the
+// child from holding the caller's directory open after it exits.
+func backgroundCheckCommand(self, currentVersion string) *exec.Cmd {
+	cmd := exec.Command(self, "--update-check", currentVersion)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Stdin = nil
+	cmd.Env = append(os.Environ(), "TREEHOUSE_NO_UPDATE_CHECK=1")
+	cmd.Dir = detachedWorkingDir()
+	return cmd
+}
+
+// detachedWorkingDir returns a directory for a process that must not hold the
+// caller's. An empty result inherits the caller's directory, which is the
+// right fallback: an update check is worth less than a failed spawn.
+func detachedWorkingDir() string {
+	tmp := os.TempDir()
+	if tmp == "" {
+		return ""
+	}
+	if info, err := os.Stat(tmp); err != nil || !info.IsDir() {
+		return ""
+	}
+	return tmp
 }
 
 // RunBackgroundCheck is the entry point for the --update-check child process.

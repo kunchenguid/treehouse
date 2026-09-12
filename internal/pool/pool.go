@@ -764,6 +764,13 @@ func validateReleasePreconditions(wt WorktreeEntry, preconditions ReleasePrecond
 // dirtiness is never read, because dispatch on a markerless path falls back to
 // the configured backend, which in an in-project pool answers with the facts
 // of the repository ENCLOSING the pool.
+//
+// Reported processes are the set `return` would terminate, not every process
+// whose cwd is in the slot: run from inside a pooled worktree, the raw scan
+// answers with the caller's own process tree, so the column listed the
+// invoking shell and the status process itself as tenants of the slot they
+// were merely observing. Those PIDs are gone by the time anyone checks them,
+// which reads as a stale snapshot of real leftover processes.
 func List(poolDir string) ([]WorktreeStatus, error) {
 	var result []WorktreeStatus
 
@@ -794,9 +801,19 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 				Flavor: vcs.WorktreeBackendName(wt.Path),
 			}
 
-			procs, _ := process.FindProcessesInWorktree(wt.Path)
+			// An ancestry-lookup failure falls back to the raw scan rather
+			// than to an empty list. Listing a process the caller owns costs
+			// a confusing line; reporting a slot quiet that is not is a wrong
+			// answer to the only question this column exists to answer.
+			procs, err := unprotectedProcessesInWorktree(wt.Path)
+			if err != nil {
+				procs, _ = findProcessesInWorktree(wt.Path)
+			}
 			ws.Processes = procs
 
+			// "you're here" is now read from the caller's cwd alone. It used
+			// to require a process in the slot, which was only ever the
+			// caller's own shell - the very entry this list stopped reporting.
 			if wt.Leased {
 				ws.Status = StatusLeased
 				ws.LeaseID = wt.LeaseID
@@ -804,11 +821,10 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 				ws.LeasedAt = wt.LeasedAt
 			} else if ownerAlive(wt) {
 				ws.Status = StatusInUse
+			} else if cwdInWorktree(cwd, wt.Path) {
+				ws.Status = StatusHere
 			} else if len(procs) > 0 {
 				ws.Status = StatusInUse
-				if cwdInWorktree(cwd, wt.Path) {
-					ws.Status = StatusHere
-				}
 			} else if ws.Flavor == "" {
 				ws.Status = StatusDamaged
 			} else if dirty, _ := vcs.IsDirty(wt.Path); dirty {
