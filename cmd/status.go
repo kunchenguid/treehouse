@@ -28,6 +28,8 @@ type statusJSONWorktree struct {
 	Path        string              `json:"path"`
 	Status      string              `json:"status"`
 	Branch      string              `json:"branch"`
+	Detached    bool                `json:"detached,omitempty"`
+	BranchErr   string              `json:"branch_error,omitempty"`
 	Flavor      string              `json:"flavor,omitempty"`
 	LeaseID     string              `json:"lease_id"`
 	LeaseHolder string              `json:"lease_holder"`
@@ -106,6 +108,9 @@ var statusCmd = &cobra.Command{
 			if wt.Branch != "" {
 				line += fmt.Sprintf("  [%s]", wt.Branch)
 			}
+			if wt.BranchErr != "" {
+				line += yellow(fmt.Sprintf("  (branch unreadable: %s)", wt.BranchErr))
+			}
 			if wt.Status == pool.StatusLeased && wt.LeaseHolder != "" {
 				line += fmt.Sprintf("  (held by %s)", wt.LeaseHolder)
 			}
@@ -161,6 +166,8 @@ func writeStatusJSON(worktrees []pool.WorktreeStatus) error {
 			Path:        wt.Path,
 			Status:      wt.Status,
 			Branch:      wt.Branch,
+			Detached:    wt.Detached,
+			BranchErr:   wt.BranchErr,
 			Flavor:      wt.Flavor,
 			LeaseID:     wt.LeaseID,
 			LeaseHolder: wt.LeaseHolder,

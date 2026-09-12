@@ -3623,6 +3623,86 @@ func TestList_MarkerlessSlotReportsDamaged(t *testing.T) {
 	}
 }
 
+// TestList_MarkerlessSlotDoesNotInheritEnclosingBranch pins the P1-1 boundary
+// at the status surface: a damaged slot inside an in-project pool reports no
+// branch, never the branch of the repository enclosing the pool. The enclosing
+// repository is moved to a distinctive branch so the assertion cannot pass by
+// accident.
+func TestList_MarkerlessSlotDoesNotInheritEnclosingBranch(t *testing.T) {
+	repoDir, _ := setupRepo(t)
+	poolDir := filepath.Join(repoDir, "pool") // in-project pool root
+
+	wtPath, err := Acquire(repoDir, poolDir, 2, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	clearOwnerReservation(t, poolDir, wtPath)
+	runGit(t, repoDir, "checkout", "-b", "do-not-inherit")
+	if err := os.Remove(filepath.Join(wtPath, ".git")); err != nil {
+		t.Fatalf("removing the slot marker: %v", err)
+	}
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected one worktree, got %+v", statuses)
+	}
+	if statuses[0].Status != StatusDamaged {
+		t.Fatalf("expected status %q, got %q", StatusDamaged, statuses[0].Status)
+	}
+	if statuses[0].Branch != "" {
+		t.Fatalf("markerless slot inherited enclosing branch %q", statuses[0].Branch)
+	}
+	if statuses[0].Detached {
+		t.Fatalf("markerless slot must not be reported detached")
+	}
+}
+
+// TestList_ReportsBranchAndDetached pins the healthy cases: a detached slot
+// (what `treehouse get` leaves) is reported detached with no branch error, and
+// a slot on a branch reports that branch. Neither may be misclassified.
+func TestList_ReportsBranchAndDetached(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 2, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	clearOwnerReservation(t, poolDir, wtPath)
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected one worktree, got %+v", statuses)
+	}
+	if statuses[0].Branch != "" || !statuses[0].Detached {
+		t.Fatalf("freshly acquired slot: got branch %q detached=%v, want empty and detached", statuses[0].Branch, statuses[0].Detached)
+	}
+	if statuses[0].BranchErr != "" {
+		t.Fatalf("a healthy detached slot must not report a branch error: %q", statuses[0].BranchErr)
+	}
+
+	runGit(t, wtPath, "switch", "-c", "slot-branch")
+
+	statuses, err = List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if statuses[0].Branch != "slot-branch" {
+		t.Fatalf("slot on a branch: got %q, want %q", statuses[0].Branch, "slot-branch")
+	}
+	if statuses[0].Detached {
+		t.Fatalf("slot on a branch must not be reported detached")
+	}
+	if statuses[0].BranchErr != "" {
+		t.Fatalf("slot on a branch must not report a branch error: %q", statuses[0].BranchErr)
+	}
+}
+
 // TestPrune_MarkerlessSlotSkippedAsCannotVerify pins prune's classification:
 // a slot whose .git/.jj marker is gone is reported as cannot-verify - the
 // enclosing repository's facts must not decide whether it is deletable - and

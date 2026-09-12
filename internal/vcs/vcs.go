@@ -283,17 +283,31 @@ func GetRemoteURL(repoRoot string) (string, error) {
 //
 // Like VerifyBaseBranch it sits outside the Backend interface: reading a
 // checked-out branch is git-specific, and jj slots answer with an empty string
-// rather than a guess. An empty string also means detached HEAD, which is the
-// default for `treehouse get`; callers must not treat empty as an error.
-func CheckedOutBranch(worktreePath string) string {
-	if backendForWorktree(worktreePath).Name() != "git" {
-		return ""
+// rather than a guess. The three outcomes are distinct: a branch name, a
+// detached HEAD reported with detached=true (the default `treehouse get`
+// state), and a genuine read error reported as err - never collapsed into the
+// empty string reserved for detached.
+//
+// Only a slot whose OWN marker names git is read. A markerless (damaged) slot
+// is never touched, so the branch of a repository enclosing the pool can never
+// be inherited and reported as the slot's.
+func CheckedOutBranch(worktreePath string) (branch string, detached bool, err error) {
+	switch WorktreeBackendName(worktreePath) {
+	case "git":
+		branch, err := gitvcs.CheckedOutBranch(worktreePath)
+		if err != nil {
+			return "", false, err
+		}
+		if branch == "" {
+			return "", true, nil
+		}
+		return branch, false, nil
+	default:
+		// jj slots and markerless (damaged) slots report no branch: a jj
+		// workspace has no branch to name, and a markerless slot must never
+		// inherit the branch of a repository enclosing the pool.
+		return "", false, nil
 	}
-	branch, err := gitvcs.CheckedOutBranch(worktreePath)
-	if err != nil {
-		return ""
-	}
-	return branch
 }
 
 // VerifyBaseBranch checks that an explicitly requested base branch resolves,

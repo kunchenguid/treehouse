@@ -50,9 +50,18 @@ type WorktreeStatus struct {
 	// LeasedAt records when the current lease was acquired.
 	LeasedAt time.Time
 	// Branch is the branch this slot currently has checked out. It is empty
-	// for a detached HEAD, which is what `treehouse get` leaves by default,
-	// and empty for backends that do not report one.
+	// for a detached HEAD (reported separately as Detached), for a jj slot,
+	// for a markerless slot, and for a slot whose branch could not be read
+	// (reported as BranchErr).
 	Branch string
+	// Detached reports that this git slot's HEAD is detached, which is what
+	// `treehouse get` leaves by default. It is false for slots that are not
+	// git or hold no marker.
+	Detached bool
+	// BranchErr reports that reading this slot's branch failed. It is set
+	// instead of leaving Branch empty, so a read failure is never mistaken for
+	// a detached HEAD.
+	BranchErr string
 }
 
 // LeaseInfo is the stable machine-readable identity of one lease acquisition.
@@ -836,10 +845,17 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 			// to require a process in the slot, which was only ever the
 			// caller's own shell - the very entry this list stopped reporting.
 			//
-			// Which checkout is in this slot. Empty means detached HEAD (the
-			// default after `treehouse get`) or a backend that does not report
-			// one; it never means the read failed.
-			ws.Branch = vcs.CheckedOutBranch(wt.Path)
+			// Which checkout is in this slot. A markerless (damaged) slot is
+			// never read, so the branch of a repository enclosing the pool can
+			// never be inherited. Detached, jj, and markerless slots report an
+			// empty branch; a failed read is reported as BranchErr instead of
+			// collapsing into that empty value.
+			branch, detached, branchErr := vcs.CheckedOutBranch(wt.Path)
+			ws.Branch = branch
+			ws.Detached = detached
+			if branchErr != nil {
+				ws.BranchErr = branchErr.Error()
+			}
 			if wt.Leased {
 				ws.Status = StatusLeased
 				ws.LeaseID = wt.LeaseID

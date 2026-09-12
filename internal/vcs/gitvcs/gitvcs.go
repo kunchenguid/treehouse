@@ -175,15 +175,23 @@ func branchRef(repoRoot, branch string) string {
 // CheckedOutBranch reports the branch a worktree currently has checked out.
 // A detached HEAD returns an empty string with no error: that is the honest
 // answer, and `git describe`-style guessing would name a tag or a commit that
-// no later checkout can be resumed from.
+// no later checkout can be resumed from. A genuine read failure - the path is
+// not a repository, its .git pointer is broken, permissions deny the read -
+// returns an error instead of masquerading as a detached HEAD, so callers can
+// tell the two apart.
 func CheckedOutBranch(worktreePath string) (string, error) {
-	out, err := runGit(worktreePath, "symbolic-ref", "--quiet", "--short", "HEAD")
+	out, err := runGit(worktreePath, "symbolic-ref", "--short", "HEAD")
 	if err != nil {
-		// symbolic-ref exits non-zero on a detached HEAD. That is not a
-		// failure to report; it is the report.
-		return "", nil
+		// symbolic-ref fails with exactly this message when HEAD is detached
+		// (HEAD is not a symbolic ref but a direct commit). That is not a
+		// failure to report; it is the report. Every other failure exits with
+		// a different fatal and is a genuine read error.
+		if strings.Contains(err.Error(), "ref HEAD is not a symbolic ref") {
+			return "", nil
+		}
+		return "", err
 	}
-	return strings.TrimSpace(out), nil
+	return out, nil
 }
 
 func BranchExists(repoRoot, branch string) bool {
