@@ -801,13 +801,19 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 				Flavor: vcs.WorktreeBackendName(wt.Path),
 			}
 
-			// An ancestry-lookup failure falls back to the raw scan rather
-			// than to an empty list. Listing a process the caller owns costs
-			// a confusing line; reporting a slot quiet that is not is a wrong
-			// answer to the only question this column exists to answer.
-			procs, err := unprotectedProcessesInWorktree(wt.Path)
-			if err != nil {
-				procs, _ = findProcessesInWorktree(wt.Path)
+			// The two failure modes get different answers, which is why the
+			// scan and the filter run as separate steps here. An
+			// ancestry-lookup failure keeps the raw scan rather than falling
+			// back to an empty list: listing a process the caller owns costs a
+			// confusing line, while reporting a slot quiet that is not is a
+			// wrong answer to the only question this column exists to answer.
+			// A failed process-table read cannot be answered at all, so it
+			// warns loudly instead of silently presenting every slot as quiet.
+			procs, scanErr := findProcessesInWorktree(wt.Path)
+			if scanErr != nil {
+				fmt.Fprintf(os.Stderr, "treehouse: WARNING: could not read the process table to see what is running in %s (%v); it is listed with no processes, so treat its status as unverified.\n", wt.Path, scanErr)
+			} else if unprotected, filterErr := dropProtectedProcesses(procs); filterErr == nil {
+				procs = unprotected
 			}
 			ws.Processes = procs
 
@@ -821,7 +827,7 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 				ws.LeasedAt = wt.LeasedAt
 			} else if ownerAlive(wt) {
 				ws.Status = StatusInUse
-			} else if cwdInWorktree(cwd, wt.Path) {
+			} else if process.WorktreeContainsCwd(wt.Path, cwd) {
 				ws.Status = StatusHere
 			} else if len(procs) > 0 {
 				ws.Status = StatusInUse
@@ -959,22 +965,6 @@ func sameDestroyReservation(current, reserved WorktreeEntry) bool {
 		current.Destroying &&
 		current.OwnerPID == reserved.OwnerPID &&
 		current.OwnerStartedAt == reserved.OwnerStartedAt
-}
-
-func cwdInWorktree(cwd, worktreePath string) bool {
-	absCwd, err := filepath.Abs(cwd)
-	if err != nil {
-		return false
-	}
-	absWt, err := filepath.Abs(worktreePath)
-	if err != nil {
-		return false
-	}
-	rel, err := filepath.Rel(absWt, absCwd)
-	if err != nil {
-		return false
-	}
-	return rel == "." || !filepath.IsAbs(rel) && len(rel) >= 1 && rel[0] != '.'
 }
 
 func nextName(state State) string {

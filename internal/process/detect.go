@@ -73,6 +73,21 @@ func FindProcessesInWorktree(worktreePath string) ([]ProcessInfo, error) {
 	return result, nil
 }
 
+// WorktreeContainsCwd reports whether a working directory is the worktree root
+// or a descendant of it, applying the same absolute-path and symlink
+// resolution to both sides that the process scan applies to every process cwd.
+// It is the one definition of that containment test: a caller comparing its own
+// cwd against a stored worktree path has to resolve symlinks for the same
+// reason the scan does, or a pool reached through a symlinked root never
+// matches.
+func WorktreeContainsCwd(worktreePath, cwd string) bool {
+	absWorktree, err := filepath.Abs(worktreePath)
+	if err != nil {
+		return false
+	}
+	return cwdWithinWorktree(resolvePath(absWorktree), cwd)
+}
+
 // cwdWithinWorktree reports whether a process working directory falls inside the
 // worktree root, which must already be absolute and symlink-resolved. An empty
 // cwd never matches: gopsutil returns "" (with no error) for processes whose
