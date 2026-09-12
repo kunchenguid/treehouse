@@ -52,6 +52,13 @@ const destroyGracePeriod = 2 * time.Second
 var findProcessesInWorktree = process.FindProcessesInWorktree
 var terminateWorktreeProcesses = process.TerminateWorktreeProcesses
 
+// dropProtectedProcesses removes the caller and its ancestors from a scanned
+// list, leaving the set `return` would terminate. List filters with it so
+// status and return agree on what is attached to a slot, and applies it to the
+// scan it already ran so a failed process-table read stays distinguishable
+// from a failed ancestry walk.
+var dropProtectedProcesses = process.DropProtectedProcesses
+
 type destroyReservation struct {
 	worktree               WorktreeEntry
 	originalOwnerPID       int32

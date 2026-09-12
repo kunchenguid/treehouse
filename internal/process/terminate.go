@@ -24,7 +24,7 @@ func TerminateWorktreeProcesses(worktreePath string, gracePeriod time.Duration) 
 	if err != nil {
 		return nil, err
 	}
-	procs, err = filterProtectedProcesses(procs, int32(os.Getpid()), parentPID)
+	procs, err = DropProtectedProcesses(procs)
 	if err != nil {
 		return nil, err
 	}
@@ -53,6 +53,15 @@ func UnprotectedProcessesInWorktree(worktreePath string) ([]ProcessInfo, error) 
 	if err != nil {
 		return nil, err
 	}
+	return DropProtectedProcesses(procs)
+}
+
+// DropProtectedProcesses removes the caller and its ancestors from an
+// already-scanned process list. It is the second half of
+// UnprotectedProcessesInWorktree, exposed separately so a caller that must
+// distinguish a failed process-table scan from a failed ancestry walk can run
+// the two steps itself instead of scanning twice to tell them apart.
+func DropProtectedProcesses(procs []ProcessInfo) ([]ProcessInfo, error) {
 	return filterProtectedProcesses(procs, int32(os.Getpid()), parentPID)
 }
 
@@ -88,7 +97,7 @@ func filterProtectedProcesses(procs []ProcessInfo, currentPID int32, lookupParen
 		pid = parent
 	}
 
-	filtered := procs[:0]
+	var filtered []ProcessInfo
 	for _, proc := range procs {
 		if _, skip := protected[proc.PID]; skip {
 			continue
