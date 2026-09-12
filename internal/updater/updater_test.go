@@ -809,16 +809,30 @@ func isInsideTree(t *testing.T, dir, root string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
-// A temp directory outside the caller's tree is the child's working directory.
-func TestDetachedWorkingDirAcceptsATempDirOutsideTheCaller(t *testing.T) {
-	base := t.TempDir()
-	caller := filepath.Join(base, "caller")
-	tmp := filepath.Join(base, "tmp")
-	for _, dir := range []string{caller, tmp} {
-		if err := os.Mkdir(dir, 0o755); err != nil {
+// markWorktree turns dir into something the updater recognises as a worktree
+// root: a .git pointer file, as a pooled git slot carries.
+func markWorktree(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: /nowhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mkdirs(t *testing.T, dirs ...string) {
+	t.Helper()
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
+}
+
+// A caller standing in no worktree takes the temp directory as-is.
+func TestDetachedWorkingDirAcceptsATempDirOutsideAnyWorktree(t *testing.T) {
+	base := t.TempDir()
+	caller := filepath.Join(base, "caller")
+	tmp := filepath.Join(base, "tmp")
+	mkdirs(t, caller, tmp)
 	t.Chdir(caller)
 	setTempDir(t, tmp)
 
@@ -827,38 +841,72 @@ func TestDetachedWorkingDirAcceptsATempDirOutsideTheCaller(t *testing.T) {
 	}
 }
 
-// TMPDIR=$PWD/.tmp while standing in a pooled worktree would hand the detached
-// child a cwd inside the very slot it was detached from. The temp directory is
-// rejected and the child runs somewhere the caller's tree cannot contain.
-func TestDetachedWorkingDirRejectsATempDirInsideTheCaller(t *testing.T) {
-	caller := t.TempDir()
-	tmp := filepath.Join(caller, ".tmp")
-	if err := os.Mkdir(tmp, 0o755); err != nil {
-		t.Fatal(err)
-	}
+// A temp directory outside the worktree the caller stands in is accepted even
+// when the caller is deep inside that worktree.
+func TestDetachedWorkingDirAcceptsATempDirOutsideTheEnclosingWorktree(t *testing.T) {
+	base := t.TempDir()
+	slot := filepath.Join(base, "slot")
+	caller := filepath.Join(slot, "src", "pkg")
+	tmp := filepath.Join(base, "tmp")
+	mkdirs(t, caller, tmp)
+	markWorktree(t, slot)
 	t.Chdir(caller)
 	setTempDir(t, tmp)
 
-	got := detachedWorkingDir()
-	if got == "" {
-		t.Fatal("expected a working directory of the child's own, got an inheriting empty Dir")
-	}
-	if isInsideTree(t, got, caller) {
-		t.Fatalf("expected a directory outside the caller's tree %q, got %q", caller, got)
-	}
-	if info, err := os.Stat(got); err != nil || !info.IsDir() {
-		t.Fatalf("expected %q to be an existing directory: %v", got, err)
+	if got := detachedWorkingDir(); resolved(t, got) != resolved(t, tmp) {
+		t.Fatalf("expected the temp directory %q, got %q", tmp, got)
 	}
 }
 
-// A symlink outside the caller's tree that resolves into it is still inside.
+// TMPDIR=$PWD/.tmp while standing at the root of a pooled worktree would hand
+// the detached child a cwd inside the very slot it was detached from. The temp
+// directory is rejected and the child runs somewhere the slot cannot contain.
+func TestDetachedWorkingDirRejectsATempDirBeneathTheCaller(t *testing.T) {
+	slot := t.TempDir()
+	tmp := filepath.Join(slot, ".tmp")
+	mkdirs(t, tmp)
+	markWorktree(t, slot)
+	t.Chdir(slot)
+	setTempDir(t, tmp)
+
+	assertOutsideWorktree(t, detachedWorkingDir(), slot)
+}
+
+// From <slot>/src with TMPDIR=<slot>/.tmp the temp directory is a sibling of
+// the caller's directory, not beneath it, yet still inside the slot. The
+// boundary is the enclosing worktree, so it is rejected all the same.
+func TestDetachedWorkingDirRejectsATempDirBesideTheCallerInsideTheWorktree(t *testing.T) {
+	slot := t.TempDir()
+	caller := filepath.Join(slot, "src")
+	tmp := filepath.Join(slot, ".tmp")
+	mkdirs(t, caller, tmp)
+	markWorktree(t, slot)
+	t.Chdir(caller)
+	setTempDir(t, tmp)
+
+	assertOutsideWorktree(t, detachedWorkingDir(), slot)
+}
+
+// The worktree root itself is inside the worktree.
+func TestDetachedWorkingDirRejectsTheWorktreeRootAsTempDir(t *testing.T) {
+	slot := t.TempDir()
+	caller := filepath.Join(slot, "src")
+	mkdirs(t, caller)
+	markWorktree(t, slot)
+	t.Chdir(caller)
+	setTempDir(t, slot)
+
+	assertOutsideWorktree(t, detachedWorkingDir(), slot)
+}
+
+// A symlink outside the worktree that resolves into it is still inside.
 func TestDetachedWorkingDirResolvesASymlinkedTempDir(t *testing.T) {
 	base := t.TempDir()
-	caller := filepath.Join(base, "caller")
-	inside := filepath.Join(caller, ".tmp")
-	if err := os.MkdirAll(inside, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	slot := filepath.Join(base, "slot")
+	caller := filepath.Join(slot, "src")
+	inside := filepath.Join(slot, ".tmp")
+	mkdirs(t, caller, inside)
+	markWorktree(t, slot)
 	link := filepath.Join(base, "tmp-link")
 	if err := os.Symlink(inside, link); err != nil {
 		t.Skipf("cannot create symlinks here: %v", err)
@@ -866,9 +914,36 @@ func TestDetachedWorkingDirResolvesASymlinkedTempDir(t *testing.T) {
 	t.Chdir(caller)
 	setTempDir(t, link)
 
-	got := detachedWorkingDir()
-	if got == "" || isInsideTree(t, got, caller) {
-		t.Fatalf("expected a directory outside the caller's tree %q, got %q", caller, got)
+	assertOutsideWorktree(t, detachedWorkingDir(), slot)
+}
+
+// A caller reached through a symlink into a worktree is still inside it.
+func TestDetachedWorkingDirResolvesASymlinkedCaller(t *testing.T) {
+	base := t.TempDir()
+	slot := filepath.Join(base, "slot")
+	tmp := filepath.Join(slot, ".tmp")
+	mkdirs(t, filepath.Join(slot, "src"), tmp)
+	markWorktree(t, slot)
+	link := filepath.Join(base, "slot-link")
+	if err := os.Symlink(slot, link); err != nil {
+		t.Skipf("cannot create symlinks here: %v", err)
+	}
+	t.Chdir(filepath.Join(link, "src"))
+	setTempDir(t, tmp)
+
+	assertOutsideWorktree(t, detachedWorkingDir(), slot)
+}
+
+func assertOutsideWorktree(t *testing.T, got, slot string) {
+	t.Helper()
+	if got == "" {
+		t.Fatal("expected a working directory of the child's own, got an inheriting empty Dir")
+	}
+	if isInsideTree(t, got, slot) {
+		t.Fatalf("expected a directory outside the worktree %q, got %q", slot, got)
+	}
+	if info, err := os.Stat(got); err != nil || !info.IsDir() {
+		t.Fatalf("expected %q to be an existing directory: %v", got, err)
 	}
 }
 

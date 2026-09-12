@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kunchenguid/treehouse/internal/vcs"
 )
 
 const (
@@ -216,18 +218,20 @@ func backgroundCheckCommand(self, currentVersion string) *exec.Cmd {
 
 // detachedWorkingDir returns a directory for a process that must not hold the
 // caller's. The temp directory is the first choice, but only when it lies
-// outside the caller's own tree: TMPDIR=$PWD/.tmp while standing in a pooled
-// worktree would put the child straight back inside the slot it was detached
-// from. The root of the caller's volume is the fallback, because no worktree
-// can contain it. An empty result inherits the caller's directory and is kept
-// only for when nothing usable can be determined at all: an update check is
-// worth less than a failed spawn.
+// outside the worktree the caller is standing in: TMPDIR=<slot>/.tmp while
+// running from <slot>/src would put the child straight back inside the slot it
+// was detached from, and the boundary that matters is the slot, not the
+// caller's subdirectory of it. A caller outside any worktree takes the temp
+// directory as-is. The root of the caller's volume is the fallback, because no
+// worktree can contain it. An empty result inherits the caller's directory and
+// is kept only for when nothing usable can be determined at all: an update
+// check is worth less than a failed spawn.
 func detachedWorkingDir() string {
 	caller, err := os.Getwd()
 	if err != nil {
 		return ""
 	}
-	if tmp := os.TempDir(); isDirectory(tmp) && outsideTree(tmp, caller) {
+	if tmp := os.TempDir(); isDirectory(tmp) && outsideEnclosingWorktree(tmp, caller) {
 		return tmp
 	}
 	if root := filepath.VolumeName(caller) + string(filepath.Separator); isDirectory(root) {
@@ -241,24 +245,54 @@ func isDirectory(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-// outsideTree reports whether dir is neither root nor a descendant of it, with
-// symlinks resolved on both sides so a symlinked temp path cannot slip inside.
-// A path that cannot be resolved fails closed and reads as inside.
-func outsideTree(dir, root string) bool {
+// outsideEnclosingWorktree reports whether dir is safe for a child detached
+// from a caller standing in cwd: true when cwd lies in no worktree at all, or
+// when dir is neither the enclosing worktree root nor a descendant of it.
+// Symlinks are resolved on both sides so a symlinked temp path cannot slip
+// inside, and anything that cannot be resolved or walked fails closed.
+func outsideEnclosingWorktree(dir, cwd string) bool {
+	resolvedCwd, err := resolveAbs(cwd)
+	if err != nil {
+		return false
+	}
+	root, err := enclosingWorktreeRoot(resolvedCwd)
+	if err != nil {
+		return false
+	}
+	if root == "" {
+		return true
+	}
 	resolvedDir, err := resolveAbs(dir)
 	if err != nil {
 		return false
 	}
-	resolvedRoot, err := resolveAbs(root)
-	if err != nil {
-		return false
-	}
-	rel, err := filepath.Rel(resolvedRoot, resolvedDir)
+	rel, err := filepath.Rel(root, resolvedDir)
 	if err != nil {
 		// No relative path exists only across volumes, which is outside.
 		return true
 	}
 	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// enclosingWorktreeRoot walks up from dir to the volume root and returns the
+// first directory carrying a worktree marker (a .git entry or a .jj directory,
+// the same pair the vcs package recognises on a pool slot), or "" when none
+// does. A marker that cannot be read is an error rather than a miss.
+func enclosingWorktreeRoot(dir string) (string, error) {
+	for {
+		name, err := vcs.WorktreeBackendNameChecked(dir)
+		if err != nil {
+			return "", err
+		}
+		if name != "" {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", nil
+		}
+		dir = parent
+	}
 }
 
 func resolveAbs(path string) (string, error) {
