@@ -5,7 +5,9 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "extra-files": [
-        "flake.nix"
+        "default.nix",
+        "flake.nix",
+        "package.nix"
       ]
     }
   },

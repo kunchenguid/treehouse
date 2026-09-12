@@ -3,8 +3,8 @@ name: update-vendor-hash
 on:
   pull_request:
     # vendorHash tracks the Go module graph (go.mod / go.sum), not the
-    # release-please version bump in flake.nix. Keeping flake.nix out of
-    # this paths filter means release PRs create no run here.
+    # release-please version bumps in the Nix package files. Keeping those
+    # files out of this paths filter means release PRs create no run here.
     paths:
       - go.mod
       - go.sum
@@ -41,22 +41,22 @@ jobs:
           fi
 
           echo "Updating vendorHash to $correct_hash"
-          sed -i "s|vendorHash = \".*\";|vendorHash = \"$correct_hash\";|" flake.nix
+          sed -i "s|vendorHash = \".*\";|vendorHash = \"$correct_hash\";|" package.nix
 
           # Verify it builds now
           nix build
 
       - name: Commit if changed
         run: |
-          git diff --quiet flake.nix && exit 0
+          git diff --quiet package.nix && exit 0
 
           if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
-            echo "::warning::vendorHash is out of date, but the PR head is a fork (${{ github.event.pull_request.head.repo.full_name }}) that this workflow's token cannot push to. The build above already verified the corrected vendorHash - update flake.nix manually on the fork, or push from a branch on ${{ github.repository }}, before merging."
+            echo "::warning::vendorHash is out of date, but the PR head is a fork (${{ github.event.pull_request.head.repo.full_name }}) that this workflow's token cannot push to. The build above already verified the corrected vendorHash - update package.nix manually on the fork, or push from a branch on ${{ github.repository }}, before merging."
             exit 1
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add flake.nix
+          git add package.nix
           git commit -m "chore: update nix vendorHash"
           git push
