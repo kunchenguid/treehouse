@@ -24,6 +24,11 @@ type leaseJSONResult struct {
 	BaseBranch  string    `json:"base_branch"`
 }
 
+type statusJSONProcessResult struct {
+	PID  int32  `json:"pid"`
+	Name string `json:"name"`
+}
+
 type statusJSONResult struct {
 	Name        string          `json:"name"`
 	Path        string          `json:"path"`
