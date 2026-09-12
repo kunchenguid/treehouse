@@ -23,6 +23,12 @@ const (
 	StatusLeased    = "leased"
 	StatusHere      = "you're here"
 	StatusDamaged   = "damaged"
+	// StatusUnverified is a slot whose process table could not be read: the
+	// question "is anything running here?" has no answer, so nothing decided
+	// from the process list (in-use) or from its absence (damaged, dirty,
+	// available) is reported. Leased, a live owner reservation, and "you're
+	// here" are facts known without a scan and still outrank it.
+	StatusUnverified = "unverified"
 )
 
 // WorktreeStatus describes one managed worktree as reported by List.
@@ -810,11 +816,13 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 			// back to an empty list: listing a process the caller owns costs a
 			// confusing line, while reporting a slot quiet that is not is a
 			// wrong answer to the only question this column exists to answer.
-			// A failed process-table read cannot be answered at all, so it
-			// warns loudly instead of silently presenting every slot as quiet.
+			// A failed process-table read cannot be answered at all: the slot
+			// is reported StatusUnverified (the machine-readable half) and the
+			// error is warned loudly on stderr (the diagnostic half), instead
+			// of silently presenting every slot as quiet.
 			procs, scanErr := findProcessesInWorktree(wt.Path)
 			if scanErr != nil {
-				fmt.Fprintf(os.Stderr, "treehouse: WARNING: could not read the process table to see what is running in %s (%v); it is listed with no processes, so treat its status as unverified.\n", wt.Path, scanErr)
+				fmt.Fprintf(os.Stderr, "treehouse: WARNING: could not read the process table to see what is running in %s (%v); it is reported %s with no processes.\n", wt.Path, scanErr, StatusUnverified)
 			} else if unprotected, filterErr := dropProtectedProcesses(procs); filterErr == nil {
 				procs = unprotected
 			}
@@ -832,6 +840,8 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 				ws.Status = StatusInUse
 			} else if process.WorktreeContainsCwd(wt.Path, cwd) {
 				ws.Status = StatusHere
+			} else if scanErr != nil {
+				ws.Status = StatusUnverified
 			} else if len(procs) > 0 {
 				ws.Status = StatusInUse
 			} else if ws.Flavor == "" {

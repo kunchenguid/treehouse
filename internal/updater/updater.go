@@ -215,17 +215,58 @@ func backgroundCheckCommand(self, currentVersion string) *exec.Cmd {
 }
 
 // detachedWorkingDir returns a directory for a process that must not hold the
-// caller's. An empty result inherits the caller's directory, which is the
-// right fallback: an update check is worth less than a failed spawn.
+// caller's. The temp directory is the first choice, but only when it lies
+// outside the caller's own tree: TMPDIR=$PWD/.tmp while standing in a pooled
+// worktree would put the child straight back inside the slot it was detached
+// from. The root of the caller's volume is the fallback, because no worktree
+// can contain it. An empty result inherits the caller's directory and is kept
+// only for when nothing usable can be determined at all: an update check is
+// worth less than a failed spawn.
 func detachedWorkingDir() string {
-	tmp := os.TempDir()
-	if tmp == "" {
+	caller, err := os.Getwd()
+	if err != nil {
 		return ""
 	}
-	if info, err := os.Stat(tmp); err != nil || !info.IsDir() {
-		return ""
+	if tmp := os.TempDir(); isDirectory(tmp) && outsideTree(tmp, caller) {
+		return tmp
 	}
-	return tmp
+	if root := filepath.VolumeName(caller) + string(filepath.Separator); isDirectory(root) {
+		return root
+	}
+	return ""
+}
+
+func isDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+// outsideTree reports whether dir is neither root nor a descendant of it, with
+// symlinks resolved on both sides so a symlinked temp path cannot slip inside.
+// A path that cannot be resolved fails closed and reads as inside.
+func outsideTree(dir, root string) bool {
+	resolvedDir, err := resolveAbs(dir)
+	if err != nil {
+		return false
+	}
+	resolvedRoot, err := resolveAbs(root)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolvedDir)
+	if err != nil {
+		// No relative path exists only across volumes, which is outside.
+		return true
+	}
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func resolveAbs(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(abs)
 }
 
 // RunBackgroundCheck is the entry point for the --update-check child process.

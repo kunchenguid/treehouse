@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -778,6 +779,96 @@ func TestBackgroundCheckCommandRunsOutsideTheCallersDirectory(t *testing.T) {
 	}
 	if info, err := os.Stat(cmd.Dir); err != nil || !info.IsDir() {
 		t.Fatalf("expected %q to be an existing directory: %v", cmd.Dir, err)
+	}
+}
+
+// setTempDir points every variable os.TempDir consults on any supported
+// platform at dir.
+func setTempDir(t *testing.T, dir string) {
+	t.Helper()
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, dir)
+	}
+}
+
+func resolved(t *testing.T, path string) string {
+	t.Helper()
+	out, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func isInsideTree(t *testing.T, dir, root string) bool {
+	t.Helper()
+	rel, err := filepath.Rel(resolved(t, root), resolved(t, dir))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+// A temp directory outside the caller's tree is the child's working directory.
+func TestDetachedWorkingDirAcceptsATempDirOutsideTheCaller(t *testing.T) {
+	base := t.TempDir()
+	caller := filepath.Join(base, "caller")
+	tmp := filepath.Join(base, "tmp")
+	for _, dir := range []string{caller, tmp} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(caller)
+	setTempDir(t, tmp)
+
+	if got := detachedWorkingDir(); resolved(t, got) != resolved(t, tmp) {
+		t.Fatalf("expected the temp directory %q, got %q", tmp, got)
+	}
+}
+
+// TMPDIR=$PWD/.tmp while standing in a pooled worktree would hand the detached
+// child a cwd inside the very slot it was detached from. The temp directory is
+// rejected and the child runs somewhere the caller's tree cannot contain.
+func TestDetachedWorkingDirRejectsATempDirInsideTheCaller(t *testing.T) {
+	caller := t.TempDir()
+	tmp := filepath.Join(caller, ".tmp")
+	if err := os.Mkdir(tmp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(caller)
+	setTempDir(t, tmp)
+
+	got := detachedWorkingDir()
+	if got == "" {
+		t.Fatal("expected a working directory of the child's own, got an inheriting empty Dir")
+	}
+	if isInsideTree(t, got, caller) {
+		t.Fatalf("expected a directory outside the caller's tree %q, got %q", caller, got)
+	}
+	if info, err := os.Stat(got); err != nil || !info.IsDir() {
+		t.Fatalf("expected %q to be an existing directory: %v", got, err)
+	}
+}
+
+// A symlink outside the caller's tree that resolves into it is still inside.
+func TestDetachedWorkingDirResolvesASymlinkedTempDir(t *testing.T) {
+	base := t.TempDir()
+	caller := filepath.Join(base, "caller")
+	inside := filepath.Join(caller, ".tmp")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "tmp-link")
+	if err := os.Symlink(inside, link); err != nil {
+		t.Skipf("cannot create symlinks here: %v", err)
+	}
+	t.Chdir(caller)
+	setTempDir(t, link)
+
+	got := detachedWorkingDir()
+	if got == "" || isInsideTree(t, got, caller) {
+		t.Fatalf("expected a directory outside the caller's tree %q, got %q", caller, got)
 	}
 }
 

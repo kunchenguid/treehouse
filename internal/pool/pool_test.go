@@ -3804,9 +3804,10 @@ func TestList_FallsBackToRawScanWhenFilteringFails(t *testing.T) {
 
 // A process table that cannot be read is a different failure from an ancestry
 // walk that cannot be completed: there is no list to fall back to, so the slot
-// must not quietly present as available. It warns instead, and never re-runs
-// the scan that just failed.
-func TestList_WarnsWhenTheProcessTableCannotBeRead(t *testing.T) {
+// must not quietly present as available. It reads unverified (so status --json
+// carries the fact too), warns on stderr, and never re-runs the scan that just
+// failed.
+func TestList_ReportsUnverifiedWhenTheProcessTableCannotBeRead(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
 	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
@@ -3844,8 +3845,73 @@ func TestList_WarnsWhenTheProcessTableCannotBeRead(t *testing.T) {
 	if len(statuses[0].Processes) != 0 {
 		t.Fatalf("expected no processes when the scan failed, got %#v", statuses[0].Processes)
 	}
+	if statuses[0].Status != StatusUnverified {
+		t.Fatalf("expected %q when the scan failed, got %q", StatusUnverified, statuses[0].Status)
+	}
 	if !strings.Contains(stderr, "WARNING") || !strings.Contains(stderr, wtPath) {
 		t.Fatalf("expected a warning naming %s, got stderr %q", wtPath, stderr)
+	}
+}
+
+// Unverified stands in only for what the process list would have decided. A
+// lease, a live owner reservation, and the caller's own cwd are known without
+// a scan, and a failed scan must not hide them.
+func TestList_KnownFactsOutrankUnverified(t *testing.T) {
+	restore := swapListProcessSeams(
+		func(string) ([]process.ProcessInfo, error) {
+			return nil, errors.New("cannot read the process table")
+		},
+		func([]process.ProcessInfo) ([]process.ProcessInfo, error) {
+			t.Error("List must not filter a scan that failed")
+			return nil, nil
+		},
+	)
+	t.Cleanup(restore)
+
+	t.Run("leased", func(t *testing.T) {
+		repoDir, poolDir := setupRepo(t)
+		if _, err := AcquireLease(repoDir, poolDir, 4, nil, "home"); err != nil {
+			t.Fatalf("AcquireLease failed: %v", err)
+		}
+		assertSingleStatus(t, poolDir, StatusLeased)
+	})
+
+	t.Run("owner reservation", func(t *testing.T) {
+		repoDir, poolDir := setupRepo(t)
+		// Acquire leaves this test process's own reservation in place.
+		if _, err := Acquire(repoDir, poolDir, 4, nil); err != nil {
+			t.Fatalf("Acquire failed: %v", err)
+		}
+		assertSingleStatus(t, poolDir, StatusInUse)
+	})
+
+	t.Run("you're here", func(t *testing.T) {
+		repoDir, poolDir := setupRepo(t)
+		wtPath, err := Acquire(repoDir, poolDir, 4, nil)
+		if err != nil {
+			t.Fatalf("Acquire failed: %v", err)
+		}
+		clearOwnerReservation(t, poolDir, wtPath)
+		t.Chdir(wtPath)
+		assertSingleStatus(t, poolDir, StatusHere)
+	})
+}
+
+func assertSingleStatus(t *testing.T, poolDir, want string) {
+	t.Helper()
+	var statuses []WorktreeStatus
+	var err error
+	captureStderr(t, func() {
+		statuses, err = List(poolDir)
+	})
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected one worktree, got %#v", statuses)
+	}
+	if statuses[0].Status != want {
+		t.Fatalf("expected %q, got %q", want, statuses[0].Status)
 	}
 }
 
