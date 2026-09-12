@@ -32,7 +32,10 @@ type WorktreeStatus struct {
 	Status string
 	// Flavor is the backend the worktree's own marker identifies ("git" or
 	// "jj"), independent of what the repository currently selects.
-	Flavor    string
+	Flavor string
+	// Processes is the set `return` would terminate in this worktree: the
+	// scan minus the caller and its ancestors. See List for why that is not
+	// the raw scan.
 	Processes []process.ProcessInfo
 	// LeaseID identifies the current acquisition of a leased worktree.
 	LeaseID string
