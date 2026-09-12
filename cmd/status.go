@@ -108,6 +108,9 @@ var statusCmd = &cobra.Command{
 			if wt.Branch != "" {
 				line += fmt.Sprintf("  [%s]", wt.Branch)
 			}
+			if wt.Detached {
+				line += "  (detached)"
+			}
 			if wt.BranchErr != "" {
 				line += yellow(fmt.Sprintf("  (branch unreadable: %s)", wt.BranchErr))
 			}

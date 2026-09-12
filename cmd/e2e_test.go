@@ -521,6 +521,9 @@ func TestGetAndStatus(t *testing.T) {
 	if !strings.Contains(statusOut, "available") {
 		t.Errorf("expected 'available' in status output: %s", statusOut)
 	}
+	if !strings.Contains(statusOut, "(detached)") {
+		t.Errorf("expected '(detached)' in status output: %s", statusOut)
+	}
 }
 
 func TestGetStartsBashAsInteractiveLoginShell(t *testing.T) {
