@@ -164,8 +164,14 @@ func getRunE(cmd *cobra.Command, args []string) error {
 
 		ok, promptErr := ui.Confirm("Clean worktree and return to pool?", true)
 		if promptErr != nil || !ok {
-			fmt.Fprintf(os.Stderr, "🌳 Worktree left dirty. Use treehouse return --force %s to clean it later.\n", quoteReturnPath(wtPath))
-			return nil
+			// The same starvation an aborted `return` causes: the slot stays
+			// dirty, so Acquire skips it and prune will not reclaim it. The
+			// two ErrOwnerPreconditionFailed arms above still exit 0 because
+			// a slot another session durably leased was never this session's
+			// to return - not returning it is the designed outcome.
+			return withExitCode(ExitNotReturned, fmt.Errorf(
+				"worktree left dirty and not returned to the pool; prune will not reclaim this slot. Use treehouse return --force %s to clean it later",
+				quoteReturnPath(wtPath)))
 		}
 	}
 

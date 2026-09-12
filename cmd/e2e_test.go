@@ -1663,14 +1663,14 @@ func TestGetDetachesWorktreeWhenLeavingDirty(t *testing.T) {
 
 	env := []string{"SHELL=" + dirtyMainShellBin}
 	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
-	if code != 0 {
-		t.Fatalf("get failed (code %d): %s", code, getErr)
+	if code != ExitNotReturned {
+		t.Fatalf("expected get to report the dirty slot as not returned (%d), got %d: %s", ExitNotReturned, code, getErr)
 	}
 	wtPath := extractWorktreePath(getErr, homeDir)
 	if wtPath == "" {
 		t.Fatal("could not extract worktree path")
 	}
-	if !strings.Contains(getErr, "Worktree left dirty") {
+	if !strings.Contains(getErr, "worktree left dirty") {
 		t.Fatalf("expected get to leave dirty worktree for this regression, got: %s", getErr)
 	}
 
@@ -2730,9 +2730,6 @@ func TestReturnDirtyNonTTYKeepsLeaseAndExitsNotReturned(t *testing.T) {
 	if code != ExitNotReturned {
 		t.Fatalf("expected exit %d for a dirty worktree left in place, got %d: %s", ExitNotReturned, code, returnErr)
 	}
-	if code == ExitFailure {
-		t.Fatal("the unreturned status must be distinguishable from a generic failure")
-	}
 	if !strings.Contains(returnErr, "not returned") {
 		t.Fatalf("expected stderr to say the worktree was not returned, got: %s", returnErr)
 	}
@@ -2792,5 +2789,47 @@ func TestReturnForceClearsLeaseAfterDirtyAbort(t *testing.T) {
 		if entry.Path == lease.Path && entry.Status == "leased" {
 			t.Fatalf("expected return --force to clear the lease, got %+v", entry)
 		}
+	}
+}
+
+// get's exit-time return leaks a slot the same way an aborted `treehouse
+// return` does: the worktree stays dirty, so Acquire skips it and prune will
+// not reclaim it. Exit 0 reported that as a clean end of session.
+func TestGetLeavingWorktreeDirtyExitsNotReturned(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	// The subshell checks main out inside the worktree, so the main checkout
+	// has to be somewhere else.
+	gitCmd(t, repoDir, "checkout", "-b", "feature")
+
+	// The subshell checks out main and dirties it, so the exit-time
+	// confirmation is reached; the subprocess has no terminal to answer it.
+	env := []string{"SHELL=" + dirtyMainShellBin}
+	_, getErr, code := runTreehouse(t, repoDir, homeDir, env, "get")
+	if code != ExitNotReturned {
+		t.Fatalf("expected exit %d when get leaves the worktree dirty, got %d: %s", ExitNotReturned, code, getErr)
+	}
+	if !strings.Contains(getErr, "prune will not reclaim this slot") {
+		t.Fatalf("expected get to explain the unreclaimable slot, got: %s", getErr)
+	}
+	if !strings.Contains(getErr, "return --force") {
+		t.Fatalf("expected a --force hint, got: %s", getErr)
+	}
+
+	wtPath := extractWorktreePath(getErr, homeDir)
+	if wtPath == "" {
+		t.Fatal("could not extract worktree path")
+	}
+	if status := gitCmd(t, wtPath, "status", "--porcelain"); status == "" {
+		t.Fatal("expected the worktree to stay dirty")
+	}
+
+	// The slot is unreclaimable exactly as the exit status reports: a second
+	// get has to burn a new one rather than recycle it.
+	_, secondErr, code := runTreehouse(t, repoDir, homeDir, []string{"SHELL=" + exitShellBin}, "get")
+	if code != 0 {
+		t.Fatalf("second get failed (code %d): %s", code, secondErr)
+	}
+	if secondPath := extractWorktreePath(secondErr, homeDir); secondPath == wtPath {
+		t.Fatalf("expected the dirty slot to be skipped, but it was handed out again: %s", secondPath)
 	}
 }

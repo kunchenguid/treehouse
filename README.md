@@ -289,6 +289,8 @@ A non-interactive dirty return aborts without cleaning: prune will not reclaim t
 | `1`  | The return failed: unmet lease conditions, process termination, or reset |
 | `3`  | The worktree was not returned, and is exactly as it was found: it has uncommitted changes and cleaning was declined, or the confirmation could not be answered |
 
+`treehouse get` uses the same exit `3` when its subshell exits and leaves the worktree dirty, because it leaks the slot the same way: the worktree stays dirty, so a later `get` skips it and `prune` will not reclaim it. Exiting a `get` subshell while another session holds a durable lease on that slot is not this case and still exits 0, because a leased slot was never that session's to return.
+
 Exit `3` is separate from `1` because the two need different handling. A failure is worth retrying; an unreturned dirty worktree stays unreturned until someone cleans it or passes `--force`, so a caller that retries on it will loop.
 When you pass an explicit path, `treehouse return` can run from outside the repository because it resolves the managed pool from that worktree path.
 
