@@ -1036,6 +1036,48 @@ func TestRemoveJJSeedAuthenticationRejectsUnownedFile(t *testing.T) {
 	assertTestFile(t, filepath.Dir(authPath), filepath.Base(authPath), "user data\n")
 }
 
+// TestRemoveJJSeedAuthenticationKeepsSharedDirectory pins the other half of the
+// directory cleanup: worktrees sharing a parent share one authentication
+// directory, so it survives while a sibling's entry is still in it.
+func TestRemoveJJSeedAuthenticationKeepsSharedDirectory(t *testing.T) {
+	parent := t.TempDir()
+	first := filepath.Join(parent, "first")
+	second := filepath.Join(parent, "second")
+	for _, worktree := range []string{first, second} {
+		marker := filepath.Join(worktree, ".jj", "repo")
+		if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(marker, []byte("store"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := PrepareJJSeededCleanup(worktree); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := RemoveJJSeedAuthentication(first); err != nil {
+		t.Fatalf("RemoveJJSeedAuthentication failed: %v", err)
+	}
+	if _, err := os.Stat(jjSeedAuthenticationPath(first)); !os.IsNotExist(err) {
+		t.Fatalf("authentication file still exists: %v", err)
+	}
+	if _, err := os.Stat(jjSeedAuthenticationPath(second)); err != nil {
+		t.Fatalf("sibling authentication file must survive: %v", err)
+	}
+	authDir := filepath.Dir(jjSeedAuthenticationPath(first))
+	if _, err := os.Stat(authDir); err != nil {
+		t.Fatalf("shared authentication directory must survive: %v", err)
+	}
+
+	if err := RemoveJJSeedAuthentication(second); err != nil {
+		t.Fatalf("RemoveJJSeedAuthentication failed: %v", err)
+	}
+	if _, err := os.Stat(authDir); !os.IsNotExist(err) {
+		t.Fatalf("emptied authentication directory survived removal: %v", err)
+	}
+}
+
 func TestRemoveStaleJJSeedAuthenticationAllowsWorkspaceRecreation(t *testing.T) {
 	parent := t.TempDir()
 	repo := filepath.Join(parent, "repo")

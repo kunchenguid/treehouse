@@ -606,6 +606,29 @@ func TestRemoveCleanWorktreeRejectsDirtyWorkspace(t *testing.T) {
 	}
 }
 
+// TestRemoveWorktreeCleansSeedAuthenticationDirectory pins that removal leaves
+// no hidden authentication directory behind next to a worktree placed outside
+// the pool, where nothing deletes the parent directory.
+func TestRemoveWorktreeCleansSeedAuthenticationDirectory(t *testing.T) {
+	requireJJ(t)
+	repoDir := newLocalRepo(t)
+	wtPath := addWorkspace(t, repoDir)
+	if err := gitvcs.PrepareJJSeededCleanup(wtPath); err != nil {
+		t.Fatal(err)
+	}
+	authDir := filepath.Join(filepath.Dir(wtPath), ".treehouse-jj-seed-auth")
+	if _, err := os.Stat(authDir); err != nil {
+		t.Fatalf("expected authentication directory before removal: %v", err)
+	}
+
+	if err := New().RemoveWorktree(repoDir, wtPath); err != nil {
+		t.Fatalf("RemoveWorktree failed: %v", err)
+	}
+	if _, err := os.Stat(authDir); !os.IsNotExist(err) {
+		t.Fatalf("authentication directory survived removal: %v", err)
+	}
+}
+
 func TestFetchWithoutRemoteIsNoOp(t *testing.T) {
 	requireJJ(t)
 	repoDir := newLocalRepo(t)
