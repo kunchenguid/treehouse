@@ -10,8 +10,9 @@ const (
 	// ExitFailure reports that the command failed.
 	ExitFailure = 1
 
-	// ExitNotReturned reports that `treehouse return` left the worktree, and
-	// any lease on it, exactly as it found it. It is distinct from
+	// ExitNotReturned reports that the worktree, and any lease on it, was
+	// left exactly as it was found. Both `treehouse return`'s aborts and
+	// `treehouse get`'s exit-time dirty bail-out emit it. It is distinct from
 	// ExitFailure because the two demand different responses: a failure is
 	// worth retrying, while an unreturned dirty worktree stays unreturned
 	// until someone cleans it or passes --force.
