@@ -17,6 +17,13 @@ type Config struct {
 	// unresolvable branch fails the acquisition instead of falling back.
 	// Overridden per invocation by `treehouse get --base`.
 	BaseBranch string `toml:"base_branch,omitempty"`
+	// WorktreePath is the template for the directory a NEWLY created pool slot
+	// is placed in. Empty (the default) keeps the built-in
+	// {pool}/{slot}/{repo} layout. Worktrees already in the pool keep the path
+	// recorded in state either way. Overridden per invocation by
+	// `treehouse get --worktree-path`; internal/pool/worktree_path.go owns the
+	// placeholder vocabulary and the rules a template must satisfy.
+	WorktreePath string `toml:"worktree_path,omitempty"`
 	// VCS selects the version-control backend. Git is the default
 	// everywhere; set "jj" to opt in to the Jujutsu backend. The vcs
 	// package parses the config files itself at backend selection time
@@ -40,6 +47,11 @@ type Hooks struct {
 // the resolution precedence (see ResolveRoot).
 const RootEnvVar = "TREEHOUSE_ROOT"
 
+// WorktreePathEnvVar is the environment variable that overrides the configured
+// worktree path template. It sits below the --worktree-path flag but above
+// repo/user config, matching RootEnvVar (see ResolveWorktreePath).
+const WorktreePathEnvVar = "TREEHOUSE_WORKTREE_PATH"
+
 func DefaultConfig() Config {
 	return Config{
 		MaxTrees: 16,
@@ -61,6 +73,21 @@ func ResolveRoot(flagRoot string, cfg Config) string {
 		return env
 	}
 	return cfg.Root
+}
+
+// ResolveWorktreePath returns the effective worktree path template, honoring the
+// same override precedence as ResolveRoot: an explicit flag value, then the
+// TREEHOUSE_WORKTREE_PATH environment variable, then repo/user config, then the
+// built-in default (empty string, which keeps today's pool layout). Validation
+// and expansion belong to internal/pool, which builds the path.
+func ResolveWorktreePath(flagTemplate string, cfg Config) string {
+	if flagTemplate != "" {
+		return flagTemplate
+	}
+	if env := os.Getenv(WorktreePathEnvVar); env != "" {
+		return env
+	}
+	return cfg.WorktreePath
 }
 
 func Load(repoRoot string) (Config, error) {

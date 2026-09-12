@@ -145,6 +145,7 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 
 - **Detached HEAD** — worktrees use detached HEAD mode, reset to whichever of the local or remote default branch is further ahead, avoiding branch name conflicts entirely.
 - **Choosable base branch** — set `base_branch` in `treehouse.toml`, or pass `treehouse get --base <branch>`, to cut worktrees from a branch other than the repository default. Opt-in; unset keeps today's inference. Worktrees stay in detached HEAD — this selects the commit they start at, it does not create or check out a branch.
+- **Choosable worktree path** — set `worktree_path` in `treehouse.toml`, or pass `treehouse get --worktree-path '<template>'`, to place new worktrees somewhere a tool requires instead of `{pool}/{slot}/{repo}`. Opt-in, and creation-only: worktrees already in the pool keep their recorded paths. See [Worktree path](#worktree-path).
 - **No daemon** - all operations are inline CLI commands.
   Pool state is a small on-disk file, written under a lock by each command.
 - **Interactive shell setup** — when opening a subshell on macOS or Linux, `treehouse`, `treehouse get`, and `treehouse enter` start `$SHELL` as an interactive login shell when it resolves to `bash`, `fish`, or `zsh`. Other shells, fallback shells, and Windows use their default invocation. A regular executable that is merely named like a supported shell but does not accept `-i -l` (for example a wrapper script at `/opt/tools/bash`) is an accepted limitation: the resolved basename is the contract, and PATH-identity probing would reject genuine second installs of the same shell.
@@ -187,6 +188,7 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `get`     | `--json` | Print `path`, `lease_id`, `lease_holder`, `leased_at`, and `base_branch` as JSON (requires `--lease`) |
 | `get`     | `--base` | Branch to cut this worktree from, overriding `base_branch` in config |
 | `get`     | `--include-file` | Replace committed `.worktreeinclude` for this acquisition with the supplied manifest |
+| `get`     | `--worktree-path` | Template for a newly created worktree's directory, overriding `worktree_path` in config |
 | `lease`   | `--lease-holder` | Optional label recorded as the lease holder (defaults to `$TREEHOUSE_LEASE_HOLDER`) |
 | `lease`   | `--json` | Print `path`, `lease_id`, `lease_holder`, `leased_at`, and `base_branch` as JSON (`base_branch` is best-effort: empty when the slot records no explicit base and its own worktree cannot resolve a default) |
 | `enter`   | `--print-path` | Print only the worktree's absolute path to stdout instead of opening a subshell (for `cd "$(treehouse enter --print-path 1)"`) |
@@ -404,6 +406,10 @@ max_trees = 16
 # Unset infers it from the repository (see "Base branch" below).
 # base_branch = "develop"
 
+# Optional path for newly created worktrees.
+# Unset uses {pool}/{slot}/{repo} (see "Worktree path" below).
+# worktree_path = "{repo_parent}/{repo}-{slot}"
+
 # Optional version-control backend. Git is the default everywhere; set "jj"
 # to opt in to the experimental Jujutsu backend
 # (see "Version-control backend" below).
@@ -442,6 +448,47 @@ A few things worth knowing:
 - **Returned worktrees are parked on the base they were cut from**, so the pool keeps recycling. `base_branch` wins when it is set; otherwise a slot acquired with `--base` is parked back on that branch. A slot parked elsewhere could not be reused whenever the base is not a descendant of it.
 - **Existing pools migrate on their own.** A slot is recycled onto a newly requested base as long as it carries nothing beyond the base it was cut from; the two bases need no ancestry relation, so a `develop` slot rejoins a plain `treehouse get` and vice versa. A slot holding commits the new base does not contain is still refused, as always.
 - **Git backend only for now.** Under the jj backend an explicit base fails with a clear error rather than silently using the default bookmark.
+
+### Worktree path
+
+New pool slots are created at `{pool}/{slot}/{repo}`, for example `~/.treehouse/myapp-a1b2c3/1/myapp`.
+Some tooling only works when a checkout sits at a particular location relative to something else — build systems that find a project root by walking up a fixed number of directories from the package directory are the common case, and a pool three levels deeper silently resolves the wrong root.
+
+Set `worktree_path` to place new slots yourself:
+
+```toml
+# worktrees become siblings of the repository: <parent>/myapp-1, <parent>/myapp-2
+worktree_path = "{repo_parent}/{repo}-{slot}"
+```
+
+or for a single acquisition:
+
+```sh
+treehouse get --lease --worktree-path '{repo_parent}/{repo}-{slot}'
+export TREEHOUSE_WORKTREE_PATH='{repo_parent}/{repo}-{slot}'
+```
+
+| Placeholder | Expands to |
+|---|---|
+| `{slot}` | The slot name (`1`, `2`, …). **Required** — without it every slot resolves to one directory. |
+| `{repo}` | The repository directory's name |
+| `{repo_parent}` | The directory holding the repository |
+| `{pool}` | This repository's pool directory |
+
+One of `{pool}`, `{repo}`, or `{repo_parent}` is also required, because slot names are allocated per pool: a user-level `$HOME/trees/{slot}` would send the first slot of *every* repository to `$HOME/trees/1`.
+
+`$VAR` and `${VAR}` expand as well, exactly like `root`, and they expand *before* the placeholders are read — so `${HOME}/trees/{repo}-{slot}` works, and `${slot}` is an environment variable rather than the slot placeholder.
+A variable the environment leaves empty is an error rather than an empty path segment, because dropping a directory would place worktrees somewhere the template does not name, and differently depending on whether the invoking shell, cron job, or CI runner exports it. `${}` and a `${` with no closing brace are errors for the same reason. A value that ends in a separator is fine — path cleaning collapses the doubled separator and the worktree lands where the template names.
+The resolved value follows the same precedence as `--root` (highest first): the `--worktree-path` flag, the `TREEHOUSE_WORKTREE_PATH` environment variable, `worktree_path` in the repo-level `treehouse.toml`, then in the user-level config.
+
+A few things worth knowing:
+
+- **It is off by default.** With nothing set, the layout is unchanged.
+- **It applies only to slots created from now on.** Worktrees already in the pool keep the path recorded in state — nothing is moved, renamed, or invalidated — so both layouts coexist in a pool until the old slots are destroyed and re-acquired. Recycling, leases, `status`, `return`, `prune`, and `destroy` all key off the recorded path, so they behave the same wherever a slot lives.
+- **A template that would corrupt the pool is rejected before anything is created**: a missing `{slot}` or repository-scoping placeholder, a misspelled placeholder, a template that resolves to the same directory for every slot (path cleaning cancels `..` against the segment before it, so `{slot}/../shared` would send every slot to one directory; a `..` that only walks up inside a variable's value is fine), a path that is or contains the repository or the pool directory, and a path inside the repository working tree (where the worktree would show up as untracked content). Inside the pool directory a template must stay at `{pool}/{slot}/<name>`, because that is the depth pool-state recovery scans, and it must be spelled through the pool directory itself rather than through a symlink into it, so pool state and recovery name that worktree the same way. A path inside *another* repository's pool directory is rejected too: that pool's recovery would register the worktree as a slot of its own, which consumes one of its slots for good and leaves the owning repository unable to return it. A worktree beside the pools, under the Treehouse root, is fine — the root holds pools without being one. Placement is judged on canonicalized paths, so a symlink pointing back into the repository or the pool is caught rather than followed. Every one of these checks runs on every `get`, including the acquisitions that recycle a slot and so never use the template, so what a template is rejected for never depends on how full the pool is.
+- **An existing directory is never adopted.** `{repo}` alone still collides between two repositories that share a directory name, and no template can rule every collision out, so a templated path that already exists fails the acquisition by name instead of quietly becoming a second pool's worktree. When the occupant is a worktree of this repository — which is what a lost state file leaves behind, since recovery only scans the pool directory — the error says so and points at `git worktree list` and at [Recovering missing pool state](#recovering-missing-pool-state), rather than prescribing a command whose preconditions it cannot check. Any other occupant is left alone and unnamed. The built-in layout is untouched by this check.
+- **Only the worktree is deleted.** Under the built-in layout `prune` and `destroy` also remove the numbered slot directory, which exists solely to hold the worktree. A worktree placed elsewhere has a parent Treehouse does not own, so its parent is left alone.
+- **Recovering a lost state file is pool-local.** `ReadState` reconstructs missing entries by scanning the pool directory, so worktrees placed outside it cannot be recovered that way; remove such a worktree with `git worktree remove` (or `jj workspace forget`) if its pool state is ever lost.
 
 ### Version-control backend (git or Jujutsu)
 

@@ -77,6 +77,10 @@ type AcquireOptions struct {
 	// branch inferred from the repository. A non-empty value that cannot be
 	// resolved fails the acquisition rather than falling back.
 	BaseBranch string
+	// WorktreePath templates the directory a newly created slot is placed in.
+	// Empty keeps the built-in {pool}/{slot}/{repo} layout. It is read only when
+	// a slot is created, so it never moves a worktree already in the pool.
+	WorktreePath string
 	// IncludeManifest replaces the committed manifest; nil keeps the default,
 	// while a non-nil empty slice explicitly disables seeding.
 	IncludeManifest []byte
@@ -87,7 +91,10 @@ type acquireOptions struct {
 	// skipFetch uses existing local refs without contacting origin.
 	skipFetch bool
 	// baseBranch is the explicitly requested base branch, or empty to infer it.
-	baseBranch      string
+	baseBranch string
+	// worktreePath templates where a newly created slot is placed, or empty for
+	// the built-in layout.
+	worktreePath    string
 	includeManifest []byte
 	// lease records a durable, process-independent reservation instead of the
 	// default short-lived owner reservation.
@@ -112,6 +119,7 @@ func AcquireWithOptions(repoRoot, poolDir string, poolSize int, postCreate []str
 	acquired, err := acquire(repoRoot, poolDir, poolSize, postCreate, acquireOptions{
 		skipFetch:       options.SkipFetch,
 		baseBranch:      options.BaseBranch,
+		worktreePath:    options.WorktreePath,
 		includeManifest: options.IncludeManifest,
 		hookStdout:      os.Stdout,
 		hookStderr:      os.Stderr,
@@ -140,6 +148,7 @@ func AcquireLeaseInfoWithOptions(repoRoot, poolDir string, poolSize int, postCre
 	return acquire(repoRoot, poolDir, poolSize, postCreate, acquireOptions{
 		skipFetch:       options.SkipFetch,
 		baseBranch:      options.BaseBranch,
+		worktreePath:    options.WorktreePath,
 		includeManifest: options.IncludeManifest,
 		lease:           true,
 		leaseHolder:     holder,
@@ -261,7 +270,45 @@ func LeaseExisting(poolDir, name, holder string) (LeaseInfo, error) {
 	return lease, err
 }
 
+// occupiedPathAdvice explains a templated path treehouse refuses to adopt. A
+// path where this repository already has a worktree is one the pool lost track
+// of - state recovery reads the pool directory only, so a worktree placed
+// outside it comes back unknown while it is still on disk and registered - and
+// every later acquisition resolves to the same name and refuses again. It says
+// so and points at the repository's own worktree list rather than prescribing a
+// command, because which command applies depends on state treehouse cannot see
+// from here. Any other occupant belongs to someone else and is not described as
+// treehouse's to inspect or delete.
+func occupiedPathAdvice(repoRoot, wtPath string) string {
+	if !registeredWorktreeOfRepo(repoRoot, wtPath) {
+		return "move it aside or choose a template that cannot collide with another repository's pool"
+	}
+	return fmt.Sprintf("%s is registered as a worktree of this repository that pool state no longer records; list them with 'git worktree list' in %s and see the README section on recovering missing pool state to decide what to do with it",
+		wtPath, repoRoot)
+}
+
+// registeredWorktreeOfRepo reports whether the worktree at path belongs to this
+// repository, read from the path's own marker so a worktree of some other
+// repository is never mistaken for ours.
+func registeredWorktreeOfRepo(repoRoot, path string) bool {
+	if vcs.WorktreeBackendName(path) == "" {
+		return false
+	}
+	mainRoot, err := vcs.FindMainRepoRootFrom(path)
+	if err != nil {
+		return false
+	}
+	return samePath(mainRoot, repoRoot)
+}
+
 func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts acquireOptions) (LeaseInfo, error) {
+	// Before the fetch and before any slot is inspected, so a template that is
+	// wrong on its own text costs nothing. The placement rules need a slot name
+	// and run under the state lock below.
+	if _, err := validateWorktreePathTemplate(opts.worktreePath); err != nil {
+		return LeaseInfo{}, err
+	}
+
 	fmt.Fprintf(os.Stderr, "🌳 Setting up worktree...\n")
 	if !opts.skipFetch && vcs.HasRemote(repoRoot, "origin") {
 		if err := vcs.Fetch(repoRoot); err != nil {
@@ -286,6 +333,18 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		}
 
 		state, err = healState(poolDir, state)
+		if err != nil {
+			return err
+		}
+
+		// The name this pool would allocate next, and where the template puts it,
+		// resolved before the reuse loop and used by the creation branch below.
+		// A recycling acquisition never expands the template, so placement rules
+		// reached only from that branch would report a template that escapes into
+		// the repository or the pool, or accept it silently, depending on how full
+		// the pool is.
+		name := nextName(state)
+		wtPath, err := resolveWorktreePath(repoRoot, poolDir, name, opts.worktreePath)
 		if err != nil {
 			return err
 		}
@@ -415,9 +474,18 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			return fmt.Errorf("all %d worktrees are in use or dirty (max_trees = %d). Run 'treehouse status' to see details, or increase max_trees in treehouse.toml", len(state.Worktrees), poolSize)
 		}
 
-		name := nextName(state)
-		repoName := filepath.Base(repoRoot)
-		wtPath := filepath.Join(poolDir, name, repoName)
+		// A templated path can point anywhere, including at a directory another
+		// pool or checkout already owns - two pools whose templates agree would
+		// otherwise register the same worktree and each feel free to delete it.
+		// Only the templated path is checked: the built-in layout keeps whatever
+		// AddWorktree does with a leftover directory today.
+		if opts.worktreePath != "" {
+			if _, statErr := os.Lstat(wtPath); statErr == nil {
+				return fmt.Errorf("worktree path %q already exists; treehouse only creates a worktree at a path it can own, so %s", wtPath, occupiedPathAdvice(repoRoot, wtPath))
+			} else if !os.IsNotExist(statErr) {
+				return statErr
+			}
+		}
 
 		if err := os.MkdirAll(filepath.Dir(wtPath), 0755); err != nil {
 			return err
