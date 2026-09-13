@@ -22,3 +22,4 @@ coverage.out
 
 # Local agent session logs (written by Claude Code hooks)
 /logs/
+.yerel-yedek/

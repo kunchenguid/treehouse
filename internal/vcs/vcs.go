@@ -375,32 +375,47 @@ func slotMarkerBackend(path string) Backend {
 	return nil
 }
 
-// WorktreeBackendNameChecked names the backend identified by a worktree's
-// marker while preserving filesystem errors for callers that must fail closed.
+// slotMarkerBackend reports the backend a worktree's own marker names: a
+// .git entry means a git worktree, a .jj directory means a jj workspace.
+// Pool slots hold exactly one of the two (jj workspaces are never
+// colocated), so the marker identifies what the slot actually is regardless
 func WorktreeBackendNameChecked(path string) (string, error) {
-	if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
-		return "git", nil
-	} else if !os.IsNotExist(err) {
+	if present, err := markerPresent(filepath.Join(path, ".git")); err != nil {
 		return "", err
+	} else if present {
+		if _, err := os.Stat(filepath.Join(path, ".git")); err != nil {
+			return "", fmt.Errorf("resolving .git marker in %s: %w", path, err)
+		}
+		return "git", nil
 	}
-	if info, err := os.Stat(filepath.Join(path, ".jj")); err == nil {
+	if present, err := markerPresent(filepath.Join(path, ".jj")); err != nil {
+		return "", err
+	} else if present {
+		info, err := os.Stat(filepath.Join(path, ".jj"))
+		if err != nil {
+			return "", fmt.Errorf("resolving .jj marker in %s: %w", path, err)
+		}
 		if info.IsDir() {
 			return "jj", nil
 		}
-	} else if !os.IsNotExist(err) {
-		return "", err
 	}
 	return "", nil
 }
 
-// backendForWorktree dispatches per-worktree operations - the facts that
-// gate destructive decisions (dirty, merged, main-root) and the actions on a
-// slot's own state (reset, detach) - on what the worktree actually is. The
-// configured backend must not answer for a slot of the other flavor: a
-// .jj-only slot inspected through git resolves the repository ENCLOSING the
-// pool, and with an in-project pool root a clean enclosing repo makes dirty
-// jj work classify as disposable. Paths without a marker (ordinary
-// directories inside a repository) keep the configured-backend resolution.
+// markerPresent reports whether path itself exists, without following
+// symlinks. A dangling symlink is present: the entry is on disk and its
+// unresolvable target is a read failure for the caller to surface, not a
+// missing marker. Only a genuinely absent entry returns false with a nil
+// error.
+func markerPresent(path string) (bool, error) {
+	if _, err := os.Lstat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
 func backendForWorktree(path string) Backend {
 	if b := slotMarkerBackend(path); b != nil {
 		return b
