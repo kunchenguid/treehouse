@@ -506,7 +506,8 @@ This is **opt-in**; the default global store is unchanged. In-project mode:
 ### Hooks
 
 You can run commands automatically at worktree lifecycle points by adding a `[hooks]` section to the user-level config at `~/.config/treehouse/config.toml`.
-Hooks in repo-level `treehouse.toml` are ignored for safety.
+Hooks in repo-level `treehouse.toml` are ignored for safety, so that running treehouse in an untrusted clone cannot execute checked-in shell.
+When a repo-level `treehouse.toml` declares `[hooks]`, treehouse warns once on stderr naming the file and the ignored keys, rather than dropping them silently.
 `treehouse destroy` always reads `pre_destroy` from the user-level config because it can target a pool by path.
 
 ```toml

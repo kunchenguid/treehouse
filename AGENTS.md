@@ -106,7 +106,7 @@ post_create = ["./scripts/setup-venv.sh"]
 pre_destroy = ["./scripts/teardown.sh"]
 ```
 
-Hooks are ignored in repo-level config for safety.
+Hooks are ignored in repo-level config for safety, with a one-time stderr warning (`config.WarnIfRepoHooksIgnored`) naming the file and ignored keys. It is called from `config.Load` AND from `destroyPreDestroyHooks`, because `destroy <path>` resolves its pool by path and never loads repo-level config; the destroy call is best-effort so a broken or missing repo config cannot fail a destroy.
 
 ## Maintaining this file
 

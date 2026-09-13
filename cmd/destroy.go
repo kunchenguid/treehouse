@@ -128,6 +128,15 @@ func destroyRunE(cmd *cobra.Command, args []string) error {
 // target a pool in another repository, and pre_destroy hooks are user-level
 // only, so it always loads them globally.
 func destroyPreDestroyHooks() ([]string, error) {
+	// Destroy resolves a pool by path and never loads repo-level config, so
+	// the ignored-hooks warning config.Load emits would stay silent for the
+	// one command a user is most likely to run when a pre_destroy hook
+	// appears not to fire. Warn here too, best-effort: no repository, or a
+	// repo config that no longer parses, must never fail a destroy.
+	if repoRoot, err := vcs.FindMainRepoRoot(); err == nil {
+		config.WarnIfRepoHooksIgnored(repoRoot)
+	}
+
 	cfg, err := config.LoadGlobal()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)

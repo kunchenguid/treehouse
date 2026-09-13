@@ -1,10 +1,13 @@
 package config
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -93,4 +96,155 @@ func setUserHome(t *testing.T, home string) {
 	} else {
 		t.Setenv("HOME", home)
 	}
+}
+
+func writeRepoConfig(t *testing.T, repoDir, contents string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repoDir, "treehouse.toml"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWarnIfRepoHooksIgnored_NamesFileAndKeys(t *testing.T) {
+	repoDir := t.TempDir()
+	setUserHome(t, t.TempDir())
+	writeRepoConfig(t, repoDir, `[hooks]
+post_create = ["./scripts/setup.sh"]
+pre_destroy = ["./scripts/teardown.sh"]
+`)
+
+	var buf bytes.Buffer
+	warnIfRepoHooksIgnored(&buf, repoDir)
+
+	got := buf.String()
+	for _, want := range []string{
+		filepath.Join(repoDir, "treehouse.toml"),
+		"post_create",
+		"pre_destroy",
+		filepath.Join(".config", "treehouse", "config.toml"),
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("warning does not mention %q; got:\n%s", want, got)
+		}
+	}
+}
+
+func TestWarnIfRepoHooksIgnored_NamesOnlyDeclaredKeys(t *testing.T) {
+	repoDir := t.TempDir()
+	setUserHome(t, t.TempDir())
+	writeRepoConfig(t, repoDir, `[hooks]
+pre_destroy = ["./scripts/teardown.sh"]
+`)
+
+	var buf bytes.Buffer
+	warnIfRepoHooksIgnored(&buf, repoDir)
+
+	got := buf.String()
+	if !strings.Contains(got, "pre_destroy") {
+		t.Errorf("warning does not mention pre_destroy; got:\n%s", got)
+	}
+	if strings.Contains(got, "post_create") {
+		t.Errorf("warning names post_create, which the file never declared; got:\n%s", got)
+	}
+}
+
+func TestWarnIfRepoHooksIgnored_SilentWithoutHooks(t *testing.T) {
+	setUserHome(t, t.TempDir())
+
+	tests := []struct {
+		name     string
+		contents string
+		write    bool
+	}{
+		{name: "no repo config at all"},
+		{name: "repo config without hooks", contents: "max_trees = 4\n", write: true},
+		{name: "empty hooks table declares nothing", contents: "[hooks]\n", write: true},
+		{name: "malformed repo config", contents: "invalid toml <<<\n", write: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoDir := t.TempDir()
+			if tt.write {
+				writeRepoConfig(t, repoDir, tt.contents)
+			}
+
+			var buf bytes.Buffer
+			warnIfRepoHooksIgnored(&buf, repoDir)
+
+			if got := buf.String(); got != "" {
+				t.Errorf("expected no warning, got:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestWarnIfRepoHooksIgnored_WarnsOncePerFile(t *testing.T) {
+	repoDir := t.TempDir()
+	setUserHome(t, t.TempDir())
+	writeRepoConfig(t, repoDir, `[hooks]
+post_create = ["./scripts/setup.sh"]
+`)
+
+	var first, second bytes.Buffer
+	warnIfRepoHooksIgnored(&first, repoDir)
+	warnIfRepoHooksIgnored(&second, repoDir)
+
+	if first.Len() == 0 {
+		t.Fatal("expected the first call to warn")
+	}
+	if got := second.String(); got != "" {
+		t.Errorf("expected the repeated warning to be deduped, got:\n%s", got)
+	}
+}
+
+func TestLoad_WarnsAboutIgnoredRepoHooks(t *testing.T) {
+	repoDir := t.TempDir()
+	setUserHome(t, t.TempDir())
+	writeRepoConfig(t, repoDir, `[hooks]
+post_create = ["./scripts/setup.sh"]
+`)
+
+	stderr, err := captureStderr(t, func() error {
+		_, err := Load(repoDir)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !strings.Contains(stderr, "post_create") {
+		t.Errorf("expected Load to warn about the ignored repo hooks, got:\n%s", stderr)
+	}
+}
+
+// captureStderr redirects os.Stderr for the duration of fn and returns what was
+// written to it.
+func captureStderr(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+
+	r, w, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		t.Fatal(pipeErr)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
+	err := fn()
+
+	os.Stderr = orig
+	if closeErr := w.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	out := <-done
+	if closeErr := r.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	return out, err
 }

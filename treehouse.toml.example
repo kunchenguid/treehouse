@@ -30,9 +30,8 @@ max_trees = 16
 # opt-in from the main repository root.
 # vcs = "jj"
 
-# Lifecycle hooks are ignored in repo-level config for safety.
-# Each list runs sequentially in the worktree directory via the OS shell.
-# Failures are logged and do not fail the operation.
-# [hooks]
-# post_create = ["./scripts/setup-venv.sh"]
-# pre_destroy = ["./scripts/teardown.sh"]
+# Lifecycle hooks do NOT belong in this file. A [hooks] section here is
+# ignored for safety, so that running treehouse in an untrusted clone cannot
+# execute checked-in shell. Treehouse warns on stderr when it ignores one.
+# Put post_create and pre_destroy in ~/.config/treehouse/config.toml instead;
+# see the Hooks section of the README for the syntax.

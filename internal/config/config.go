@@ -70,9 +70,14 @@ func Load(repoRoot string) (Config, error) {
 	hasRepoConfig := false
 	if _, err := os.Stat(repoPath); err == nil {
 		hasRepoConfig = true
-		if _, err := toml.DecodeFile(repoPath, &cfg); err != nil {
+		md, err := toml.DecodeFile(repoPath, &cfg)
+		if err != nil {
 			return cfg, err
 		}
+		// Repo-level hooks are discarded so that a command run in an
+		// untrusted clone cannot execute checked-in shell. Say so, once,
+		// instead of dropping them silently.
+		warnRepoHooks(os.Stderr, repoPath, md)
 		cfg.Hooks = Hooks{}
 	}
 
@@ -108,17 +113,28 @@ func LoadGlobal() (Config, error) {
 
 func loadUser() (Config, bool, error) {
 	cfg := DefaultConfig()
-	if home, err := os.UserHomeDir(); err == nil {
-		userPath := filepath.Join(home, ".config", "treehouse", "config.toml")
-		if _, err := os.Stat(userPath); err == nil {
-			if _, err := toml.DecodeFile(userPath, &cfg); err != nil {
-				return cfg, false, err
-			}
-			return cfg, true, nil
+	userPath := userConfigPath()
+	if userPath == "" {
+		return cfg, false, nil
+	}
+	if _, err := os.Stat(userPath); err == nil {
+		if _, err := toml.DecodeFile(userPath, &cfg); err != nil {
+			return cfg, false, err
 		}
+		return cfg, true, nil
 	}
 
 	return cfg, false, nil
+}
+
+// userConfigPath returns the user-level config file path, or "" when the home
+// directory cannot be resolved.
+func userConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "treehouse", "config.toml")
 }
 
 func ResolvePoolDir(repoRoot string, root string) (string, error) {
