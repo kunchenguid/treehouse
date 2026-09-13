@@ -64,9 +64,10 @@ New pool slots are placed at {pool}/{slot}/{repo}. Pass --worktree-path, set
 TREEHOUSE_WORKTREE_PATH, or set worktree_path in treehouse.toml to template that
 directory instead, for tooling that only works when a checkout sits at a
 particular location relative to something else. The template must contain {slot}
-and at least one of {pool}, {repo}, or {repo_parent}. It applies only to slots
-treehouse creates from now on: worktrees already in the pool keep their recorded
-paths and are never moved.`,
+and at least one of {pool} or {repo}; {repo_parent} is available too but does not
+count, because two repositories side by side expand it identically. It applies
+only to slots treehouse creates from now on: worktrees already in the pool keep
+their recorded paths and are never moved.`,
 	RunE: getRunE,
 }
 

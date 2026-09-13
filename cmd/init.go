@@ -46,7 +46,7 @@ var initCmd = &cobra.Command{
 			return fmt.Errorf("failed to write config: %w", err)
 		}
 
-		if _, err := f.WriteString("\n# Where a newly created pool slot is placed.\n# Unset (default) uses {pool}/{slot}/{repo}. Placeholders: {pool}, {slot}\n# (required), {repo}, {repo_parent}; one of {pool}, {repo}, {repo_parent} is\n# required as well, to scope the template to this repository. {repo} alone can\n# still collide between two repositories whose directories share a name.\n# Worktrees already in the pool keep their recorded paths.\n# Override per-command with the --worktree-path flag or the\n# TREEHOUSE_WORKTREE_PATH env var.\n# Example: worktree_path = \"{repo_parent}/{repo}-{slot}\"\n"); err != nil {
+		if _, err := f.WriteString("\n# Where a newly created pool slot is placed.\n# Unset (default) uses {pool}/{slot}/{repo}. Placeholders: {pool}, {slot}\n# (required), {repo}, {repo_parent}; one of {pool} or {repo} is required as\n# well, to scope the template to this repository. {repo_parent} does not count:\n# two repositories side by side expand it identically. {repo} alone can still\n# collide between two repositories whose directories share a name.\n# Worktrees already in the pool keep their recorded paths.\n# Override per-command with the --worktree-path flag or the\n# TREEHOUSE_WORKTREE_PATH env var.\n# Example: worktree_path = \"{repo_parent}/{repo}-{slot}\"\n"); err != nil {
 			return fmt.Errorf("failed to write config: %w", err)
 		}
 

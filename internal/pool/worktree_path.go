@@ -26,14 +26,19 @@ var worktreePathPlaceholders = []string{
 	placeholderRepoParent,
 }
 
-// repositoryScopedPlaceholders are the placeholders that differ between
-// repositories. One is required: slot names are allocated per pool, so a
-// user-level template carrying none of these sends the first slot of every
-// repository to the same directory.
+// repositoryScopedPlaceholders are the placeholders that can tell one
+// repository's slots from another's. One is required: slot names are allocated
+// per pool, so a user-level template carrying none of these sends the first slot
+// of every repository to the same directory.
+//
+// {repo_parent} is deliberately absent. Two repositories that sit side by side
+// expand it identically, so it distinguishes nothing on its own: a user-level
+// "{repo_parent}/{slot}" would send both siblings' slot 1 to the same path, and
+// the second repository could never acquire a slot. {repo} narrows the collision
+// to repositories whose directories share a name; only {pool} rules it out.
 var repositoryScopedPlaceholders = []string{
 	placeholderPool,
 	placeholderRepo,
-	placeholderRepoParent,
 }
 
 // placeholderPattern matches every {...} group, so a misspelled placeholder is

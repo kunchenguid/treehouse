@@ -61,31 +61,31 @@ func TestGetWorktreePathFlagPlacesWorktreeBesideTheRepository(t *testing.T) {
 
 func TestGetWorktreePathFromConfigAndEnv(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
-	writeRepoConfig(t, repoDir, "worktree_path = \"{repo_parent}/from-config-{slot}\"\n")
+	writeRepoConfig(t, repoDir, "worktree_path = \"{repo_parent}/{repo}-from-config-{slot}\"\n")
 
 	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease")
 	if code != 0 {
 		t.Fatalf("get --lease failed (code %d): %s", code, stderr)
 	}
-	if want := filepath.Join(filepath.Dir(repoDir), "from-config-1"); strings.TrimSpace(stdout) != want {
+	if want := filepath.Join(filepath.Dir(repoDir), "myrepo-from-config-1"); strings.TrimSpace(stdout) != want {
 		t.Fatalf("config template gave %s, want %s", strings.TrimSpace(stdout), want)
 	}
 
-	env := []string{"TREEHOUSE_WORKTREE_PATH={repo_parent}/from-env-{slot}"}
+	env := []string{"TREEHOUSE_WORKTREE_PATH={repo_parent}/{repo}-from-env-{slot}"}
 	stdout, stderr, code = runTreehouse(t, repoDir, homeDir, env, "get", "--lease")
 	if code != 0 {
 		t.Fatalf("get --lease with TREEHOUSE_WORKTREE_PATH failed (code %d): %s", code, stderr)
 	}
-	if want := filepath.Join(filepath.Dir(repoDir), "from-env-2"); strings.TrimSpace(stdout) != want {
+	if want := filepath.Join(filepath.Dir(repoDir), "myrepo-from-env-2"); strings.TrimSpace(stdout) != want {
 		t.Fatalf("env template gave %s, want %s", strings.TrimSpace(stdout), want)
 	}
 
 	stdout, stderr, code = runTreehouse(t, repoDir, homeDir, env,
-		"get", "--lease", "--worktree-path", "{repo_parent}/from-flag-{slot}")
+		"get", "--lease", "--worktree-path", "{repo_parent}/{repo}-from-flag-{slot}")
 	if code != 0 {
 		t.Fatalf("get --lease --worktree-path failed (code %d): %s", code, stderr)
 	}
-	if want := filepath.Join(filepath.Dir(repoDir), "from-flag-3"); strings.TrimSpace(stdout) != want {
+	if want := filepath.Join(filepath.Dir(repoDir), "myrepo-from-flag-3"); strings.TrimSpace(stdout) != want {
 		t.Fatalf("flag template gave %s, want %s", strings.TrimSpace(stdout), want)
 	}
 }

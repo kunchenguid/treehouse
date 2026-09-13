@@ -181,6 +181,13 @@ func TestResolveWorktreePath_RejectedTemplates(t *testing.T) {
 			wants:    "{repo}",
 		},
 		{
+			// {repo_parent} expands identically for two repositories that sit
+			// side by side, so it scopes nothing on its own.
+			name:     "repository parent alone collides between sibling repositories",
+			template: "{repo_parent}/{slot}",
+			wants:    "must contain one of {pool} {repo}",
+		},
+		{
 			// An unset variable expands to nothing, filepath.Clean removes the
 			// empty segment, and the worktree lands one directory higher than the
 			// template names - beside the repository instead of under a subdir.
@@ -251,6 +258,42 @@ func TestResolveWorktreePath_TwoSlotsNeverShareADirectory(t *testing.T) {
 	}
 }
 
+// TestResolveWorktreePath_SiblingRepositoriesNeverShareASlotDirectory is the
+// property the repository-scoping requirement exists for. Two repositories side
+// by side share a parent directory, so a template scoped only by {repo_parent}
+// sends both their slot 1s to one path: the second repository's `get` then dies
+// on the existing directory forever, because its own pool state stays empty and
+// keeps allocating slot 1. Pairing {repo_parent} with {repo} separates them.
+func TestResolveWorktreePath_SiblingRepositoriesNeverShareASlotDirectory(t *testing.T) {
+	base := t.TempDir()
+	first := filepath.Join(base, "src", "alpha")
+	second := filepath.Join(base, "src", "beta")
+	poolDir := filepath.Join(base, "pool", "p")
+
+	unscoped := "{repo_parent}/{slot}"
+	firstPath, firstErr := resolveWorktreePath(first, poolDir, "1", unscoped)
+	secondPath, secondErr := resolveWorktreePath(second, poolDir, "1", unscoped)
+	if firstErr == nil && secondErr == nil && firstPath == secondPath {
+		t.Fatalf("both repositories resolved slot 1 to %q; a colliding template must be rejected", firstPath)
+	}
+	if firstErr == nil {
+		t.Errorf("expected %q to be rejected, resolved to %q", unscoped, firstPath)
+	}
+
+	scoped := "{repo_parent}/{repo}-{slot}"
+	firstPath, err := resolveWorktreePath(first, poolDir, "1", scoped)
+	if err != nil {
+		t.Fatalf("expected %q to stay accepted: %v", scoped, err)
+	}
+	secondPath, err = resolveWorktreePath(second, poolDir, "1", scoped)
+	if err != nil {
+		t.Fatalf("expected %q to stay accepted: %v", scoped, err)
+	}
+	if firstPath == secondPath {
+		t.Fatalf("both repositories resolved slot 1 to %q", firstPath)
+	}
+}
+
 // TestResolveWorktreePath_RejectsSwallowingTheRepositoryOrPool reaches the
 // containment checks with plain templates, by placing the pool and the
 // repository where a slot's own path lands on them.
@@ -274,8 +317,8 @@ func TestResolveWorktreePath_RejectsSwallowingTheRepositoryOrPool(t *testing.T) 
 		{
 			name:     "resolves to the repository",
 			repoRoot: filepath.Join(base, "src", "1"),
-			poolDir:  filepath.Join(base, "pool", "myrepo-abc123"),
-			template: "{repo_parent}/{slot}",
+			poolDir:  filepath.Join(base, "src", "pool"),
+			template: "{pool}/../{slot}",
 			wants:    "contains the repository",
 		},
 	}

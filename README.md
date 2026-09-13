@@ -475,7 +475,7 @@ export TREEHOUSE_WORKTREE_PATH='{repo_parent}/{repo}-{slot}'
 | `{repo_parent}` | The directory holding the repository |
 | `{pool}` | This repository's pool directory |
 
-One of `{pool}`, `{repo}`, or `{repo_parent}` is also required, because slot names are allocated per pool: a user-level `$HOME/trees/{slot}` would send the first slot of *every* repository to `$HOME/trees/1`.
+One of `{pool}` or `{repo}` is also required, because slot names are allocated per pool: a user-level `$HOME/trees/{slot}` would send the first slot of *every* repository to `$HOME/trees/1`. `{repo_parent}` does not count — two repositories side by side expand it to the same directory, so `{repo_parent}/{slot}` collides exactly the same way. It stays available as a placeholder; it just has to be paired, as in `{repo_parent}/{repo}-{slot}`.
 
 `$VAR` and `${VAR}` expand as well, exactly like `root`, and they expand *before* the placeholders are read — so `${HOME}/trees/{repo}-{slot}` works, and `${slot}` is an environment variable rather than the slot placeholder.
 A variable the environment leaves empty is an error rather than an empty path segment, because dropping a directory would place worktrees somewhere the template does not name, and differently depending on whether the invoking shell, cron job, or CI runner exports it. `${}` and a `${` with no closing brace are errors for the same reason. A value that ends in a separator is fine — path cleaning collapses the doubled separator and the worktree lands where the template names.

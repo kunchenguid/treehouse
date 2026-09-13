@@ -28,9 +28,11 @@ max_trees = 16
 # Unset (default) uses {pool}/{slot}/{repo}, unchanged from before.
 # Placeholders: {pool} (this repository's pool directory), {slot} (the slot
 # name, required), {repo} (the repository directory name), {repo_parent}
-# (the directory holding the repository). One of {pool}, {repo} or
-# {repo_parent} is required too: slot names are per pool, so a user-level
-# template without one sends slot 1 of every repository to one directory.
+# (the directory holding the repository). One of {pool} or {repo} is
+# required too: slot names are per pool, so a user-level template without one
+# sends slot 1 of every repository to one directory. {repo_parent} does not
+# count - two repositories side by side expand it identically - so pair it,
+# as in the example below.
 # $VAR and ${VAR} expand first, before the placeholders are read.
 # The path must not be inside the repository, must not contain the pool
 # directory, and inside the pool must stay at {pool}/{slot}/<name>.
