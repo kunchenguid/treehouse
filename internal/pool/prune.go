@@ -555,11 +555,6 @@ func executePrune(poolDir string, plan prunePlan, options PruneOptions) (PruneRe
 					result.Skipped = append(result.Skipped, newPruneSkipped(worktree.Name, worktree.Path, pruneSkipCleanupFailed, "could not remove worktree directory", err.Error()))
 					continue
 				}
-				if err := removeStaleJJSeedAuthentication(poolDir, state.Worktrees[idx]); err != nil {
-					clearReservation(&state.Worktrees[idx])
-					result.Skipped = append(result.Skipped, newPruneSkipped(worktree.Name, worktree.Path, pruneSkipCleanupFailed, "could not remove jj seed authentication", err.Error()))
-					continue
-				}
 			} else {
 				if err := vcs.RemoveCleanWorktree(context.RepoRoot, worktree.Path); err != nil {
 					clearReservation(&state.Worktrees[idx])

@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -815,29 +814,12 @@ func RemoveSeededPathsFromJJWorkspace(worktreePath string, paths []string) error
 	return RemoveJJSeedAuthentication(worktreePath)
 }
 
-// PrepareJJSeededCleanup hardlinks the workspace's store pointer into the
-// authentication directory beside it. Every worktree sharing that parent shares
-// the directory while taking its own pool lock, so another pool can delete it
-// the moment its own last entry goes. A link that fails because the directory
-// is gone is therefore retried once against a freshly created one.
 func PrepareJJSeededCleanup(worktreePath string) error {
 	authPath := jjSeedAuthenticationPath(worktreePath)
-	markerPath := filepath.Join(worktreePath, ".jj", "repo")
-	err := linkJJSeedAuthentication(markerPath, authPath)
-	if err != nil && errors.Is(err, os.ErrNotExist) {
-		err = linkJJSeedAuthentication(markerPath, authPath)
-	}
-	return err
-}
-
-var jjAuthenticationDirPrepared = func(string) {}
-
-func linkJJSeedAuthentication(markerPath, authPath string) error {
-	authDir := filepath.Dir(authPath)
-	if err := os.MkdirAll(authDir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
 		return fmt.Errorf("creating jj seed authentication directory: %w", err)
 	}
-	jjAuthenticationDirPrepared(authDir)
+	markerPath := filepath.Join(worktreePath, ".jj", "repo")
 	if err := os.Link(markerPath, authPath); err != nil {
 		marker, markerErr := os.Stat(markerPath)
 		auth, authErr := os.Stat(authPath)
@@ -902,7 +884,6 @@ func quarantineAndRemoveJJAuthentication(authPath string, verify func(string) bo
 	quarantinePath := filepath.Join(filepath.Dir(authPath), ".quarantine-"+hex.EncodeToString(nonce[:]))
 	if err := os.Rename(authPath, quarantinePath); err != nil {
 		if os.IsNotExist(err) {
-			removeEmptyJJAuthenticationDir(filepath.Dir(authPath))
 			return nil
 		}
 		return err
@@ -914,23 +895,7 @@ func quarantineAndRemoveJJAuthentication(authPath string, verify func(string) bo
 		}
 		return fmt.Errorf("refusing to remove unowned jj seed authentication %s", authPath)
 	}
-	if err := os.Remove(quarantinePath); err != nil {
-		return err
-	}
-	removeEmptyJJAuthenticationDir(filepath.Dir(authPath))
-	return nil
-}
-
-// removeEmptyJJAuthenticationDir drops the authentication directory once its
-// last entry is gone. Every worktree beside it shares the directory, so a
-// non-empty one is left alone; os.Remove refuses it. A path that is not a real
-// directory is left alone too, so a symlink planted there is never unlinked.
-func removeEmptyJJAuthenticationDir(dir string) {
-	info, err := os.Lstat(dir)
-	if err != nil || !info.IsDir() {
-		return
-	}
-	_ = os.Remove(dir)
+	return os.Remove(quarantinePath)
 }
 
 func jjSeedAuthenticationPath(worktreePath string) string {

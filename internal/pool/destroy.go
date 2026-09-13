@@ -505,7 +505,7 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 				}
 			}
 
-			if err := removeManagedWorktree(poolDir, repoRoot, currentEntry); err != nil {
+			if err := removeManagedWorktree(poolDir, repoRoot, path); err != nil {
 				restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
 				current.Detail = err.Error()
 				skips = append(skips, DestroySkip{Target: current})
@@ -557,8 +557,7 @@ func restoreOriginalOwnerReservation(wt *WorktreeEntry, reservation destroyReser
 // when worktree_path placed it elsewhere. git removal uses --force because
 // destroy deliberately removes dirty, unmerged, or unverified worktrees once the
 // caller has opted in.
-func removeManagedWorktree(poolDir, repoRoot string, wt WorktreeEntry) error {
-	path := wt.Path
+func removeManagedWorktree(poolDir, repoRoot, path string) error {
 	orphaned, _ := backingRepositoryMissing(path)
 	// A markerless slot (directory present, .git/.jj marker gone) has no live
 	// VCS registration either backend will deregister - git refuses to remove
@@ -572,8 +571,7 @@ func removeManagedWorktree(poolDir, repoRoot string, wt WorktreeEntry) error {
 			markerless = vcs.WorktreeBackendName(path) == ""
 		}
 	}
-	plainDirectory := orphaned || markerless
-	if !plainDirectory {
+	if !orphaned && !markerless {
 		removeRepoRoot := repoRoot
 		if removeRepoRoot == "" {
 			resolvedRoot, err := vcs.FindMainRepoRootFrom(path)
@@ -592,11 +590,6 @@ func removeManagedWorktree(poolDir, repoRoot string, wt WorktreeEntry) error {
 	}
 	if err := os.RemoveAll(container); err != nil {
 		return fmt.Errorf("could not remove worktree directory: %w", err)
-	}
-	if plainDirectory {
-		if err := removeStaleJJSeedAuthentication(poolDir, wt); err != nil {
-			return fmt.Errorf("could not remove jj seed authentication: %w", err)
-		}
 	}
 	return nil
 }
