@@ -172,6 +172,7 @@ func branchRef(repoRoot, branch string) string {
 // persist the expression as the slot's recorded base. HEAD is rejected by name
 // because git clone writes refs/remotes/origin/HEAD. An unreadable repository
 // reports every branch as missing, which fails closed.
+//
 // CheckedOutBranch reports the branch a worktree currently has checked out.
 // A detached HEAD returns an empty string with no error: that is the honest
 // answer, and `git describe`-style guessing would name a tag or a commit that
