@@ -1,4 +1,3 @@
-
 // marker_dangling_test.go — Greptile P1 (PR #134).
 //
 // NEDEN: WorktreeBackendNameChecked os.Stat kullaniyordu. os.Stat symlink'i
