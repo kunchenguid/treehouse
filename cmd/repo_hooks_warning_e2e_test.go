@@ -79,6 +79,48 @@ func TestDestroyWarnsAboutIgnoredRepoHooks(t *testing.T) {
 	}
 }
 
+func TestDestroyWarnsForTargetRepositoryOutsideIt(t *testing.T) {
+	tests := []struct {
+		name          string
+		configuredCwd bool
+	}{
+		{name: "from non-repository directory"},
+		{name: "from another configured repository", configuredCwd: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			targetRepo, homeDir := setupTestRepo(t)
+			stdout, stderr, code := runTreehouse(t, targetRepo, homeDir, nil, "get", "--lease")
+			if code != 0 {
+				t.Fatalf("get --lease failed (code %d): %s", code, stderr)
+			}
+			wtPath := strings.TrimSpace(stdout)
+			writeRepoHooksConfig(t, targetRepo)
+
+			workDir := t.TempDir()
+			otherConfig := ""
+			if tt.configuredCwd {
+				workDir = setupTestRepoWithHome(t, homeDir, "otherrepo")
+				writeRepoHooksConfig(t, workDir)
+				otherConfig = filepath.Join(workDir, "treehouse.toml")
+			}
+
+			_, stderr, code = runTreehouseFromDir(t, targetRepo, workDir, homeDir, nil, "destroy", wtPath)
+			if code != 0 {
+				t.Fatalf("destroy dry run failed (code %d): %s", code, stderr)
+			}
+			targetConfig := filepath.Join(targetRepo, "treehouse.toml")
+			if !strings.Contains(stderr, targetConfig) {
+				t.Errorf("warning does not name target config %q; got stderr:\n%s", targetConfig, stderr)
+			}
+			if otherConfig != "" && strings.Contains(stderr, otherConfig) {
+				t.Errorf("warning incorrectly names current repository config %q; got stderr:\n%s", otherConfig, stderr)
+			}
+		})
+	}
+}
+
 func TestDestroySurvivesUnparsableRepoConfig(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 

@@ -75,7 +75,37 @@ func destroyRunE(cmd *cobra.Command, args []string) error {
 		return errors.New("--include-leased cannot be combined with --all; name the exact worktree path instead (leased worktrees are never removed in bulk)")
 	}
 
-	preDestroy, err := destroyPreDestroyHooks()
+	var poolDir, wtPath, targetPath string
+	if destroyAll {
+		if len(args) == 0 {
+			return errors.New("--all requires a pool path; name the pool to clear, e.g. 'treehouse destroy . --all'")
+		}
+		var err error
+		targetPath, err = filepath.Abs(args[0])
+		if err != nil {
+			return err
+		}
+		poolDir, err = resolveDestroyPoolFromTarget(targetPath)
+		if err != nil {
+			return err
+		}
+	} else {
+		if len(args) == 0 {
+			return errors.New("specify a worktree path to destroy, or a pool path with --all")
+		}
+		var err error
+		wtPath, err = filepath.Abs(args[0])
+		if err != nil {
+			return err
+		}
+		poolDir, err = resolveDestroyPoolFromWorktree(wtPath)
+		if err != nil {
+			return err
+		}
+		targetPath = wtPath
+	}
+
+	preDestroy, err := destroyPreDestroyHooks(resolveDestroyRepoRoot(poolDir, targetPath))
 	if err != nil {
 		return err
 	}
@@ -89,13 +119,6 @@ func destroyRunE(cmd *cobra.Command, args []string) error {
 	}
 
 	if destroyAll {
-		if len(args) == 0 {
-			return errors.New("--all requires a pool path; name the pool to clear, e.g. 'treehouse destroy . --all'")
-		}
-		poolDir, err := resolveDestroyPoolFromTarget(args[0])
-		if err != nil {
-			return err
-		}
 		result, err := pool.DestroyPool(poolDir, opts)
 		if err != nil {
 			return err
@@ -104,18 +127,6 @@ func destroyRunE(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if len(args) == 0 {
-		return errors.New("specify a worktree path to destroy, or a pool path with --all")
-	}
-
-	wtPath, err := filepath.Abs(args[0])
-	if err != nil {
-		return err
-	}
-	poolDir, err := resolveDestroyPoolFromWorktree(wtPath)
-	if err != nil {
-		return err
-	}
 	result, err := pool.DestroyWorktree(poolDir, wtPath, opts)
 	if err != nil {
 		return err
@@ -127,13 +138,8 @@ func destroyRunE(cmd *cobra.Command, args []string) error {
 // destroyPreDestroyHooks returns the user-level pre_destroy hooks. Destroy can
 // target a pool in another repository, and pre_destroy hooks are user-level
 // only, so it always loads them globally.
-func destroyPreDestroyHooks() ([]string, error) {
-	// Destroy resolves a pool by path and never loads repo-level config, so
-	// the ignored-hooks warning config.Load emits would stay silent for the
-	// one command a user is most likely to run when a pre_destroy hook
-	// appears not to fire. Warn here too, best-effort: no repository, or a
-	// repo config that no longer parses, must never fail a destroy.
-	if repoRoot, err := vcs.FindMainRepoRoot(); err == nil {
+func destroyPreDestroyHooks(repoRoot string) ([]string, error) {
+	if repoRoot != "" {
 		config.WarnIfRepoHooksIgnored(repoRoot)
 	}
 
@@ -142,6 +148,21 @@ func destroyPreDestroyHooks() ([]string, error) {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 	return cfg.Hooks.PreDestroy, nil
+}
+
+func resolveDestroyRepoRoot(poolDir, targetPath string) string {
+	state, err := pool.ReadState(poolDir)
+	if err == nil {
+		for _, wt := range state.Worktrees {
+			if repoRoot, err := vcs.FindMainRepoRootFrom(wt.Path); err == nil {
+				return repoRoot
+			}
+		}
+	}
+	if repoRoot, err := vcs.FindMainRepoRootFrom(targetPath); err == nil {
+		return repoRoot
+	}
+	return ""
 }
 
 // resolveDestroyPoolFromWorktree resolves the managed pool that owns a single
