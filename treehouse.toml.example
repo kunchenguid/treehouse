@@ -32,6 +32,6 @@ max_trees = 16
 
 # Lifecycle hooks do NOT belong in this file. A [hooks] section here is
 # ignored for safety, so that running treehouse in an untrusted clone cannot
-# execute checked-in shell. Treehouse warns on stderr when it ignores one.
+# execute checked-in shell. Treehouse warns on stderr when it ignores hook keys.
 # Put post_create and pre_destroy in ~/.config/treehouse/config.toml instead;
 # see the Hooks section of the README for the syntax.
