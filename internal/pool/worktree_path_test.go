@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,13 @@ import (
 
 	"github.com/kunchenguid/treehouse/internal/vcs/gitvcs"
 )
+
+// quotedPath renders a path the way the errors below name it. The messages quote
+// paths with %q, which escapes the Windows separator, so a raw path is not a
+// substring of the message that names it.
+func quotedPath(path string) string {
+	return fmt.Sprintf("%q", path)
+}
 
 // synthPaths returns a repository and pool directory that do not overlap.
 // Neither has to exist, but the t.TempDir() base does: the resolver judges a
@@ -443,7 +451,13 @@ func TestResolveWorktreePath_InPoolPathMustBeSpelledThroughThePool(t *testing.T)
 // consumes one of its slots for good and leaves the owning repository unable to
 // return its own worktree.
 func TestResolveWorktreePath_RejectsAnotherPoolsDirectory(t *testing.T) {
-	base := t.TempDir()
+	// The foreign pool is discovered on disk, so the error names its canonical
+	// path. t.TempDir() is not canonical everywhere (a Windows 8.3 short name,
+	// macOS /tmp -> /private/tmp), so canonicalize before deriving from it.
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	repoRoot := filepath.Join(base, "src", "beta")
 	poolDir := filepath.Join(base, "pool", "beta-abc123")
 	foreignPool := filepath.Join(base, "pool", "alpha-def456")
@@ -459,7 +473,7 @@ func TestResolveWorktreePath_RejectsAnotherPoolsDirectory(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected %q to be rejected, resolved to %q", template, got)
 	}
-	if !strings.Contains(err.Error(), foreignPool) || !strings.Contains(err.Error(), "another repository") {
+	if !strings.Contains(err.Error(), quotedPath(foreignPool)) || !strings.Contains(err.Error(), "another repository") {
 		t.Errorf("error %q does not name the foreign pool as the problem", err)
 	}
 }
@@ -503,7 +517,7 @@ func TestAcquire_WorktreePathRefusesAnExistingDirectory(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an acquisition onto an existing directory to fail")
 	}
-	if !strings.Contains(err.Error(), occupied) {
+	if !strings.Contains(err.Error(), quotedPath(occupied)) {
 		t.Errorf("error %q does not name the occupied path", err)
 	}
 
