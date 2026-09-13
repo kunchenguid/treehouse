@@ -122,7 +122,7 @@ var statusCmd = &cobra.Command{
 			}
 			if wt.Status == pool.StatusDamaged {
 				if wt.LeaseHolder != "" {
-					line += yellow(fmt.Sprintf("  (marker unreadable — 'treehouse destroy %s --include-leased --yes' to remove)", ui.PrettyPath(wt.Path)))
+					line += yellow(fmt.Sprintf("  (marker unreadable — 'treehouse destroy %s --include-leased --include-unlanded --yes' to remove)", ui.PrettyPath(wt.Path)))
 				} else {
 					line += yellow(fmt.Sprintf("  (no .git or .jj marker — 'treehouse destroy %s --include-unlanded' to remove)", ui.PrettyPath(wt.Path)))
 				}
