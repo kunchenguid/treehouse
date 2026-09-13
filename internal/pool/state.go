@@ -362,7 +362,12 @@ func recoverCorruptState(poolDir string, parseErr error) (State, error) {
 			wtPath := filepath.Join(slotDir, n.Name())
 			flavor, err := vcs.WorktreeBackendNameChecked(wtPath)
 			if err != nil {
-				return State{}, fmt.Errorf("state file %s is corrupt or truncated (%v), and recovery could not inspect %s: %w", stateFilePath(poolDir), parseErr, wtPath, err)
+				// Keep the slot in the recovered state even when its marker
+				// cannot be resolved. Status can then report the per-slot
+				// branch error, while the conservative recovered lease keeps
+				// it out of acquire/prune until an operator inspects it.
+				fmt.Fprintf(os.Stderr, "treehouse: WARNING: could not inspect recovered worktree %s (%v); it is quarantined as leased.\n", wtPath, err)
+				flavor = "unknown"
 			}
 			if flavor == "" {
 				continue
