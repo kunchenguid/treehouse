@@ -3660,6 +3660,44 @@ func TestList_MarkerlessSlotDoesNotInheritEnclosingBranch(t *testing.T) {
 	}
 }
 
+// TestList_UnreadableMarkerReportsBranchError pins the P1-2 boundary at the
+// status surface: a damaged slot whose marker exists but cannot be read is a
+// genuine read failure, reported as `branch_error`, never mistaken for a
+// markerless slot. A self-referential symlink forces the stat failure
+// deterministically, independently of the running user's privileges.
+func TestList_UnreadableMarkerReportsBranchError(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 2, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	clearOwnerReservation(t, poolDir, wtPath)
+	if err := os.RemoveAll(filepath.Join(wtPath, ".git")); err != nil {
+		t.Fatalf("removing the slot marker: %v", err)
+	}
+	if err := os.Symlink(".git", filepath.Join(wtPath, ".git")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected one worktree, got %+v", statuses)
+	}
+	if statuses[0].Status != StatusDamaged {
+		t.Fatalf("expected status %q, got %q", StatusDamaged, statuses[0].Status)
+	}
+	if statuses[0].Branch != "" || statuses[0].Detached {
+		t.Fatalf("unreadable-marker slot must not report a branch or detached, got branch %q detached=%v", statuses[0].Branch, statuses[0].Detached)
+	}
+	if statuses[0].BranchErr == "" {
+		t.Fatal("unreadable marker must report a branch error, not collapse into the markerless empty answer")
+	}
+}
+
 // TestList_ReportsBranchAndDetached pins the healthy cases: a detached slot
 // (what `treehouse get` leaves) is reported detached with no branch error, and
 // a slot on a branch reports that branch. Neither may be misclassified.

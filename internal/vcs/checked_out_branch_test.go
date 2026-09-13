@@ -120,3 +120,30 @@ func TestCheckedOutBranchJJSlotReportsNothing(t *testing.T) {
 		t.Fatalf("jj slot: got branch %q detached=%v, want empty and not detached", branch, detached)
 	}
 }
+
+// A .git marker that exists but cannot be read is a genuine read failure, not a
+// markerless slot: CheckedOutBranch must surface it as an error instead of
+// collapsing into the empty markerless answer. A self-referential symlink
+// forces a stat error deterministically (no permissions involved), unlike the
+// working-directory permissions a broken real marker would need.
+func TestCheckedOutBranchUnreadableMarkerIsAnError(t *testing.T) {
+	isolateUserConfig(t)
+	slot := filepath.Join(t.TempDir(), "slot")
+	if err := os.MkdirAll(slot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".git", filepath.Join(slot, ".git")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	branch, detached, err := CheckedOutBranch(slot)
+	if err == nil {
+		t.Fatalf("unreadable git marker must be a read error, got branch %q detached=%v", branch, detached)
+	}
+	if branch != "" {
+		t.Fatalf("failed read must not invent a branch, got %q", branch)
+	}
+	if detached {
+		t.Fatalf("failed read must not be reported as detached")
+	}
+}

@@ -290,9 +290,15 @@ func GetRemoteURL(repoRoot string) (string, error) {
 //
 // Only a slot whose OWN marker names git is read. A markerless (damaged) slot
 // is never touched, so the branch of a repository enclosing the pool can never
-// be inherited and reported as the slot's.
+// be inherited and reported as the slot's. A marker that exists but cannot be
+// read is a genuine read failure, not a markerless slot, so that error is
+// propagated rather than discarded.
 func CheckedOutBranch(worktreePath string) (branch string, detached bool, err error) {
-	switch WorktreeBackendName(worktreePath) {
+	name, err := WorktreeBackendNameChecked(worktreePath)
+	if err != nil {
+		return "", false, err
+	}
+	switch name {
 	case "git":
 		branch, err := gitvcs.CheckedOutBranch(worktreePath)
 		if err != nil {
