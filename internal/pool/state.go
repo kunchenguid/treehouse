@@ -308,7 +308,11 @@ func recoverMissingStateEntries(poolDir string, s State) (State, error) {
 			}
 			flavor, err := vcs.WorktreeBackendNameChecked(wtPath)
 			if err != nil {
-				return State{}, fmt.Errorf("inspecting untracked pool worktree %s: %w", wtPath, err)
+				// Preserve the slot in the recovered state even when its marker
+				// cannot be resolved. It must remain quarantined rather than
+				// making status and other state-loading commands fail outright.
+				fmt.Fprintf(os.Stderr, "treehouse: WARNING: could not inspect untracked worktree %s (%v); it is quarantined as leased.\n", wtPath, err)
+				flavor = "unknown"
 			}
 			if flavor == "" {
 				continue
