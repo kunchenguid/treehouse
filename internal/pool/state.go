@@ -54,6 +54,15 @@ type WorktreeEntry struct {
 	SeedInventoryDigest string `json:"seed_inventory_digest,omitempty"`
 	SeedBackend         string `json:"seed_backend,omitempty"`
 	SeedAuthIdentity    string `json:"seed_auth_identity,omitempty"`
+	// RecoveryError records why this entry could not be recovered from disk
+	// during a state-file recovery scan: its .git/.jj marker exists but could
+	// not be resolved (a dangling or self-referential symlink, a permission
+	// failure). The entry is otherwise a normal recovered entry - leased so
+	// Acquire and prune skip it and destroy removes it only via an explicit
+	// --include-leased target - but List reports it as damaged with this
+	// reason, so a skipped slot is visible and never reads as available or an
+	// ordinarily leased home.
+	RecoveryError string `json:"recovery_error,omitempty"`
 }
 
 func newLeaseID() (string, error) {
@@ -306,34 +315,70 @@ func recoverMissingStateEntries(poolDir string, s State) (State, error) {
 			if known[filepath.Clean(wtPath)] {
 				continue
 			}
-			flavor, err := vcs.WorktreeBackendNameChecked(wtPath)
-			if err != nil {
-				// Preserve the slot in the recovered state even when its marker
-				// cannot be resolved. It must remain quarantined rather than
-				// making status and other state-loading commands fail outright.
-				fmt.Fprintf(os.Stderr, "treehouse: WARNING: could not inspect untracked worktree %s (%v); it is quarantined as leased.\n", wtPath, err)
-				flavor = "unknown"
+			if wt, ok := recoverOneWorktree(slot.Name(), wtPath); ok {
+				s.Worktrees = append(s.Worktrees, wt)
 			}
-			if flavor == "" {
-				continue
-			}
-			now := time.Now()
-			s.Worktrees = append(s.Worktrees, WorktreeEntry{
-				Name:        slot.Name(),
-				Path:        wtPath,
-				CreatedAt:   now,
-				Leased:      true,
-				LeaseHolder: recoveredLeaseHolder,
-				LeasedAt:    now,
-			})
 		}
 	}
 	return s, nil
 }
 
-// recoveredLeaseHolder marks a WorktreeEntry reconstructed by recoverCorruptState
-// so callers (status output, destroy) can explain why it is unexpectedly leased.
+// recoveredLeaseHolder marks a WorktreeEntry reconstructed by either recovery
+// scan (recoverMissingStateEntries or recoverCorruptState) so callers (status
+// output, destroy) can explain why it is unexpectedly leased.
 const recoveredLeaseHolder = "recovered: state file was corrupt or truncated; verify before reuse"
+
+// quarantineEntry builds the conservative entry both recovery scans write for a
+// worktree whose reservation state was lost. It is leased under
+// recoveredLeaseHolder, so Acquire and prune skip it and destroy removes it only
+// via an explicit single-target --include-leased. recoveryError is empty for a
+// worktree whose marker resolved normally, and non-empty for one whose marker
+// exists but could not be read.
+func quarantineEntry(slotName, wtPath, recoveryError string) WorktreeEntry {
+	now := time.Now()
+	return WorktreeEntry{
+		Name:          slotName,
+		Path:          wtPath,
+		CreatedAt:     now,
+		Leased:        true,
+		LeaseHolder:   recoveredLeaseHolder,
+		LeasedAt:      now,
+		RecoveryError: recoveryError,
+	}
+}
+
+// recoverOneWorktree resolves one on-disk worktree directory into a
+// conservative quarantine entry, or reports that the directory is not a
+// worktree at all. It is the single place both recovery scans decide what an
+// unreadable marker means, so the two paths can never again treat the same
+// condition differently - the asymmetry Greptile flagged was exactly that.
+//
+// Three outcomes:
+//   - no VCS marker at all: not a pooled worktree; skip it (ok == false).
+//   - marker readable ("git"/"jj"): recovered as a leased, quarantined entry.
+//   - marker present but unreadable (a dangling or self-referential symlink, a
+//     permission or loop error): recovered too, as a leased entry carrying the
+//     read error. It stays unusable - Acquire and prune skip it exactly like
+//     every other recovered entry - but visible: List reports it damaged with
+//     the recorded reason, and a warning is printed so the failure is not
+//     silent.
+//
+// Only an os.ReadDir failure is fatal, and that stays in the callers: it means
+// the pool (or a slot) directory cannot be scanned at all, so there is no entry
+// to recover and no way to know which healthy slots exist. A single unreadable
+// marker is a per-slot problem and must not hide the healthy slots around it,
+// which is why it is recovered here rather than surfaced as an error.
+func recoverOneWorktree(slotName, wtPath string) (WorktreeEntry, bool) {
+	flavor, err := vcs.WorktreeBackendNameChecked(wtPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "treehouse: WARNING: cannot read the VCS marker for %s (%v); recovered as leased and reported damaged - see `treehouse status`\n", wtPath, err)
+		return quarantineEntry(slotName, wtPath, err.Error()), true
+	}
+	if flavor == "" {
+		return WorktreeEntry{}, false
+	}
+	return quarantineEntry(slotName, wtPath, ""), true
+}
 
 // recoverCorruptState rebuilds a State from the worktree directories that exist
 // under poolDir when the on-disk state file could not be parsed. The original
@@ -364,27 +409,9 @@ func recoverCorruptState(poolDir string, parseErr error) (State, error) {
 				continue
 			}
 			wtPath := filepath.Join(slotDir, n.Name())
-			flavor, err := vcs.WorktreeBackendNameChecked(wtPath)
-			if err != nil {
-				// Keep the slot in the recovered state even when its marker
-				// cannot be resolved. Status can then report the per-slot
-				// branch error, while the conservative recovered lease keeps
-				// it out of acquire/prune until an operator inspects it.
-				fmt.Fprintf(os.Stderr, "treehouse: WARNING: could not inspect recovered worktree %s (%v); it is quarantined as leased.\n", wtPath, err)
-				flavor = "unknown"
+			if wt, ok := recoverOneWorktree(slot.Name(), wtPath); ok {
+				recovered = append(recovered, wt)
 			}
-			if flavor == "" {
-				continue
-			}
-			now := time.Now()
-			recovered = append(recovered, WorktreeEntry{
-				Name:        slot.Name(),
-				Path:        wtPath,
-				CreatedAt:   now,
-				Leased:      true,
-				LeaseHolder: recoveredLeaseHolder,
-				LeasedAt:    now,
-			})
 		}
 	}
 	fmt.Fprintf(os.Stderr, "treehouse: WARNING: state file %s is corrupt or truncated (%v); recovering from worktrees found on disk. They are marked leased because their seeded-file inventory is unknown - see `treehouse status`, then remove one with `treehouse destroy <path> --include-leased --yes`.\n", stateFilePath(poolDir), parseErr)

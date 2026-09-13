@@ -875,6 +875,17 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 				ws.Status = StatusDirty
 			}
 
+			// A slot the recovery scan could not inspect (its marker exists but
+			// could not be read) is reported damaged rather than leased, so the
+			// read failure is never mistaken for an available or ordinarily leased
+			// home. It remains leased underneath (LeaseHolder is already set
+			// above), so Acquire and prune keep skipping it exactly like every
+			// other recovered entry.
+			if wt.RecoveryError != "" {
+				ws.Status = StatusDamaged
+				ws.BranchErr = wt.RecoveryError
+			}
+
 			result = append(result, ws)
 		}
 		return nil
