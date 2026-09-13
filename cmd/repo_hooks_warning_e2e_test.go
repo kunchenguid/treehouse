@@ -30,6 +30,54 @@ func assertWarnsAboutIgnoredHooks(t *testing.T, stderr string) {
 	}
 }
 
+func ignoredHooksWarningPaths(stderr string) []string {
+	const prefix = "ignoring [hooks] in "
+	var paths []string
+	for _, line := range strings.Split(stderr, "\n") {
+		start := strings.Index(line, prefix)
+		if start < 0 {
+			continue
+		}
+		rest := line[start+len(prefix):]
+		end := strings.LastIndex(rest, ": ")
+		if end >= 0 {
+			paths = append(paths, rest[:end])
+		}
+	}
+	return paths
+}
+
+func assertWarningPathsReferTo(t *testing.T, stderr string, expected ...string) {
+	t.Helper()
+	actual := ignoredHooksWarningPaths(stderr)
+	if len(actual) != len(expected) {
+		t.Fatalf("expected %d ignored-hooks warning paths, got %d in stderr:\n%s", len(expected), len(actual), stderr)
+	}
+
+	matched := make([]bool, len(actual))
+	for _, expectedPath := range expected {
+		expectedInfo, err := os.Stat(expectedPath)
+		if err != nil {
+			t.Fatalf("stat expected warning path %q: %v", expectedPath, err)
+		}
+		found := false
+		for i, actualPath := range actual {
+			if matched[i] {
+				continue
+			}
+			actualInfo, err := os.Stat(actualPath)
+			if err == nil && os.SameFile(expectedInfo, actualInfo) {
+				matched[i] = true
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("warning does not name config %q; got stderr:\n%s", expectedPath, stderr)
+		}
+	}
+}
+
 func TestGetLeaseWarnsAboutIgnoredRepoHooksOnStderrOnly(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	writeRepoHooksConfig(t, repoDir)
@@ -99,11 +147,9 @@ func TestDestroyWarnsForTargetRepositoryOutsideIt(t *testing.T) {
 			writeRepoHooksConfig(t, targetRepo)
 
 			workDir := t.TempDir()
-			otherConfig := ""
 			if tt.configuredCwd {
 				workDir = setupTestRepoWithHome(t, homeDir, "otherrepo")
 				writeRepoHooksConfig(t, workDir)
-				otherConfig = filepath.Join(workDir, "treehouse.toml")
 			}
 
 			_, stderr, code = runTreehouseFromDir(t, targetRepo, workDir, homeDir, nil, "destroy", wtPath)
@@ -111,12 +157,7 @@ func TestDestroyWarnsForTargetRepositoryOutsideIt(t *testing.T) {
 				t.Fatalf("destroy dry run failed (code %d): %s", code, stderr)
 			}
 			targetConfig := filepath.Join(targetRepo, "treehouse.toml")
-			if !strings.Contains(stderr, targetConfig) {
-				t.Errorf("warning does not name target config %q; got stderr:\n%s", targetConfig, stderr)
-			}
-			if otherConfig != "" && strings.Contains(stderr, otherConfig) {
-				t.Errorf("warning incorrectly names current repository config %q; got stderr:\n%s", otherConfig, stderr)
-			}
+			assertWarningPathsReferTo(t, stderr, targetConfig)
 		})
 	}
 }
@@ -163,14 +204,8 @@ func TestDestroyWarnsForCorrectRepositoryInSharedPool(t *testing.T) {
 				t.Fatalf("destroy dry run failed (code %d): %s", code, stderr)
 			}
 			targetConfig := filepath.Join(repoB, "treehouse.toml")
-			otherConfig := filepath.Join(repoA, "treehouse.toml")
-			if !strings.Contains(stderr, targetConfig) {
-				t.Errorf("warning does not name target config %q; got stderr:\n%s", targetConfig, stderr)
-			}
-			if strings.Contains(stderr, otherConfig) {
-				t.Errorf("warning incorrectly names other clone config %q; got stderr:\n%s", otherConfig, stderr)
-			}
-			if strings.Contains(stdout, targetConfig) {
+			assertWarningPathsReferTo(t, stderr, targetConfig)
+			if len(ignoredHooksWarningPaths(stdout)) != 0 {
 				t.Errorf("warning polluted stdout:\n%s", stdout)
 			}
 		})
@@ -204,12 +239,10 @@ func TestDestroyAllWarnsOnceForEachRepositoryInLockedTargetSet(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("destroy dry run failed (code %d): %s", code, stderr)
 	}
-	for _, repoDir := range []string{repoA, repoB} {
-		configPath := filepath.Join(repoDir, "treehouse.toml")
-		if got := strings.Count(stderr, configPath); got != 1 {
-			t.Errorf("expected one warning naming %q, got %d in stderr:\n%s", configPath, got, stderr)
-		}
-	}
+	assertWarningPathsReferTo(t, stderr,
+		filepath.Join(repoA, "treehouse.toml"),
+		filepath.Join(repoB, "treehouse.toml"),
+	)
 }
 
 func TestDestroySurvivesUnparsableRepoConfig(t *testing.T) {
