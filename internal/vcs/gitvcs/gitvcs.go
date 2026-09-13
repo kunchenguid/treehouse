@@ -163,16 +163,6 @@ func branchRef(repoRoot, branch string) string {
 	}
 }
 
-// BranchExists reports whether branch names refs/heads/<branch> or
-// refs/remotes/origin/<branch>, the two refs branchRef chooses between.
-//
-// It looks the refs up EXACTLY rather than through rev-parse --verify, which
-// resolves revision expressions: refs/heads/<b>^, ~3 and @{0} all verify under
-// rev-parse, so the prefixes alone would accept a pinned commit as a base and
-// persist the expression as the slot's recorded base. HEAD is rejected by name
-// because git clone writes refs/remotes/origin/HEAD. An unreadable repository
-// reports every branch as missing, which fails closed.
-//
 // CheckedOutBranch reports the branch a worktree currently has checked out.
 // A detached HEAD returns an empty string with no error: that is the honest
 // answer, and `git describe`-style guessing would name a tag or a commit that
@@ -198,6 +188,15 @@ func CheckedOutBranch(worktreePath string) (string, error) {
 	return "", err
 }
 
+// BranchExists reports whether branch names refs/heads/<branch> or
+// refs/remotes/origin/<branch>, the two refs branchRef chooses between.
+//
+// It looks the refs up EXACTLY rather than through rev-parse --verify, which
+// resolves revision expressions: refs/heads/<b>^, ~3 and @{0} all verify under
+// rev-parse, so the prefixes alone would accept a pinned commit as a base and
+// persist the expression as the slot's recorded base. HEAD is rejected by name
+// because git clone writes refs/remotes/origin/HEAD. An unreadable repository
+// reports every branch as missing, which fails closed.
 func BranchExists(repoRoot, branch string) bool {
 	if branch == "" || branch == "HEAD" {
 		return false
