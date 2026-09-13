@@ -105,7 +105,7 @@ func destroyRunE(cmd *cobra.Command, args []string) error {
 		targetPath = wtPath
 	}
 
-	preDestroy, err := destroyPreDestroyHooks(resolveDestroyRepoRoot(poolDir, targetPath))
+	preDestroy, err := destroyPreDestroyHooks(resolveDestroyRepoRoots(poolDir, targetPath, destroyAll))
 	if err != nil {
 		return err
 	}
@@ -138,8 +138,8 @@ func destroyRunE(cmd *cobra.Command, args []string) error {
 // destroyPreDestroyHooks returns the user-level pre_destroy hooks. Destroy can
 // target a pool in another repository, and pre_destroy hooks are user-level
 // only, so it always loads them globally.
-func destroyPreDestroyHooks(repoRoot string) ([]string, error) {
-	if repoRoot != "" {
+func destroyPreDestroyHooks(repoRoots []string) ([]string, error) {
+	for _, repoRoot := range repoRoots {
 		config.WarnIfRepoHooksIgnored(repoRoot)
 	}
 
@@ -150,19 +150,32 @@ func destroyPreDestroyHooks(repoRoot string) ([]string, error) {
 	return cfg.Hooks.PreDestroy, nil
 }
 
-func resolveDestroyRepoRoot(poolDir, targetPath string) string {
-	state, err := pool.ReadState(poolDir)
-	if err == nil {
-		for _, wt := range state.Worktrees {
-			if repoRoot, err := vcs.FindMainRepoRootFrom(wt.Path); err == nil {
-				return repoRoot
-			}
+func resolveDestroyRepoRoots(poolDir, targetPath string, all bool) []string {
+	if !all {
+		if repoRoot, err := vcs.FindMainRepoRootFrom(targetPath); err == nil {
+			return []string{repoRoot}
 		}
+		return nil
 	}
-	if repoRoot, err := vcs.FindMainRepoRootFrom(targetPath); err == nil {
-		return repoRoot
+
+	state, err := pool.ReadState(poolDir)
+	if err != nil {
+		return nil
 	}
-	return ""
+	seen := make(map[string]struct{})
+	var repoRoots []string
+	for _, wt := range state.Worktrees {
+		repoRoot, err := vcs.FindMainRepoRootFrom(wt.Path)
+		if err != nil {
+			continue
+		}
+		if _, ok := seen[repoRoot]; ok {
+			continue
+		}
+		seen[repoRoot] = struct{}{}
+		repoRoots = append(repoRoots, repoRoot)
+	}
+	return repoRoots
 }
 
 // resolveDestroyPoolFromWorktree resolves the managed pool that owns a single

@@ -121,6 +121,62 @@ func TestDestroyWarnsForTargetRepositoryOutsideIt(t *testing.T) {
 	}
 }
 
+func TestDestroyWarnsForCorrectRepositoryInSharedPool(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		all  bool
+	}{
+		{name: "single worktree"},
+		{name: "bulk pool", all: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repoA, homeDir := setupTestRepo(t)
+			remote := gitCmd(t, repoA, "config", "--get", "remote.origin.url")
+			repoB := filepath.Join(t.TempDir(), "myrepo")
+			gitCmd(t, "", "clone", remote, repoB)
+
+			stdout, stderr, code := runTreehouse(t, repoA, homeDir, nil, "get", "--lease")
+			if code != 0 {
+				t.Fatalf("first get --lease failed (code %d): %s", code, stderr)
+			}
+			wtA := strings.TrimSpace(stdout)
+
+			stdout, stderr, code = runTreehouse(t, repoB, homeDir, nil, "get", "--lease")
+			if code != 0 {
+				t.Fatalf("second get --lease failed (code %d): %s", code, stderr)
+			}
+			wtB := strings.TrimSpace(stdout)
+			if filepath.Dir(filepath.Dir(wtA)) != filepath.Dir(filepath.Dir(wtB)) {
+				t.Fatalf("expected clones to share a pool, got %s and %s", wtA, wtB)
+			}
+
+			writeRepoHooksConfig(t, repoB)
+			target := wtB
+			args := []string{"destroy", target}
+			if tt.all {
+				target = filepath.Dir(filepath.Dir(wtB))
+				args = []string{"destroy", target, "--all"}
+			}
+
+			stdout, stderr, code = runTreehouseFromDir(t, repoA, t.TempDir(), homeDir, nil, args...)
+			if code != 0 {
+				t.Fatalf("destroy dry run failed (code %d): %s", code, stderr)
+			}
+			targetConfig := filepath.Join(repoB, "treehouse.toml")
+			otherConfig := filepath.Join(repoA, "treehouse.toml")
+			if !strings.Contains(stderr, targetConfig) {
+				t.Errorf("warning does not name target config %q; got stderr:\n%s", targetConfig, stderr)
+			}
+			if strings.Contains(stderr, otherConfig) {
+				t.Errorf("warning incorrectly names other clone config %q; got stderr:\n%s", otherConfig, stderr)
+			}
+			if strings.Contains(stdout, targetConfig) {
+				t.Errorf("warning polluted stdout:\n%s", stdout)
+			}
+		})
+	}
+}
+
 func TestDestroySurvivesUnparsableRepoConfig(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 
