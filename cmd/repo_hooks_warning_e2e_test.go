@@ -177,6 +177,41 @@ func TestDestroyWarnsForCorrectRepositoryInSharedPool(t *testing.T) {
 	}
 }
 
+func TestDestroyAllWarnsOnceForEachRepositoryInLockedTargetSet(t *testing.T) {
+	repoA, homeDir := setupTestRepo(t)
+	remote := gitCmd(t, repoA, "config", "--get", "remote.origin.url")
+	repoB := filepath.Join(t.TempDir(), "myrepo")
+	gitCmd(t, "", "clone", remote, repoB)
+
+	stdout, stderr, code := runTreehouse(t, repoA, homeDir, nil, "get", "--lease")
+	if code != 0 {
+		t.Fatalf("first get --lease failed (code %d): %s", code, stderr)
+	}
+	wtA := strings.TrimSpace(stdout)
+	stdout, stderr, code = runTreehouse(t, repoB, homeDir, nil, "get", "--lease")
+	if code != 0 {
+		t.Fatalf("second get --lease failed (code %d): %s", code, stderr)
+	}
+	wtB := strings.TrimSpace(stdout)
+	poolDir := filepath.Dir(filepath.Dir(wtA))
+	if poolDir != filepath.Dir(filepath.Dir(wtB)) {
+		t.Fatalf("expected clones to share a pool, got %s and %s", wtA, wtB)
+	}
+
+	writeRepoHooksConfig(t, repoA)
+	writeRepoHooksConfig(t, repoB)
+	_, stderr, code = runTreehouseFromDir(t, repoA, t.TempDir(), homeDir, nil, "destroy", poolDir, "--all")
+	if code != 0 {
+		t.Fatalf("destroy dry run failed (code %d): %s", code, stderr)
+	}
+	for _, repoDir := range []string{repoA, repoB} {
+		configPath := filepath.Join(repoDir, "treehouse.toml")
+		if got := strings.Count(stderr, configPath); got != 1 {
+			t.Errorf("expected one warning naming %q, got %d in stderr:\n%s", configPath, got, stderr)
+		}
+	}
+}
+
 func TestDestroySurvivesUnparsableRepoConfig(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 

@@ -75,13 +75,13 @@ func destroyRunE(cmd *cobra.Command, args []string) error {
 		return errors.New("--include-leased cannot be combined with --all; name the exact worktree path instead (leased worktrees are never removed in bulk)")
 	}
 
-	var poolDir, wtPath, targetPath string
+	var poolDir, wtPath string
+	var repoRoots []string
 	if destroyAll {
 		if len(args) == 0 {
 			return errors.New("--all requires a pool path; name the pool to clear, e.g. 'treehouse destroy . --all'")
 		}
-		var err error
-		targetPath, err = filepath.Abs(args[0])
+		targetPath, err := filepath.Abs(args[0])
 		if err != nil {
 			return err
 		}
@@ -102,10 +102,12 @@ func destroyRunE(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		targetPath = wtPath
+		if repoRoot, err := vcs.FindMainRepoRootFrom(wtPath); err == nil {
+			repoRoots = []string{repoRoot}
+		}
 	}
 
-	preDestroy, err := destroyPreDestroyHooks(resolveDestroyRepoRoots(poolDir, targetPath, destroyAll))
+	preDestroy, err := destroyPreDestroyHooks(repoRoots)
 	if err != nil {
 		return err
 	}
@@ -116,6 +118,9 @@ func destroyRunE(cmd *cobra.Command, args []string) error {
 		IncludeInUse:    destroyIncludeInUse,
 		IncludeLeased:   destroyIncludeLeased,
 		PreDestroy:      preDestroy,
+	}
+	if destroyAll {
+		opts.InspectTargets = warnDestroyTargetRepoHooks
 	}
 
 	if destroyAll {
@@ -150,22 +155,10 @@ func destroyPreDestroyHooks(repoRoots []string) ([]string, error) {
 	return cfg.Hooks.PreDestroy, nil
 }
 
-func resolveDestroyRepoRoots(poolDir, targetPath string, all bool) []string {
-	if !all {
-		if repoRoot, err := vcs.FindMainRepoRootFrom(targetPath); err == nil {
-			return []string{repoRoot}
-		}
-		return nil
-	}
-
-	state, err := pool.ReadState(poolDir)
-	if err != nil {
-		return nil
-	}
+func warnDestroyTargetRepoHooks(targets []pool.WorktreeEntry) {
 	seen := make(map[string]struct{})
-	var repoRoots []string
-	for _, wt := range state.Worktrees {
-		repoRoot, err := vcs.FindMainRepoRootFrom(wt.Path)
+	for _, target := range targets {
+		repoRoot, err := vcs.FindMainRepoRootFrom(target.Path)
 		if err != nil {
 			continue
 		}
@@ -173,9 +166,8 @@ func resolveDestroyRepoRoots(poolDir, targetPath string, all bool) []string {
 			continue
 		}
 		seen[repoRoot] = struct{}{}
-		repoRoots = append(repoRoots, repoRoot)
+		config.WarnIfRepoHooksIgnored(repoRoot)
 	}
-	return repoRoots
 }
 
 // resolveDestroyPoolFromWorktree resolves the managed pool that owns a single
