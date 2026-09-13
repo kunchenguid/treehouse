@@ -34,6 +34,8 @@ max_trees = 16
 # count - two repositories side by side expand it identically - so pair it,
 # as in the example below.
 # $VAR and ${VAR} expand first, before the placeholders are read.
+# The template must resolve to an absolute path, so anchor it on {pool},
+# {repo_parent}, or an absolute prefix of your own.
 # The path must not be inside the repository, must not contain the pool
 # directory, and inside the pool must stay at {pool}/{slot}/<name>.
 # A templated path that already exists fails rather than being adopted.

@@ -316,6 +316,7 @@ If an existing state file is empty, truncated, or otherwise invalid, commands do
 They print a warning and rebuild the pool entries from worktree directories still on disk.
 Commands also restore an on-disk worktree that is missing from an otherwise valid state file, covering the narrow case where worktree creation succeeded but recording its quarantine failed.
 Every restored entry is marked `leased` because treehouse cannot know whether it was idle, in-use, or durably leased.
+Both routes scan the pool directory, so a worktree that `worktree_path` placed outside it is not rebuilt — see [Worktree path](#worktree-path) for how to remove one.
 
 Run `treehouse status` to inspect recovered entries.
 Treehouse cannot safely return these entries to the pool because recovery cannot reconstruct the trusted inventory of seeded ignored files.

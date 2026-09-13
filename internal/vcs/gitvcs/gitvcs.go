@@ -814,6 +814,13 @@ func RemoveSeededPathsFromJJWorkspace(worktreePath string, paths []string) error
 	return RemoveJJSeedAuthentication(worktreePath)
 }
 
+// PrepareJJSeededCleanup hardlinks the workspace's store pointer into the
+// authentication directory beside it, so the later cleanup can authenticate
+// itself. Treehouse removes the entries but never the directory. Repositories
+// whose worktrees share that parent share the directory while taking
+// independent pool state locks, so no pool can prove it is unused. A slot
+// worktree_path placed outside the pool therefore leaves an empty directory
+// behind; removing it safely needs a lock across pools.
 func PrepareJJSeededCleanup(worktreePath string) error {
 	authPath := jjSeedAuthenticationPath(worktreePath)
 	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
