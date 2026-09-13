@@ -20,12 +20,13 @@ import (
 )
 
 var (
-	getLease       bool
-	getLeaseHolder string
-	getJSON        bool
-	getNoFetch     bool
-	getBase        string
-	getIncludeFile string
+	getLease        bool
+	getLeaseHolder  string
+	getJSON         bool
+	getNoFetch      bool
+	getBase         string
+	getIncludeFile  string
+	getWorktreePath string
 )
 
 // Process seams, overridable in tests, matching the pattern in internal/pool.
@@ -57,7 +58,16 @@ Pass --include-file <path> to replace committed .worktreeinclude for this
 acquisition. Relative paths use the current directory; patterns inside the file
 select ignored, untracked files from the main checkout root. A missing or
 unreadable file fails before a worktree is created or reset. An empty file
-seeds nothing. Without the flag, only the committed manifest is used.`,
+seeds nothing. Without the flag, only the committed manifest is used.
+
+New pool slots are placed at {pool}/{slot}/{repo}. Pass --worktree-path, set
+TREEHOUSE_WORKTREE_PATH, or set worktree_path in treehouse.toml to template that
+directory instead, for tooling that only works when a checkout sits at a
+particular location relative to something else. The template must contain {slot}
+and at least one of {pool} or {repo}; {repo_parent} is available too but does not
+count, because two repositories side by side expand it identically. It applies
+only to slots treehouse creates from now on: worktrees already in the pool keep
+their recorded paths and are never moved.`,
 	RunE: getRunE,
 }
 
@@ -69,6 +79,7 @@ func init() {
 	// No -b shorthand: git spells branch creation -b, and this creates nothing.
 	getCmd.Flags().StringVar(&getBase, "base", "", "Branch to cut this worktree from, overriding base_branch in config (default: inferred from the repository)")
 	getCmd.Flags().StringVar(&getIncludeFile, "include-file", "", "Replace committed .worktreeinclude with this file (relative to the current directory)")
+	getCmd.Flags().StringVar(&getWorktreePath, "worktree-path", "", "Template for a newly created worktree's directory, overriding worktree_path in config (default: {pool}/{slot}/{repo})")
 	rootCmd.AddCommand(getCmd)
 }
 
@@ -117,6 +128,7 @@ func getRunE(cmd *cobra.Command, args []string) error {
 	wtPath, err := pool.AcquireWithOptions(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate, pool.AcquireOptions{
 		SkipFetch:       getNoFetch,
 		BaseBranch:      resolveRequestedBase(cfg),
+		WorktreePath:    config.ResolveWorktreePath(getWorktreePath, cfg),
 		IncludeManifest: manifest,
 	})
 	if err != nil {
@@ -237,6 +249,7 @@ func getLeaseRunE(repoRoot, poolDir string, cfg config.Config, manifest []byte) 
 	lease, err := pool.AcquireLeaseInfoWithOptions(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate, holder, pool.AcquireOptions{
 		SkipFetch:       getNoFetch,
 		BaseBranch:      resolveRequestedBase(cfg),
+		WorktreePath:    config.ResolveWorktreePath(getWorktreePath, cfg),
 		IncludeManifest: manifest,
 	})
 	if err != nil {

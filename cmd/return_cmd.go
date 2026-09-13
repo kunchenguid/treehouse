@@ -232,15 +232,22 @@ func returnBaseBranch(wtPath string) string {
 }
 
 func resolveReturnPoolDir(wtPath string, explicitPath bool) (string, error) {
-	pathPoolDir := filepath.Dir(filepath.Dir(wtPath))
-	entry, err := pool.FindByPath(pathPoolDir, wtPath)
-	if err != nil {
-		return "", err
-	}
-	if entry != nil {
-		return pathPoolDir, nil
+	// The built-in layout puts a worktree two levels under its pool, which lets a
+	// return succeed even when the repository is gone. The candidate is confirmed
+	// to be a pool first, exactly as destroy does: a worktree_path worktree lives
+	// somewhere else entirely, and reading state from whatever directory happens
+	// to sit two levels up reconstructs entries from the worktrees it finds there.
+	if pathPoolDir := filepath.Dir(filepath.Dir(wtPath)); pool.IsPoolDir(pathPoolDir) {
+		entry, err := pool.FindByPath(pathPoolDir, wtPath)
+		if err != nil {
+			return "", err
+		}
+		if entry != nil {
+			return pathPoolDir, nil
+		}
 	}
 
+	var err error
 	var repoRoot string
 	if explicitPath {
 		repoRoot, err = vcs.FindMainRepoRootFrom(wtPath)
@@ -264,7 +271,7 @@ func resolveReturnPoolDir(wtPath string, explicitPath bool) (string, error) {
 		return "", err
 	}
 
-	entry, err = pool.FindByPath(fallbackPoolDir, wtPath)
+	entry, err := pool.FindByPath(fallbackPoolDir, wtPath)
 	if err != nil {
 		return "", err
 	}

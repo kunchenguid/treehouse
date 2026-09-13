@@ -1779,7 +1779,7 @@ func TestExecuteDestroy_ReclassifiesBeforeReservation(t *testing.T) {
 		t.Fatalf("ReadState failed: %v", err)
 	}
 	planned := classifyForDestroy(state.Worktrees[0], repoDir, defaultRef)
-	measureDestroySize(&planned)
+	measureDestroySize(poolDir, &planned)
 
 	scratch := filepath.Join(wtPath, "raced-wip.txt")
 	if err := os.WriteFile(scratch, []byte("wip\n"), 0o644); err != nil {
@@ -1822,7 +1822,7 @@ func TestExecuteDestroy_KeepsStateWhenRemovalFails(t *testing.T) {
 		t.Fatalf("ReadState failed: %v", err)
 	}
 	planned := classifyForDestroy(state.Worktrees[0], repoDir, defaultRef)
-	measureDestroySize(&planned)
+	measureDestroySize(poolDir, &planned)
 
 	badRepoRoot := filepath.Join(t.TempDir(), "not-a-repo")
 	if err := os.MkdirAll(badRepoRoot, 0o755); err != nil {
@@ -1867,7 +1867,7 @@ func TestExecuteDestroy_ReResolvesRepoRootWhenMissing(t *testing.T) {
 		t.Fatalf("ReadState failed: %v", err)
 	}
 	planned := classifyForDestroy(state.Worktrees[0], repoDir, defaultRef)
-	measureDestroySize(&planned)
+	measureDestroySize(poolDir, &planned)
 
 	destroyed, skipped, err := executeDestroy(poolDir, []DestroyTarget{planned}, "", defaultRef, true, DestroyOptions{})
 	if err != nil {
@@ -1917,7 +1917,7 @@ func TestExecuteDestroy_RemovalFailureRestoresOriginalOwnerReservation(t *testin
 		t.Fatalf("expected acquired worktree to have owner reservation, got %#v", original)
 	}
 	planned := classifyForDestroy(original, repoDir, defaultRef)
-	measureDestroySize(&planned)
+	measureDestroySize(poolDir, &planned)
 
 	badRepoRoot := filepath.Join(t.TempDir(), "not-a-repo")
 	if err := os.MkdirAll(badRepoRoot, 0o755); err != nil {

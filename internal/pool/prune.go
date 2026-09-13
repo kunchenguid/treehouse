@@ -226,7 +226,7 @@ func planPrunePool(poolDir string, resolveContext pruneContextResolver, options 
 	if err != nil {
 		return prunePlan{}, err
 	}
-	return planPrune(entries, resolveContext, options)
+	return planPrune(poolDir, entries, resolveContext, options)
 }
 
 func prunePoolDirs(poolRoot string) ([]string, error) {
@@ -294,12 +294,12 @@ type prunePlan struct {
 	Reserved map[string]plannedPruneWorktree
 }
 
-func planPrune(entries []WorktreeEntry, resolveContext pruneContextResolver, options PruneOptions) (prunePlan, error) {
+func planPrune(poolDir string, entries []WorktreeEntry, resolveContext pruneContextResolver, options PruneOptions) (prunePlan, error) {
 	plan := prunePlan{
 		Planned: make(map[string]plannedPruneWorktree),
 	}
 	for _, wt := range entries {
-		worktree, skipped, stale, context, err := analyzePruneCandidate(resolveContext, wt, options)
+		worktree, skipped, stale, context, err := analyzePruneCandidate(poolDir, resolveContext, wt, options)
 		if err != nil {
 			return prunePlan{}, err
 		}
@@ -466,7 +466,7 @@ func executePrune(poolDir string, plan prunePlan, options PruneOptions) (PruneRe
 				continue
 			}
 
-			worktree, skipped, stale, context, err := analyzePruneCandidate(fixedPruneContextResolver(plannedWorktree.Context), state.Worktrees[i], options)
+			worktree, skipped, stale, context, err := analyzePruneCandidate(poolDir, fixedPruneContextResolver(plannedWorktree.Context), state.Worktrees[i], options)
 			if err != nil {
 				return err
 			}
@@ -527,9 +527,9 @@ func executePrune(poolDir string, plan prunePlan, options PruneOptions) (PruneRe
 			var worktree PruneWorktree
 			var skipped PruneSkipped
 			if plannedWorktree.Worktree.Orphaned {
-				worktree, skipped = finalOrphanPruneSafetyCheck(state.Worktrees[idx])
+				worktree, skipped = finalOrphanPruneSafetyCheck(poolDir, state.Worktrees[idx])
 			} else {
-				worktree, skipped = finalPruneSafetyCheck(context, state.Worktrees[idx])
+				worktree, skipped = finalPruneSafetyCheck(poolDir, context, state.Worktrees[idx])
 			}
 			if skipped.Reason != "" {
 				clearReservation(&state.Worktrees[idx])
@@ -544,7 +544,7 @@ func executePrune(poolDir string, plan prunePlan, options PruneOptions) (PruneRe
 			}
 
 			if worktree.Orphaned {
-				container, err := removableWorktreeContainer(worktree.Path)
+				container, err := removableWorktreeContainer(poolDir, worktree.Path)
 				if err != nil {
 					clearReservation(&state.Worktrees[idx])
 					result.Skipped = append(result.Skipped, newPruneSkipped(worktree.Name, worktree.Path, pruneSkipCleanupFailed, "refusing unsafe cleanup path", err.Error()))
@@ -555,13 +555,16 @@ func executePrune(poolDir string, plan prunePlan, options PruneOptions) (PruneRe
 					result.Skipped = append(result.Skipped, newPruneSkipped(worktree.Name, worktree.Path, pruneSkipCleanupFailed, "could not remove worktree directory", err.Error()))
 					continue
 				}
+				// This route never called vcs.RemoveWorktree, so nothing has
+				// dropped the worktree's jj seed authentication.
+				dropStaleJJSeedAuthentication(poolDir, state.Worktrees[idx])
 			} else {
 				if err := vcs.RemoveCleanWorktree(context.RepoRoot, worktree.Path); err != nil {
 					clearReservation(&state.Worktrees[idx])
 					result.Skipped = append(result.Skipped, newPruneSkipped(worktree.Name, worktree.Path, pruneSkipRemoveFailed, "VCS refused to remove worktree", err.Error()))
 					continue
 				}
-				container, err := removableWorktreeContainer(worktree.Path)
+				container, err := removableWorktreeContainer(poolDir, worktree.Path)
 				if err != nil {
 					clearReservation(&state.Worktrees[idx])
 					result.Skipped = append(result.Skipped, newPruneSkipped(worktree.Name, worktree.Path, pruneSkipCleanupFailed, "refusing unsafe cleanup path", err.Error()))
@@ -594,7 +597,7 @@ func executePrune(poolDir string, plan prunePlan, options PruneOptions) (PruneRe
 	return result, nil
 }
 
-func analyzePruneCandidate(resolveContext pruneContextResolver, wt WorktreeEntry, options PruneOptions) (PruneWorktree, PruneSkipped, bool, pruneContext, error) {
+func analyzePruneCandidate(poolDir string, resolveContext pruneContextResolver, wt WorktreeEntry, options PruneOptions) (PruneWorktree, PruneSkipped, bool, pruneContext, error) {
 	worktree := PruneWorktree{Name: wt.Name, Path: wt.Path}
 	skipped := PruneSkipped{Name: wt.Name, Path: wt.Path}
 
@@ -609,10 +612,10 @@ func analyzePruneCandidate(resolveContext pruneContextResolver, wt WorktreeEntry
 	if inUse {
 		return worktree, skipped, false, pruneContext{}, nil
 	}
-	return analyzeIdleWorktree(resolveContext, wt, worktree, skipped, options)
+	return analyzeIdleWorktree(poolDir, resolveContext, wt, worktree, skipped, options)
 }
 
-func finalPruneSafetyCheck(context pruneContext, wt WorktreeEntry) (PruneWorktree, PruneSkipped) {
+func finalPruneSafetyCheck(poolDir string, context pruneContext, wt WorktreeEntry) (PruneWorktree, PruneSkipped) {
 	worktree := PruneWorktree{Name: wt.Name, Path: wt.Path}
 	skipped := PruneSkipped{Name: wt.Name, Path: wt.Path}
 
@@ -625,14 +628,14 @@ func finalPruneSafetyCheck(context pruneContext, wt WorktreeEntry) (PruneWorktre
 		skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipInUse, pruneSkipInUse, "")
 		return worktree, skipped
 	}
-	worktree, skipped, _, _, err = analyzeIdleWorktree(fixedPruneContextResolver(context), wt, worktree, skipped, PruneOptions{})
+	worktree, skipped, _, _, err = analyzeIdleWorktree(poolDir, fixedPruneContextResolver(context), wt, worktree, skipped, PruneOptions{})
 	if err != nil {
 		skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotVerify, "cannot prove HEAD is merged into default branch", err.Error())
 	}
 	return worktree, skipped
 }
 
-func finalOrphanPruneSafetyCheck(wt WorktreeEntry) (PruneWorktree, PruneSkipped) {
+func finalOrphanPruneSafetyCheck(poolDir string, wt WorktreeEntry) (PruneWorktree, PruneSkipped) {
 	worktree := PruneWorktree{
 		Name:     wt.Name,
 		Path:     wt.Path,
@@ -654,7 +657,7 @@ func finalOrphanPruneSafetyCheck(wt WorktreeEntry) (PruneWorktree, PruneSkipped)
 		return worktree, newPruneSkipped(wt.Name, wt.Path, PruneSkipOrphanedBackingRepo, pruneOrphanRecoveredRepository, detail)
 	}
 
-	container, err := removableWorktreeContainer(worktree.Path)
+	container, err := removableWorktreeContainer(poolDir, worktree.Path)
 	if err != nil {
 		return worktree, newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotMeasureSize, "refusing unsafe cleanup path", err.Error())
 	}
@@ -666,7 +669,7 @@ func finalOrphanPruneSafetyCheck(wt WorktreeEntry) (PruneWorktree, PruneSkipped)
 	return worktree, skipped
 }
 
-func analyzeIdleWorktree(resolveContext pruneContextResolver, wt WorktreeEntry, worktree PruneWorktree, skipped PruneSkipped, options PruneOptions) (PruneWorktree, PruneSkipped, bool, pruneContext, error) {
+func analyzeIdleWorktree(poolDir string, resolveContext pruneContextResolver, wt WorktreeEntry, worktree PruneWorktree, skipped PruneSkipped, options PruneOptions) (PruneWorktree, PruneSkipped, bool, pruneContext, error) {
 	// A markerless slot (its .git/.jj marker is gone) must never have its
 	// facts read through the configured-backend fallback: in an in-project
 	// pool that resolves the repository ENCLOSING the pool, and a clean
@@ -682,7 +685,7 @@ func analyzeIdleWorktree(resolveContext pruneContextResolver, wt WorktreeEntry, 
 			return worktree, skipped, true, pruneContext{}, nil
 		}
 
-		container, err := removableWorktreeContainer(worktree.Path)
+		container, err := removableWorktreeContainer(poolDir, worktree.Path)
 		if err != nil {
 			skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotMeasureSize, "refusing unsafe cleanup path", err.Error())
 			return worktree, skipped, true, pruneContext{}, nil
@@ -737,7 +740,7 @@ func analyzeIdleWorktree(resolveContext pruneContextResolver, wt WorktreeEntry, 
 		return worktree, skipped, true, context, nil
 	}
 
-	container, err := removableWorktreeContainer(worktree.Path)
+	container, err := removableWorktreeContainer(poolDir, worktree.Path)
 	if err != nil {
 		skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotMeasureSize, "refusing unsafe cleanup path", err.Error())
 		return worktree, skipped, true, context, nil
@@ -873,12 +876,61 @@ func linkedWorktreeGitDir(worktreePath string) (string, bool, string) {
 	return filepath.Clean(gitDir), true, ""
 }
 
-func removableWorktreeContainer(worktreePath string) (string, error) {
+// removableWorktreeContainer returns the directory to delete for a worktree.
+//
+// Under the built-in layout the worktree's parent is the numbered slot directory
+// that exists only to hold it, so removing the parent leaves no empty shell
+// behind. A worktree that worktree_path placed outside the pool has a parent
+// treehouse does not own - a directory holding the repository, other checkouts,
+// or anything else - so only the worktree itself is removed there.
+//
+// Ownership is decided on canonicalized paths, exactly as placement decides it:
+// a recorded path that reaches its parent through a symlink out of the pool
+// still reads as pool-owned lexically, and os.RemoveAll on it would follow the
+// link and take everything beside the worktree in the real directory. The path
+// returned is the recorded spelling, which is what has to be deleted. A path
+// that cannot be resolved is an error, so callers skip the removal rather than
+// widen it.
+//
+// Each branch guards the path it returns and nothing else. A worktree placed
+// directly under a filesystem or drive root has a parent that is never a pool
+// slot directory, so the worktree itself is removable and refusing on the
+// parent's behalf would only make such a slot unreclaimable.
+func removableWorktreeContainer(poolDir, worktreePath string) (string, error) {
 	container := filepath.Clean(filepath.Dir(worktreePath))
+	poolOwned, err := containerIsPoolOwned(poolDir, container)
+	if err != nil {
+		return "", err
+	}
+	if !poolOwned {
+		removable := filepath.Clean(worktreePath)
+		if removable == "." || filepath.Dir(removable) == removable {
+			return "", fmt.Errorf("refusing to remove %s", removable)
+		}
+		return removable, nil
+	}
 	if container == "." || filepath.Dir(container) == container {
 		return "", fmt.Errorf("refusing to remove %s", container)
 	}
 	return container, nil
+}
+
+// containerIsPoolOwned reports whether container is a slot directory the pool
+// created for one worktree: inside the pool directory, and not the pool
+// directory itself, which holds the pool's state.
+func containerIsPoolOwned(poolDir, container string) (bool, error) {
+	canonicalPool, err := canonicalPathPrefix(poolDir)
+	if err != nil {
+		return false, err
+	}
+	canonicalContainer, err := canonicalPathPrefix(container)
+	if err != nil {
+		return false, err
+	}
+	if samePath(canonicalContainer, canonicalPool) {
+		return false, nil
+	}
+	return pathContains(canonicalPool, canonicalContainer), nil
 }
 
 func clearReservation(wt *WorktreeEntry) {

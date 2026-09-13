@@ -216,7 +216,7 @@ func planAndDestroy(poolDir string, targets []WorktreeEntry, allowLeased bool, o
 	var removable []DestroyTarget
 	for _, wt := range targets {
 		target := classifyForDestroy(wt, repoRoot, defaultRef)
-		measureDestroySize(&target)
+		measureDestroySize(poolDir, &target)
 		ok, skip := opts.allows(target, allowLeased)
 		if ok {
 			removable = append(removable, target)
@@ -471,7 +471,7 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 			currentEntry := state.Worktrees[idx]
 			restoreOriginalOwnerReservation(&currentEntry, reservation)
 			current := classifyForDestroy(currentEntry, repoRoot, defaultRef)
-			measureDestroySize(&current)
+			measureDestroySize(poolDir, &current)
 			if planned, ok := plannedByPath[path]; ok && current.Bytes == 0 {
 				current.Bytes = planned.Bytes
 			}
@@ -505,7 +505,7 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 				}
 			}
 
-			if err := removeManagedWorktree(repoRoot, path); err != nil {
+			if err := removeManagedWorktree(poolDir, repoRoot, currentEntry); err != nil {
 				restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
 				current.Detail = err.Error()
 				skips = append(skips, DestroySkip{Target: current})
@@ -552,10 +552,13 @@ func restoreOriginalOwnerReservation(wt *WorktreeEntry, reservation destroyReser
 }
 
 // removeManagedWorktree deletes a worktree's git registration (when its backing
-// repository is still present) and its numbered container directory. git removal
-// uses --force because destroy deliberately removes dirty, unmerged, or
-// unverified worktrees once the caller has opted in.
-func removeManagedWorktree(repoRoot, path string) error {
+// repository is still present) and the directory removableWorktreeContainer
+// selects: its numbered slot directory inside the pool, or just the worktree
+// when worktree_path placed it elsewhere. git removal uses --force because
+// destroy deliberately removes dirty, unmerged, or unverified worktrees once the
+// caller has opted in.
+func removeManagedWorktree(poolDir, repoRoot string, wt WorktreeEntry) error {
+	path := wt.Path
 	orphaned, _ := backingRepositoryMissing(path)
 	// A markerless slot (directory present, .git/.jj marker gone) has no live
 	// VCS registration either backend will deregister - git refuses to remove
@@ -582,12 +585,17 @@ func removeManagedWorktree(repoRoot, path string) error {
 			return fmt.Errorf("VCS refused to remove worktree: %w", err)
 		}
 	}
-	container, err := removableWorktreeContainer(path)
+	container, err := removableWorktreeContainer(poolDir, path)
 	if err != nil {
 		return fmt.Errorf("refusing unsafe cleanup path: %w", err)
 	}
 	if err := os.RemoveAll(container); err != nil {
 		return fmt.Errorf("could not remove worktree directory: %w", err)
+	}
+	if orphaned || markerless {
+		// Neither route called vcs.RemoveWorktree, so nothing has dropped the
+		// worktree's jj seed authentication.
+		dropStaleJJSeedAuthentication(poolDir, wt)
 	}
 	return nil
 }
@@ -607,8 +615,8 @@ func resolvePoolRepoRoot(targets []WorktreeEntry) string {
 	return ""
 }
 
-func measureDestroySize(target *DestroyTarget) {
-	container, err := removableWorktreeContainer(target.Path)
+func measureDestroySize(poolDir string, target *DestroyTarget) {
+	container, err := removableWorktreeContainer(poolDir, target.Path)
 	if err != nil {
 		return
 	}

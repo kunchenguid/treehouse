@@ -24,6 +24,27 @@ max_trees = 16
 # Override per-command with the --base flag.
 # base_branch = "develop"
 
+# Optional worktree path: where a NEWLY created pool slot is placed.
+# Unset (default) uses {pool}/{slot}/{repo}, unchanged from before.
+# Placeholders: {pool} (this repository's pool directory), {slot} (the slot
+# name, required), {repo} (the repository directory name), {repo_parent}
+# (the directory holding the repository). One of {pool} or {repo} is
+# required too: slot names are per pool, so a user-level template without one
+# sends slot 1 of every repository to one directory. {repo_parent} does not
+# count - two repositories side by side expand it identically - so pair it,
+# as in the example below.
+# $VAR and ${VAR} expand first, before the placeholders are read.
+# The template must resolve to an absolute path, so anchor it on {pool},
+# {repo_parent}, or an absolute prefix of your own.
+# The path must not be inside the repository, must not contain the pool
+# directory, and inside the pool must stay at {pool}/{slot}/<name>.
+# A templated path that already exists fails rather than being adopted.
+# Worktrees already in the pool keep their recorded paths; nothing is moved.
+# Override per-command with the --worktree-path flag or the
+# TREEHOUSE_WORKTREE_PATH env var (precedence: --worktree-path >
+# TREEHOUSE_WORKTREE_PATH > this file > user config > default).
+# worktree_path = "{repo_parent}/{repo}-{slot}"
+
 # Version-control backend selection. Git is the default everywhere. Set
 # "jj" to opt in to the experimental Jujutsu backend for this repository
 # (or per-command with TREEHOUSE_VCS=jj). Pooled jj workspaces inherit this
