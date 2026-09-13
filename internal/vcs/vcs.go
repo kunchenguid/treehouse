@@ -278,6 +278,44 @@ func GetRemoteURL(repoRoot string) (string, error) {
 	return backendFor(repoRoot).GetRemoteURL(repoRoot)
 }
 
+// CheckedOutBranch reports which branch a pool slot is on, so callers can see
+// what work is in a slot without a second git command.
+//
+// Like VerifyBaseBranch it sits outside the Backend interface: reading a
+// checked-out branch is git-specific, and jj slots answer with an empty string
+// rather than a guess. The three outcomes are distinct: a branch name, a
+// detached HEAD reported with detached=true (the default `treehouse get`
+// state), and a genuine read error reported as err - never collapsed into the
+// empty string reserved for detached.
+//
+// Only a slot whose OWN marker names git is read. A markerless (damaged) slot
+// is never touched, so the branch of a repository enclosing the pool can never
+// be inherited and reported as the slot's. A marker that exists but cannot be
+// read is a genuine read failure, not a markerless slot, so that error is
+// propagated rather than discarded.
+func CheckedOutBranch(worktreePath string) (branch string, detached bool, err error) {
+	name, err := WorktreeBackendNameChecked(worktreePath)
+	if err != nil {
+		return "", false, err
+	}
+	switch name {
+	case "git":
+		branch, err := gitvcs.CheckedOutBranch(worktreePath)
+		if err != nil {
+			return "", false, err
+		}
+		if branch == "" {
+			return "", true, nil
+		}
+		return branch, false, nil
+	default:
+		// jj slots and markerless (damaged) slots report no branch: a jj
+		// workspace has no branch to name, and a markerless slot must never
+		// inherit the branch of a repository enclosing the pool.
+		return "", false, nil
+	}
+}
+
 // VerifyBaseBranch checks that an explicitly requested base branch resolves,
 // before anything is created or reset. An unresolvable base is an error rather
 // than a fallback to the inferred default, which would hand back a worktree cut
@@ -337,32 +375,47 @@ func slotMarkerBackend(path string) Backend {
 	return nil
 }
 
-// WorktreeBackendNameChecked names the backend identified by a worktree's
-// marker while preserving filesystem errors for callers that must fail closed.
+// slotMarkerBackend reports the backend a worktree's own marker names: a
+// .git entry means a git worktree, a .jj directory means a jj workspace.
+// Pool slots hold exactly one of the two (jj workspaces are never
+// colocated), so the marker identifies what the slot actually is regardless
 func WorktreeBackendNameChecked(path string) (string, error) {
-	if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
-		return "git", nil
-	} else if !os.IsNotExist(err) {
+	if present, err := markerPresent(filepath.Join(path, ".git")); err != nil {
 		return "", err
+	} else if present {
+		if _, err := os.Stat(filepath.Join(path, ".git")); err != nil {
+			return "", fmt.Errorf("resolving .git marker in %s: %w", path, err)
+		}
+		return "git", nil
 	}
-	if info, err := os.Stat(filepath.Join(path, ".jj")); err == nil {
+	if present, err := markerPresent(filepath.Join(path, ".jj")); err != nil {
+		return "", err
+	} else if present {
+		info, err := os.Stat(filepath.Join(path, ".jj"))
+		if err != nil {
+			return "", fmt.Errorf("resolving .jj marker in %s: %w", path, err)
+		}
 		if info.IsDir() {
 			return "jj", nil
 		}
-	} else if !os.IsNotExist(err) {
-		return "", err
 	}
 	return "", nil
 }
 
-// backendForWorktree dispatches per-worktree operations - the facts that
-// gate destructive decisions (dirty, merged, main-root) and the actions on a
-// slot's own state (reset, detach) - on what the worktree actually is. The
-// configured backend must not answer for a slot of the other flavor: a
-// .jj-only slot inspected through git resolves the repository ENCLOSING the
-// pool, and with an in-project pool root a clean enclosing repo makes dirty
-// jj work classify as disposable. Paths without a marker (ordinary
-// directories inside a repository) keep the configured-backend resolution.
+// markerPresent reports whether path itself exists, without following
+// symlinks. A dangling symlink is present: the entry is on disk and its
+// unresolvable target is a read failure for the caller to surface, not a
+// missing marker. Only a genuinely absent entry returns false with a nil
+// error.
+func markerPresent(path string) (bool, error) {
+	if _, err := os.Lstat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
 func backendForWorktree(path string) Backend {
 	if b := slotMarkerBackend(path); b != nil {
 		return b

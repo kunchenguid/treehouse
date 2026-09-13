@@ -163,6 +163,31 @@ func branchRef(repoRoot, branch string) string {
 	}
 }
 
+// CheckedOutBranch reports the branch a worktree currently has checked out.
+// A detached HEAD returns an empty string with no error: that is the honest
+// answer, and `git describe`-style guessing would name a tag or a commit that
+// no later checkout can be resumed from. A genuine read failure - the path is
+// not a repository, its .git pointer is broken, permissions deny the read -
+// returns an error instead of masquerading as a detached HEAD, so callers can
+// tell the two apart.
+func CheckedOutBranch(worktreePath string) (string, error) {
+	cmd := exec.Command("git", "symbolic-ref", "-q", "--short", "HEAD")
+	cmd.Dir = worktreePath
+	out, err := cmd.Output()
+	if err == nil {
+		return strings.TrimSpace(string(out)), nil
+	}
+	// With --quiet, a detached HEAD (a direct commit rather than a symbolic
+	// ref) exits 1 and prints nothing: that is the report, not a failure.
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		return "", nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return "", fmt.Errorf("git symbolic-ref -q --short HEAD: %s", strings.TrimSpace(string(exitErr.Stderr)))
+	}
+	return "", err
+}
+
 // BranchExists reports whether branch names refs/heads/<branch> or
 // refs/remotes/origin/<branch>, the two refs branchRef chooses between.
 //
