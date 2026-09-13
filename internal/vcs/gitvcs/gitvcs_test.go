@@ -1411,3 +1411,50 @@ func mustGit(t *testing.T, dir string, args ...string) {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
 	}
 }
+
+// TestPrepareJJSeededCleanupRetriesWhenAuthenticationDirVanishes pins the retry
+// for the window another pool opens by deleting the shared authentication
+// directory the moment its own last entry goes. The hook stands in for that
+// concurrent removal at exactly the instant it hurts - after this call created
+// the directory, before it links into it - so the retry is exercised without
+// racing two goroutines.
+func TestPrepareJJSeededCleanupRetriesWhenAuthenticationDirVanishes(t *testing.T) {
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	marker := filepath.Join(worktree, ".jj", "repo")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("store"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldHook := jjAuthenticationDirPrepared
+	attempts := 0
+	jjAuthenticationDirPrepared = func(dir string) {
+		attempts++
+		if attempts > 1 {
+			return
+		}
+		if err := os.Remove(dir); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { jjAuthenticationDirPrepared = oldHook })
+
+	if err := PrepareJJSeededCleanup(worktree); err != nil {
+		t.Fatalf("PrepareJJSeededCleanup failed: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("link attempts = %d, want 2", attempts)
+	}
+	authInfo, err := os.Stat(jjSeedAuthenticationPath(worktree))
+	if err != nil {
+		t.Fatalf("authentication file missing after retry: %v", err)
+	}
+	markerInfo, err := os.Stat(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(markerInfo, authInfo) {
+		t.Fatal("retried authentication file is not the workspace store pointer")
+	}
+}

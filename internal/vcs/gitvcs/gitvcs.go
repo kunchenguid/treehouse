@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -814,12 +815,29 @@ func RemoveSeededPathsFromJJWorkspace(worktreePath string, paths []string) error
 	return RemoveJJSeedAuthentication(worktreePath)
 }
 
+// PrepareJJSeededCleanup hardlinks the workspace's store pointer into the
+// authentication directory beside it. Every worktree sharing that parent shares
+// the directory while taking its own pool lock, so another pool can delete it
+// the moment its own last entry goes. A link that fails because the directory
+// is gone is therefore retried once against a freshly created one.
 func PrepareJJSeededCleanup(worktreePath string) error {
 	authPath := jjSeedAuthenticationPath(worktreePath)
-	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
+	markerPath := filepath.Join(worktreePath, ".jj", "repo")
+	err := linkJJSeedAuthentication(markerPath, authPath)
+	if err != nil && errors.Is(err, os.ErrNotExist) {
+		err = linkJJSeedAuthentication(markerPath, authPath)
+	}
+	return err
+}
+
+var jjAuthenticationDirPrepared = func(string) {}
+
+func linkJJSeedAuthentication(markerPath, authPath string) error {
+	authDir := filepath.Dir(authPath)
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		return fmt.Errorf("creating jj seed authentication directory: %w", err)
 	}
-	markerPath := filepath.Join(worktreePath, ".jj", "repo")
+	jjAuthenticationDirPrepared(authDir)
 	if err := os.Link(markerPath, authPath); err != nil {
 		marker, markerErr := os.Stat(markerPath)
 		auth, authErr := os.Stat(authPath)

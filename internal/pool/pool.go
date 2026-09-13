@@ -984,6 +984,27 @@ func removeAuthenticatedStaleJJSeedState(poolDir string, state State) error {
 	return nil
 }
 
+// removeStaleJJSeedAuthentication drops the authentication a jj slot left in the
+// directory beside its worktree. The plain-directory removal routes never reach
+// vcs.RemoveWorktree, and they delete the state entry in the same transaction,
+// so nothing else would ever clear it. It acts only on an entry whose signed
+// inventory still validates, and vcs.RemoveStaleJJSeedAuthentication verifies
+// the file's own identity - and that the workspace is really gone - before
+// unlinking it.
+func removeStaleJJSeedAuthentication(poolDir string, wt WorktreeEntry) error {
+	if wt.SeedBackend != "jj" || wt.SeedAuthIdentity == "" {
+		return nil
+	}
+	key, err := readStateKey(poolDir)
+	if err != nil {
+		return err
+	}
+	if !validSeedInventoryDigest(key, wt) {
+		return nil
+	}
+	return vcs.RemoveStaleJJSeedAuthentication(wt.Path, wt.SeedAuthIdentity)
+}
+
 func ownerAlive(wt WorktreeEntry) bool {
 	if wt.OwnerPID == 0 || wt.OwnerStartedAt == 0 {
 		return false
