@@ -782,6 +782,26 @@ func TestRemovableWorktreeContainer_RemovesTheParentOnlyInsideThePool(t *testing
 	if got != shallow {
 		t.Errorf("worktree in the pool root: removing %q, want only the worktree %q", got, shallow)
 	}
+
+	// A template with an absolute prefix of the user's own can place a worktree
+	// directly under a filesystem or drive root. The root is not a pool slot
+	// directory, so the worktree itself is what gets removed.
+	fsRoot := base
+	for {
+		parent := filepath.Dir(fsRoot)
+		if parent == fsRoot {
+			break
+		}
+		fsRoot = parent
+	}
+	atRoot := filepath.Join(fsRoot, "myrepo-1")
+	got, err = removableWorktreeContainer(poolDir, atRoot)
+	if err != nil {
+		t.Fatalf("removableWorktreeContainer failed for a worktree under %q: %v", fsRoot, err)
+	}
+	if got != atRoot {
+		t.Errorf("worktree under the filesystem root: removing %q, want only the worktree %q", got, atRoot)
+	}
 }
 
 // TestRemovableWorktreeContainer_SymlinkOutOfThePoolIsNotPoolOwned pins the

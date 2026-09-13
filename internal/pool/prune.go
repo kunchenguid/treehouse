@@ -891,11 +891,13 @@ func linkedWorktreeGitDir(worktreePath string) (string, bool, string) {
 // returned is the recorded spelling, which is what has to be deleted. A path
 // that cannot be resolved is an error, so callers skip the removal rather than
 // widen it.
+//
+// Each branch guards the path it returns and nothing else. A worktree placed
+// directly under a filesystem or drive root has a parent that is never a pool
+// slot directory, so the worktree itself is removable and refusing on the
+// parent's behalf would only make such a slot unreclaimable.
 func removableWorktreeContainer(poolDir, worktreePath string) (string, error) {
 	container := filepath.Clean(filepath.Dir(worktreePath))
-	if container == "." || filepath.Dir(container) == container {
-		return "", fmt.Errorf("refusing to remove %s", container)
-	}
 	poolOwned, err := containerIsPoolOwned(poolDir, container)
 	if err != nil {
 		return "", err
@@ -906,6 +908,9 @@ func removableWorktreeContainer(poolDir, worktreePath string) (string, error) {
 			return "", fmt.Errorf("refusing to remove %s", removable)
 		}
 		return removable, nil
+	}
+	if container == "." || filepath.Dir(container) == container {
+		return "", fmt.Errorf("refusing to remove %s", container)
 	}
 	return container, nil
 }
