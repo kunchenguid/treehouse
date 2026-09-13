@@ -466,6 +466,11 @@ or for a single acquisition:
 
 ```sh
 treehouse get --lease --worktree-path '{repo_parent}/{repo}-{slot}'
+```
+
+or for every acquisition in one shell session:
+
+```sh
 export TREEHOUSE_WORKTREE_PATH='{repo_parent}/{repo}-{slot}'
 ```
 
