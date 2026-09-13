@@ -984,6 +984,39 @@ func removeAuthenticatedStaleJJSeedState(poolDir string, state State) error {
 	return nil
 }
 
+// dropStaleJJSeedAuthentication unlinks the authentication a jj slot left beside
+// its worktree, for the removal routes that never call vcs.RemoveWorktree - the
+// orphan and markerless ones - and so never reach the removal that normally does
+// it. Under the built-in layout the slot container took the file with it; a
+// worktree_path worktree outside the pool has only itself removed, and its state
+// entry is dropped in the same transaction, so nothing would ever look for the
+// file again. Left behind it is not inert: a later acquisition on that path
+// cannot seed, and the slot it leaves cannot be destroyed.
+//
+// BEST EFFORT ON PURPOSE. The error is ignored because the caller has already
+// deleted the worktree, and the alternatives are both worse than a leftover:
+// failing the removal strands a worktree that is already gone, and keeping the
+// entry so cleanup can be retried makes every later operation fail during state
+// healing. A failure here therefore leaves exactly what today leaves - the file -
+// and nothing else changes. It still acts only on an entry whose signed inventory
+// validates, and vcs.RemoveStaleJJSeedAuthentication verifies the file's own
+// identity, and that the workspace is really gone, before unlinking it. The
+// shared directory is deliberately left in place: pools that share it take
+// independent state locks, so no pool can prove it is unused.
+func dropStaleJJSeedAuthentication(poolDir string, wt WorktreeEntry) {
+	if !wt.SeedInventoryKnown || wt.SeedInventoryDigest == "" || wt.SeedBackend != "jj" || wt.SeedAuthIdentity == "" || len(wt.SeededPaths) == 0 {
+		return
+	}
+	key, err := readStateKey(poolDir)
+	if err != nil {
+		return
+	}
+	if !validSeedInventoryDigest(key, wt) {
+		return
+	}
+	_ = vcs.RemoveStaleJJSeedAuthentication(wt.Path, wt.SeedAuthIdentity)
+}
+
 func ownerAlive(wt WorktreeEntry) bool {
 	if wt.OwnerPID == 0 || wt.OwnerStartedAt == 0 {
 		return false

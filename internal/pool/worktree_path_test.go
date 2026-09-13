@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/treehouse/internal/vcs/gitvcs"
 )
 
 // quotedPath renders a path the way the errors below name it. The messages quote
@@ -969,4 +971,111 @@ func TestDestroyPool_RemovesWorktreePlacedOutsideThePool(t *testing.T) {
 	if _, err := os.Stat(repoDir); err != nil {
 		t.Errorf("destroy removed the repository beside the worktree: %v", err)
 	}
+}
+
+// TestRemoveManagedWorktree_DropsJJSeedAuthOnPlainRoute covers the routes that
+// never call vcs.RemoveWorktree - orphaned and markerless slots - and so never
+// reach the removal that normally drops a jj slot's seed authentication. Under
+// the built-in layout the slot container took the file along; a worktree
+// worktree_path placed outside the pool has only itself removed, and a leftover
+// there poisons the path: the next acquisition cannot seed, and the slot it
+// leaves behind cannot be destroyed.
+func TestRemoveManagedWorktree_DropsJJSeedAuthOnPlainRoute(t *testing.T) {
+	authPath, entry, poolDir, worktree := seededJJSlotOutsideThePool(t)
+
+	// Markerless: the directory is still there but its .jj marker is gone, so
+	// removal takes the plain-directory route.
+	if err := os.RemoveAll(filepath.Join(worktree, ".jj")); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeManagedWorktree(poolDir, "", entry); err != nil {
+		t.Fatalf("removeManagedWorktree failed: %v", err)
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Errorf("expected the worktree to be removed, stat err: %v", err)
+	}
+	if _, err := os.Lstat(authPath); !os.IsNotExist(err) {
+		t.Errorf("expected the jj seed authentication to be dropped, stat err: %v", err)
+	}
+}
+
+// TestRemoveManagedWorktree_LeavesUnownedJJSeedAuthOnPlainRoute is the other half:
+// dropping the authentication is best effort, and it must still refuse a file it
+// cannot prove belongs to that entry. The removal itself has to succeed anyway,
+// because the worktree is already gone.
+func TestRemoveManagedWorktree_LeavesUnownedJJSeedAuthOnPlainRoute(t *testing.T) {
+	authPath, entry, poolDir, worktree := seededJJSlotOutsideThePool(t)
+
+	// Swap in a file with a different inode, the way the suite's other
+	// fail-closed test does, so the recorded identity cannot match.
+	forged := authPath + ".forged"
+	if err := os.WriteFile(forged, []byte("someone else's data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(authPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(forged, authPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(worktree, ".jj")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := removeManagedWorktree(poolDir, "", entry); err != nil {
+		t.Fatalf("removeManagedWorktree failed: %v", err)
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Errorf("expected the worktree to be removed, stat err: %v", err)
+	}
+	if _, err := os.Lstat(authPath); err != nil {
+		t.Errorf("expected an unowned authentication file to be left alone: %v", err)
+	}
+}
+
+// seededJJSlotOutsideThePool builds a jj slot with a signed seed inventory at a
+// path outside the pool, the shape worktree_path allows, and returns its
+// authentication file, its state entry as persisted, the pool dir and the
+// worktree. It needs no jj binary: the marker file and PrepareJJSeededCleanup are
+// what the authentication is derived from.
+func seededJJSlotOutsideThePool(t *testing.T) (authPath string, entry WorktreeEntry, poolDir, worktree string) {
+	t.Helper()
+	base := t.TempDir()
+	poolDir = filepath.Join(base, "pool", "myrepo-abc123")
+	if err := os.MkdirAll(poolDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktree = filepath.Join(base, "src", "myrepo-1")
+	marker := filepath.Join(worktree, ".jj", "repo")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("store"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitvcs.PrepareJJSeededCleanup(worktree); err != nil {
+		t.Fatal(err)
+	}
+	authDir := filepath.Join(filepath.Dir(worktree), ".treehouse-jj-seed-auth")
+	authEntries, err := os.ReadDir(authDir)
+	if err != nil || len(authEntries) != 1 {
+		t.Fatalf("authentication entries = %v, %v", authEntries, err)
+	}
+	authPath = filepath.Join(authDir, authEntries[0].Name())
+
+	seeded := WorktreeEntry{Name: "1", Path: worktree}
+	setSeedInventory(&seeded, []string{"selected.env"}, true)
+	if err := WriteState(poolDir, State{Worktrees: []WorktreeEntry{seeded}}); err != nil {
+		t.Fatal(err)
+	}
+	// Read it back: the digest, backend and authentication identity are stamped
+	// on write, and the drop only acts on an entry whose inventory validates.
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Worktrees) != 1 || state.Worktrees[0].SeedAuthIdentity == "" {
+		t.Fatalf("expected a signed jj seed inventory, got %#v", state.Worktrees)
+	}
+	return authPath, state.Worktrees[0], poolDir, worktree
 }
