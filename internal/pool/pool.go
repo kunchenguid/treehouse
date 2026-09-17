@@ -62,6 +62,12 @@ type WorktreeStatus struct {
 	// instead of leaving Branch empty, so a read failure is never mistaken for
 	// a detached HEAD.
 	BranchErr string
+	// HeldOnlyByCwd reports a StatusHere slot that nobody is actually holding:
+	// it is unleased, idle, clean, quiet and undamaged, and the only reason it
+	// is not reported available is that the caller is standing in it. Status
+	// alone cannot answer that, because StatusHere hides whichever
+	// classification the slot would otherwise have carried.
+	HeldOnlyByCwd bool
 }
 
 // LeaseInfo is the stable machine-readable identity of one lease acquisition.
@@ -987,23 +993,35 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 			if branchErr != nil {
 				ws.BranchErr = branchErr.Error()
 			}
-			if wt.Leased {
+			// The slot is classified WITHOUT the cwd, which is then laid over
+			// the answer. The ranking the operator sees is unchanged - leased
+			// and a live owner reservation still outrank "you're here", and it
+			// still outranks everything below - but the classification it hides
+			// is now known, so a caller can tell a slot somebody holds from one
+			// whose only claim is the shell standing in it.
+			owned := ownerAlive(wt)
+			switch {
+			case wt.Leased:
 				ws.Status = StatusLeased
 				ws.LeaseID = wt.LeaseID
 				ws.LeaseHolder = wt.LeaseHolder
 				ws.LeasedAt = wt.LeasedAt
-			} else if ownerAlive(wt) {
+			case owned:
 				ws.Status = StatusInUse
-			} else if process.WorktreeContainsCwd(wt.Path, cwd) {
-				ws.Status = StatusHere
-			} else if scanErr != nil {
+			case scanErr != nil:
 				ws.Status = StatusUnverified
-			} else if len(procs) > 0 {
+			case len(procs) > 0:
 				ws.Status = StatusInUse
-			} else if ws.Flavor == "" {
+			case ws.Flavor == "":
 				ws.Status = StatusDamaged
-			} else if dirty, _ := vcs.IsDirty(wt.Path); dirty {
-				ws.Status = StatusDirty
+			default:
+				if dirty, _ := vcs.IsDirty(wt.Path); dirty {
+					ws.Status = StatusDirty
+				}
+			}
+			if !wt.Leased && !owned && process.WorktreeContainsCwd(wt.Path, cwd) {
+				ws.HeldOnlyByCwd = ws.Status == StatusAvailable
+				ws.Status = StatusHere
 			}
 
 			// A slot the recovery scan could not inspect (its marker exists but

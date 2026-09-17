@@ -311,10 +311,12 @@ An argument is read as a path first and only then as a name, so every argument t
 treehouse return --all
 # 🌳 Returning 1 (leased) at ~/.treehouse/myrepo-a1b2c3/1/myrepo
 # 🌳 Returning 2 (in-use) at ~/.treehouse/myrepo-a1b2c3/2/myrepo
-# 🌳 Returned 2 of 2 held worktree(s); 0 skipped; 1 already available or damaged.
+# 🌳 Returned 2 of 2 held worktree(s); 0 skipped; 1 not held.
 ```
 
-Held means every slot `treehouse status` does not report `available` or `damaged`: `leased`, `in-use`, `you're here`, `dirty`, and `unverified`. An available slot has nothing to return. A damaged slot is skipped because its marker is missing or unreadable, so neither the detach nor the reset a return performs can be judged safe - `treehouse destroy`, which `status` spells out for such a slot, is what removes it. Naming a damaged slot explicitly still returns it.
+Held means somebody has the slot: `leased`, `in-use`, `dirty`, `unverified`, and `you're here` when the slot is any of those underneath. Three kinds of slot are left alone. An `available` slot has nothing to return. A `damaged` slot's marker is missing or unreadable, so neither the detach nor the reset a return performs can be judged safe - `treehouse destroy`, which `status` spells out for such a slot, is what removes it. And a slot reported `you're here` that is otherwise parked, clean and quiet is held by nobody: your own shell standing in it is the only reason `status` does not call it available, and `treehouse enter` is documented to leave pool state untouched, so `--all` must not reset it either.
+
+Naming any of them explicitly still returns it, including a bare `treehouse return` from inside the slot you are standing in: the narrow target is a deliberate act, while the bulk one must not surprise.
 
 This target set is deliberately wider than the other bulk verbs. `prune` never touches a leased slot, and `destroy` removes one only when its exact path is named with `--include-leased`; `--all` clears leased and in-use slots. Those verbs delete a worktree, while a return keeps it in the pool, and reclaiming a whole pool whose agents are gone is what the verb is for. Terminate the agents first if they are still working.
 

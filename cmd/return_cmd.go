@@ -62,20 +62,24 @@ already resolves keeps resolving to exactly the same worktree.
   treehouse return --all            Return every held worktree in this
                                     repository's pool.
 
---all acts on every slot 'treehouse status' does not report 'available' or
-'damaged': an available slot has nothing to return, and a damaged slot's marker
-cannot be read, so 'treehouse destroy' - not return - is what removes it. This
-is deliberately wider than 'prune' and 'destroy --all', which never touch a
-leased slot: --all exists to reclaim a whole pool, so it clears leased and
-in-use slots too. Each worktree is returned exactly as naming it would be,
-including the confirmation before uncommitted changes are discarded; declining
-one skips it and the rest still run. Each release is pinned to the lease the
-listing saw: a slot leased then is skipped unless that same lease is still on
-it, and a slot unleased then is skipped if it has been leased since. A slot
-handed to another plain 'treehouse get' carries no lease to compare, so it is
-returned like any other in-use slot. --all takes no path or name, and cannot
-be combined with the --if-lease-* conditions, which target a single lease
-identity.`,
+--all acts on every slot somebody is holding. It leaves alone a slot
+'treehouse status' reports 'available' (nothing to return) or 'damaged' (its
+marker cannot be read, so 'treehouse destroy' - not return - is what removes
+it), and a slot reported 'you're here' that is otherwise parked, clean and
+quiet: standing in a slot is not holding it, and 'treehouse enter' promises not
+to touch pool state. Stand in a slot that is leased, dirty, or running
+something and --all returns it like any other.
+
+Holding leased and in-use slots in scope is deliberately wider than 'prune' and
+'destroy --all', which never touch a leased slot: --all exists to reclaim a
+whole pool. Each worktree is returned exactly as naming it would be, including
+the confirmation before uncommitted changes are discarded; declining one skips
+it and the rest still run. Each release is pinned to the lease the listing saw:
+a slot leased then is skipped unless that same lease is still on it, and a slot
+unleased then is skipped if it has been leased since. A slot handed to another
+plain 'treehouse get' carries no lease to compare, so it is returned like any
+other in-use slot. --all takes no path or name, and cannot be combined with the
+--if-lease-* conditions, which target a single lease identity.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("if-lease-id") && returnIfLeaseID == "" {
 			return fmt.Errorf("--if-lease-id cannot be empty")
@@ -131,7 +135,7 @@ identity.`,
 
 func init() {
 	returnCmd.Flags().BoolVar(&returnForce, "force", false, "Clean, reset, and return without prompting")
-	returnCmd.Flags().BoolVar(&returnAll, "all", false, "Return every held worktree in this repository's pool (skips available and damaged slots)")
+	returnCmd.Flags().BoolVar(&returnAll, "all", false, "Return every held worktree in this repository's pool (leaves alone slots nobody holds)")
 	returnCmd.Flags().StringVar(&returnIfLeaseID, "if-lease-id", "", "Return only if the current lease has this identity")
 	returnCmd.Flags().StringVar(&returnIfLeaseHolder, "if-lease-holder", "", "Return only if the current lease has this holder")
 	rootCmd.AddCommand(returnCmd)
@@ -145,11 +149,10 @@ func init() {
 // The preconditions run first so a slot the release already knows it will
 // refuse - a lease that is no longer the one observed, or a quarantine no
 // return can clear - is never announced as a dirty worktree about to be
-// cleaned. Offering to discard
-// someone's uncommitted changes and then refusing anyway is worse than refusing
-// outright. Both checks reach the same `pool` gate, so the pre-check and the
-// release cannot disagree; the release re-runs them under its own state lock,
-// which is what actually fences the reset.
+// cleaned. Offering to discard someone's uncommitted changes and then refusing
+// anyway is worse than refusing outright. Both checks reach the same `pool`
+// gate, so the pre-check and the release cannot disagree; the release re-runs
+// them under its own state lock, which is what actually fences the reset.
 func releaseWorktree(target returnTarget, preconditions pool.ReleasePreconditions) error {
 	if err := pool.ValidateReleasePreconditions(target.poolDir, target.path, preconditions, nil); err != nil {
 		return err
@@ -195,20 +198,31 @@ func bulkReturnPreconditions(wt pool.WorktreeStatus) pool.ReleasePreconditions {
 // parked and a later `get` will hand it out. Damaged is excluded because its
 // marker is missing or unreadable, so neither the detach nor the reset a return
 // performs can be judged safe, and `destroy` - which `status` already spells out
-// for such a slot - is the verb that removes it. Everything else (leased,
-// in-use, you're here, dirty, unverified) is a slot somebody is holding, which
-// is exactly what a bulk return exists to reclaim.
+// for such a slot - is the verb that removes it. So is a slot reported
+// "you're here" that `pool.WorktreeStatus.HeldOnlyByCwd` marks as held by
+// nobody: it is parked, clean and quiet, and the caller's own shell standing in
+// it is the only reason it is not reported available. `treehouse enter` is
+// documented to leave pool state untouched, so resetting such a slot - and
+// counting it among the held worktrees returned - would break that promise.
+// Everything else (leased, in-use, dirty, unverified, and a "you're here" slot
+// that is any of those underneath) is a slot somebody is holding, which is
+// exactly what a bulk return exists to reclaim.
 //
 // That is deliberately WIDER than the other bulk verbs: prune skips a leased
 // slot and destroy removes one only when its exact path is named with
 // --include-leased, while `return --all` clears leased and in-use slots. A
 // return leaves the slot in the pool, and reclaiming a pool whose agents are
-// gone is the whole point of the verb.
+// gone is the whole point of the verb. Standing in a slot is not holding it,
+// which is why that one case is the exception rather than a narrowing.
 //
-// Naming a damaged slot explicitly still returns it, unchanged: the narrow
-// target is a deliberate act, while the bulk one must not surprise.
-func returnableStatus(status string) bool {
-	switch status {
+// Naming a damaged slot, or the slot you are standing in, explicitly still
+// returns it, unchanged: the narrow target is a deliberate act, while the bulk
+// one must not surprise.
+func returnableStatus(wt pool.WorktreeStatus) bool {
+	if wt.HeldOnlyByCwd {
+		return false
+	}
+	switch wt.Status {
 	case pool.StatusAvailable, pool.StatusDamaged:
 		return false
 	default:
@@ -224,7 +238,8 @@ func returnableStatus(status string) bool {
 // A slot is skipped, and the run neither fails nor reports an abort for it,
 // when the lease on it is no longer the one the listing saw (returned or taken
 // over since) or when no release can clear it (quarantined without a trusted
-// seed inventory). Nothing went wrong in either case, and calling them failures
+// seed inventory). A slot nobody holds - available, damaged, or one the caller
+// merely stands in - is never a target at all and is counted separately. Nothing went wrong in either case, and calling them failures
 // made a quarantined pool exit 1 on every retry forever. A run where every slot
 // was skipped still exits 0: nothing it set out to return was still there to
 // return.
@@ -242,11 +257,14 @@ func returnHeldWorktrees() error {
 	var targets []pool.WorktreeStatus
 	var notHeld int
 	for _, wt := range worktrees {
-		if returnableStatus(wt.Status) {
+		if returnableStatus(wt) {
 			targets = append(targets, wt)
 			continue
 		}
 		notHeld++
+		if wt.HeldOnlyByCwd {
+			fmt.Fprintf(os.Stderr, "🌳 Leaving %s at %s alone: you are standing in it and nobody holds it.\n", wt.Name, ui.PrettyPath(wt.Path))
+		}
 	}
 
 	if len(targets) == 0 {
@@ -279,7 +297,7 @@ func returnHeldWorktrees() error {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "🌳 Returned %d of %d held worktree(s); %d skipped; %d already available or damaged.\n",
+	fmt.Fprintf(os.Stderr, "🌳 Returned %d of %d held worktree(s); %d skipped; %d not held.\n",
 		returned, len(targets), len(skipped), notHeld)
 
 	// A failure outranks an abort: retrying is the right response to a failure

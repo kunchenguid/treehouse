@@ -540,3 +540,66 @@ func TestReturnAllHonorsEveryPipedAnswer(t *testing.T) {
 		}
 	}
 }
+
+// TestReturnAllLeavesAloneTheParkedSlotYouStandIn pins the one slot `--all`
+// treats as unheld despite `status` not calling it available. `treehouse enter`
+// leaves pool state untouched, so a parked, clean, quiet slot reports
+// "you're here" purely because the caller's shell is inside it, and nobody
+// holds it. Resetting it and counting it among the held worktrees returned
+// would contradict what enter promises.
+func TestReturnAllLeavesAloneTheParkedSlotYouStandIn(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	parked := acquireLeaseJSON(t, repoDir, homeDir, "agent-a")
+	if _, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "return", parked.Path); code != 0 {
+		t.Fatalf("parking the slot failed (code %d): %s", code, stderr)
+	}
+	headBefore := gitCmd(t, parked.Path, "rev-parse", "HEAD")
+
+	_, allErr, code := runTreehouseFromDir(t, repoDir, parked.Path, homeDir, nil, "return", "--all")
+	if code != 0 {
+		t.Fatalf("a pool holding nothing must exit 0, got %d: %s", code, allErr)
+	}
+	if !strings.Contains(allErr, "No held worktrees to return") {
+		t.Fatalf("expected the slot the caller stands in to be unheld, got: %s", allErr)
+	}
+	if strings.Contains(allErr, "Returning") {
+		t.Fatalf("the parked slot must not be returned, got: %s", allErr)
+	}
+	if got := statusEntry(t, repoDir, homeDir, "1"); got.Status != "available" {
+		t.Fatalf("expected the parked slot untouched, got %+v", got)
+	}
+	if got := gitCmd(t, parked.Path, "rev-parse", "HEAD"); got != headBefore {
+		t.Fatalf("expected HEAD unchanged at %s, got %s", headBefore, got)
+	}
+}
+
+// TestReturnAllReturnsTheDirtySlotYouStandIn is the converse, and it is what
+// keeps the skip above from widening: standing in a slot only excuses it while
+// nobody holds it. Uncommitted work is a holder, so the slot is returned
+// exactly as it would be from anywhere else.
+func TestReturnAllReturnsTheDirtySlotYouStandIn(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	held := acquireLeaseJSON(t, repoDir, homeDir, "agent-a")
+	if _, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "return", held.Path); code != 0 {
+		t.Fatalf("parking the slot failed (code %d): %s", code, stderr)
+	}
+	if err := os.WriteFile(filepath.Join(held.Path, "README.md"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, allErr, code := runTreehouseFromDir(t, repoDir, held.Path, homeDir, nil, "return", "--all", "--force")
+	if code != 0 {
+		t.Fatalf("return --all --force from inside a dirty slot failed (code %d): %s", code, allErr)
+	}
+	if !strings.Contains(allErr, "Returned 1 of 1 held worktree(s)") {
+		t.Fatalf("expected the dirty slot returned, got: %s", allErr)
+	}
+	if got := gitCmd(t, held.Path, "status", "--porcelain"); got != "" {
+		t.Fatalf("expected the dirty slot cleaned, git status:\n%s", got)
+	}
+	if got := statusEntry(t, repoDir, homeDir, "1"); got.Status != "available" {
+		t.Fatalf("expected the dirty slot released, got %+v", got)
+	}
+}
