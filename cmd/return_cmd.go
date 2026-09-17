@@ -240,11 +240,13 @@ func returnableStatus(wt pool.WorktreeStatus) bool {
 // A slot is skipped, and the run neither fails nor reports an abort for it,
 // when the lease on it is no longer the one the listing saw (returned or taken
 // over since) or when no release can clear it (quarantined without a trusted
-// seed inventory). A slot nobody holds - available, damaged, or one the caller
-// merely stands in - is never a target at all and is counted separately. Nothing went wrong in either case, and calling them failures
-// made a quarantined pool exit 1 on every retry forever. A run where every slot
-// was skipped still exits 0: nothing it set out to return was still there to
-// return.
+// seed inventory). Nothing went wrong in either case, and calling them
+// failures made a quarantined pool exit 1 on every retry forever. A run where
+// every slot was skipped still exits 0: nothing it set out to return was still
+// there to return.
+//
+// A slot nobody holds - available, damaged, or one the caller merely stands
+// in - is never a target at all and is counted separately.
 func returnHeldWorktrees() error {
 	poolDir, err := repositoryPoolDir()
 	if err != nil {
