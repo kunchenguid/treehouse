@@ -64,11 +64,16 @@ already resolves keeps resolving to exactly the same worktree.
 
 --all acts on every slot 'treehouse status' does not report 'available' or
 'damaged': an available slot has nothing to return, and a damaged slot's marker
-cannot be read, so 'treehouse destroy' - not return - is what removes it. Each
-worktree is returned exactly as naming it would be, including the confirmation
-before uncommitted changes are discarded; declining one skips it and the rest
-still run. --all takes no path or name, and cannot be combined with the
---if-lease-* conditions, which target a single lease identity.`,
+cannot be read, so 'treehouse destroy' - not return - is what removes it. This
+is deliberately wider than 'prune' and 'destroy --all', which never touch a
+leased slot: --all exists to reclaim a whole pool, so it clears leased and
+in-use slots too. Each worktree is returned exactly as naming it would be,
+including the confirmation before uncommitted changes are discarded; declining
+one skips it and the rest still run. A slot re-acquired while the run works
+through the pool is skipped rather than reset, because it is no longer the
+worktree the run set out to return. --all takes no path or name, and cannot be
+combined with the --if-lease-* conditions, which target a single lease
+identity.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("if-lease-id") && returnIfLeaseID == "" {
 			return fmt.Errorf("--if-lease-id cannot be empty")
@@ -91,26 +96,14 @@ still run. --all takes no path or name, and cannot be combined with the
 			return err
 		}
 
-		if conditional {
-			preconditions := pool.ReleasePreconditions{}
-			if cmd.Flags().Changed("if-lease-id") {
-				preconditions.ExpectedLeaseID = &returnIfLeaseID
-			}
-			if cmd.Flags().Changed("if-lease-holder") {
-				preconditions.ExpectedLeaseHolder = &returnIfLeaseHolder
-			}
-			err = pool.ValidateReleasePreconditions(target.poolDir, target.path, preconditions, nil)
-			if err == nil {
-				err = confirmWorktreeReturn(target.path)
-			}
-			if err == nil {
-				err = pool.ReleaseConditional(target.poolDir, target.path, returnBaseBranch(target.path), preconditions, func() error {
-					return finalizeWorktreeReturn(target.path)
-				})
-			}
-		} else {
-			err = releaseWorktree(target)
+		preconditions := pool.ReleasePreconditions{}
+		if cmd.Flags().Changed("if-lease-id") {
+			preconditions.ExpectedLeaseID = &returnIfLeaseID
 		}
+		if cmd.Flags().Changed("if-lease-holder") {
+			preconditions.ExpectedLeaseHolder = &returnIfLeaseHolder
+		}
+		err = releaseWorktree(target, preconditions)
 		// An abort is not a success: the worktree, and any lease on it, are
 		// exactly as they were found. Reporting exit 0 here let a caller
 		// conclude the slot was released, so a leaked lease starved the pool
@@ -142,17 +135,48 @@ func init() {
 	rootCmd.AddCommand(returnCmd)
 }
 
-// releaseWorktree runs the unconditional return of one worktree: the dirty
+// releaseWorktree returns one worktree: the preconditions, then the dirty
 // confirmation, then the release itself. It returns errReturnAborted and
 // errReturnAbortedNonTTY unwrapped, because an abort left the worktree exactly
 // as it was found and every caller has to tell that apart from a failure.
-func releaseWorktree(target returnTarget) error {
+//
+// The preconditions are checked before the confirmation so a slot this release
+// will refuse is never announced as a dirty worktree about to be cleaned; the
+// release re-checks them under its own state lock, which is what actually
+// fences the reset.
+func releaseWorktree(target returnTarget, preconditions pool.ReleasePreconditions) error {
+	if err := pool.ValidateReleasePreconditions(target.poolDir, target.path, preconditions, nil); err != nil {
+		return err
+	}
 	if err := confirmWorktreeReturn(target.path); err != nil {
 		return err
 	}
-	return pool.ReleaseConditional(target.poolDir, target.path, returnBaseBranch(target.path), pool.ReleasePreconditions{}, func() error {
+	return pool.ReleaseConditional(target.poolDir, target.path, returnBaseBranch(target.path), preconditions, func() error {
 		return finalizeWorktreeReturn(target.path)
 	})
+}
+
+// bulkReturnPreconditions carries what the `--all` listing observed about a
+// slot into its release, so a slot re-acquired in between is refused instead of
+// reset. The two instants are separated by every earlier confirmation in the
+// run, a far wider window than a named return has.
+//
+// A leased slot is identified by its lease ID: every acquisition mints a new
+// one, so a takeover can never match. An unleased observation carries the empty
+// identity, which the pool reads as "expected no lease" and so refuses a slot
+// leased since. A leased slot with no ID - a state file predating lease IDs, or
+// a quarantined entry - offers nothing to compare, so it keeps the
+// unconditional release it has today.
+func bulkReturnPreconditions(wt pool.WorktreeStatus) pool.ReleasePreconditions {
+	if wt.Status == pool.StatusLeased {
+		if wt.LeaseID == "" {
+			return pool.ReleasePreconditions{}
+		}
+		expected := wt.LeaseID
+		return pool.ReleasePreconditions{ExpectedLeaseID: &expected}
+	}
+	unleased := ""
+	return pool.ReleasePreconditions{ExpectedLeaseID: &unleased}
 }
 
 // returnableStatus reports whether `return --all` acts on a slot in this state.
@@ -164,6 +188,12 @@ func releaseWorktree(target returnTarget) error {
 // for such a slot - is the verb that removes it. Everything else (leased,
 // in-use, you're here, dirty, unverified) is a slot somebody is holding, which
 // is exactly what a bulk return exists to reclaim.
+//
+// That is deliberately WIDER than the other bulk verbs: prune skips a leased
+// slot and destroy removes one only when its exact path is named with
+// --include-leased, while `return --all` clears leased and in-use slots. A
+// return leaves the slot in the pool, and reclaiming a pool whose agents are
+// gone is the whole point of the verb.
 //
 // Naming a damaged slot explicitly still returns it, unchanged: the narrow
 // target is a deliberate act, while the bulk one must not surprise.
@@ -177,9 +207,15 @@ func returnableStatus(status string) bool {
 }
 
 // returnHeldWorktrees implements `return --all`. Each worktree is released
-// exactly as naming it would be, one at a time, and a per-worktree abort or
-// failure never stops the ones after it: a bulk return that gave up on the
-// first dirty slot would leave the rest held with no indication which.
+// exactly as naming it would be, one at a time, and a per-worktree abort,
+// skip, or failure never stops the ones after it: a bulk return that gave up
+// on the first dirty slot would leave the rest held with no indication which.
+//
+// A slot is skipped, and the run neither fails nor reports an abort for it,
+// when it is no longer the worktree the listing described (re-acquired) or when
+// no release can clear it (quarantined without a trusted seed inventory).
+// Nothing went wrong in either case, and calling them failures made a
+// quarantined pool exit 1 on every retry forever.
 func returnHeldWorktrees() error {
 	poolDir, err := repositoryPoolDir()
 	if err != nil {
@@ -192,13 +228,13 @@ func returnHeldWorktrees() error {
 	}
 
 	var targets []pool.WorktreeStatus
-	var skipped int
+	var notHeld int
 	for _, wt := range worktrees {
 		if returnableStatus(wt.Status) {
 			targets = append(targets, wt)
 			continue
 		}
-		skipped++
+		notHeld++
 	}
 
 	if len(targets) == 0 {
@@ -207,13 +243,21 @@ func returnHeldWorktrees() error {
 	}
 
 	var returned int
-	var aborted, failed []string
+	var aborted, failed, skipped []string
 	for _, wt := range targets {
 		fmt.Fprintf(os.Stderr, "🌳 Returning %s (%s) at %s\n", wt.Name, wt.Status, ui.PrettyPath(wt.Path))
-		err := releaseWorktree(returnTarget{path: wt.Path, poolDir: poolDir})
+		err := releaseWorktree(returnTarget{path: wt.Path, poolDir: poolDir}, bulkReturnPreconditions(wt))
 		switch {
 		case err == nil:
 			returned++
+		// Neither skip is a failure: nothing went wrong and nothing was left
+		// half-done, so retrying the run would report the same thing forever.
+		case errors.Is(err, pool.ErrLeasePreconditionFailed):
+			skipped = append(skipped, wt.Name)
+			fmt.Fprintf(os.Stderr, "   %s skipped: it was re-acquired after this run listed it, so it is no longer the worktree this run set out to return.\n", wt.Name)
+		case errors.Is(err, pool.ErrSeedInventoryUntrusted):
+			skipped = append(skipped, wt.Name)
+			fmt.Fprintf(os.Stderr, "   %s skipped: %v\n", wt.Name, err)
 		case errors.Is(err, errReturnAborted), errors.Is(err, errReturnAbortedNonTTY):
 			aborted = append(aborted, wt.Name)
 			fmt.Fprintf(os.Stderr, "   %s left as found: its uncommitted changes were kept.\n", wt.Name)
@@ -223,8 +267,8 @@ func returnHeldWorktrees() error {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "🌳 Returned %d of %d held worktree(s); %d already available or damaged.\n",
-		returned, len(targets), skipped)
+	fmt.Fprintf(os.Stderr, "🌳 Returned %d of %d held worktree(s); %d skipped; %d already available or damaged.\n",
+		returned, len(targets), len(skipped), notHeld)
 
 	// A failure outranks an abort: retrying is the right response to a failure
 	// and the wrong one to a worktree deliberately left dirty, so the more

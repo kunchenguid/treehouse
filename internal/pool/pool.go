@@ -704,9 +704,20 @@ var ErrLeasePreconditionFailed = errors.New("lease precondition failed")
 // calling process's own short-lived owner reservation.
 var ErrOwnerPreconditionFailed = errors.New("owner precondition failed")
 
+// ErrSeedInventoryUntrusted reports that a worktree is quarantined: its seed
+// inventory could not be authenticated, so no release may clear it. A state
+// version bump or a rotated state key puts a whole pool in this state at once,
+// which is why callers classify it with errors.Is: a bulk return has to report
+// such a slot as skipped rather than as a failure it should retry forever.
+var ErrSeedInventoryUntrusted = errors.New("untrusted seed inventory")
+
 // ReleasePreconditions optionally constrain a release to the current lease.
 // Pointer fields distinguish an omitted condition from an expected empty value.
 type ReleasePreconditions struct {
+	// ExpectedLeaseID constrains the release to one acquisition. Nil omits the
+	// condition entirely; a pointer to the empty string is the identity an
+	// UNLEASED observation carries and requires the worktree to still be
+	// unleased, so a caller replaying what it saw refuses a slot leased since.
 	ExpectedLeaseID     *string
 	ExpectedLeaseHolder *string
 	// RequireOwnedByCaller limits the release to a worktree that still carries
@@ -788,7 +799,7 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 		// Clearing a safety quarantine without a trusted seed inventory could
 		// expose ignored files hidden by a mutable manifest.
 		if !wt.SeedInventoryKnown {
-			return fmt.Errorf("worktree %s is quarantined without a trusted seed inventory; inspect it and use destroy --include-leased instead", worktreePath)
+			return fmt.Errorf("%w: worktree %s is quarantined without a trusted seed inventory; inspect it and use destroy --include-leased instead", ErrSeedInventoryUntrusted, worktreePath)
 		}
 		branch, fallback, requested := "", "", ""
 		if !markerless {
@@ -863,6 +874,17 @@ func validateReleasePreconditions(wt WorktreeEntry, preconditions ReleasePrecond
 		}
 	}
 	if preconditions.ExpectedLeaseID == nil && preconditions.ExpectedLeaseHolder == nil {
+		return nil
+	}
+	// An expected EMPTY lease identity means "expected no lease": it is the
+	// reading an observation of an unleased slot carries, and a release that
+	// set out to reclaim a slot nobody had leased must refuse once somebody
+	// has. It cannot arrive from `--if-lease-id`, which the command refuses
+	// empty; it comes from a caller replaying its own earlier reading.
+	if preconditions.ExpectedLeaseID != nil && *preconditions.ExpectedLeaseID == "" && preconditions.ExpectedLeaseHolder == nil {
+		if wt.Leased {
+			return fmt.Errorf("%w: worktree %s was observed unleased and is leased now", ErrLeasePreconditionFailed, wt.Path)
+		}
 		return nil
 	}
 	if !wt.Leased {

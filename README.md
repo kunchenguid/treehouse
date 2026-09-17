@@ -311,10 +311,17 @@ An argument is read as a path first and only then as a name, so every argument t
 treehouse return --all
 # 🌳 Returning 1 (leased) at ~/.treehouse/myrepo-a1b2c3/1/myrepo
 # 🌳 Returning 2 (in-use) at ~/.treehouse/myrepo-a1b2c3/2/myrepo
-# 🌳 Returned 2 of 2 held worktree(s); 1 already available or damaged.
+# 🌳 Returned 2 of 2 held worktree(s); 0 skipped; 1 already available or damaged.
 ```
 
 Held means every slot `treehouse status` does not report `available` or `damaged`: `leased`, `in-use`, `you're here`, `dirty`, and `unverified`. An available slot has nothing to return. A damaged slot is skipped because its marker is missing or unreadable, so neither the detach nor the reset a return performs can be judged safe - `treehouse destroy`, which `status` spells out for such a slot, is what removes it. Naming a damaged slot explicitly still returns it.
+
+This target set is deliberately wider than the other bulk verbs. `prune` never touches a leased slot, and `destroy` removes one only when its exact path is named with `--include-leased`; `--all` clears leased and in-use slots. Those verbs delete a worktree, while a return keeps it in the pool, and reclaiming a whole pool whose agents are gone is what the verb is for. Terminate the agents first if they are still working.
+
+Two outcomes are reported as **skipped**, count against neither the returns nor the failures, and leave the slot exactly as it was:
+
+- **Re-acquired.** `--all` lists the pool once and then works through it, so an earlier confirmation can hold the run open while a later slot is returned and handed to another acquisition. Each release carries the identity the listing saw - the lease ID of a leased slot, "no lease" for every other held slot - so the slot that changed hands is refused instead of reset.
+- **Quarantined.** A state version bump or a rotated state key leaves an entry whose seed inventory can no longer be authenticated, and no return may clear it. A whole pool can land in this state at once; the run reports each slot and points at `treehouse destroy --include-leased`.
 
 Each worktree is returned exactly as naming it would be, including the confirmation before uncommitted changes are discarded. Declining one - or failing to return one - never stops the worktrees after it, and the summary names every slot that was left behind. `--all` takes no path or name, and cannot be combined with `--if-lease-id` or `--if-lease-holder`, which identify a single acquisition.
 
@@ -326,7 +333,7 @@ Each worktree is returned exactly as naming it would be, including the confirmat
 | `1`  | The return failed: unmet lease conditions, process termination, or reset |
 | `3`  | The worktree was not returned, and is exactly as it was found: it has uncommitted changes and cleaning was declined, or the confirmation could not be answered |
 
-`--all` reports the same statuses for the whole run: `0` when every held worktree was returned, `3` when the only thing that stopped a return was an abort, and `1` when any worktree failed. A failure outranks an abort because the two need opposite responses - retry one, clean or `--force` the other.
+`--all` reports the same statuses for the whole run: `0` when every held worktree was returned or skipped, `3` when the only thing that stopped a return was an abort, and `1` when any worktree failed. A skip is never a failure: nothing went wrong, so a retry would only report it again. A failure outranks an abort because the two need opposite responses - retry one, clean or `--force` the other.
 
 `treehouse get` uses the same exit `3` when its subshell exits and leaves the worktree dirty, because it leaks the slot the same way: the worktree stays dirty, so a later `get` skips it and `prune` will not reclaim it. Exiting a `get` subshell while another session holds a durable lease on that slot is not this case and still exits 0, because a leased slot was never that session's to return.
 

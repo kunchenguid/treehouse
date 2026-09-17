@@ -2,10 +2,13 @@ package cmd
 
 import (
 	"encoding/json"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // statusEntries reads the machine-readable pool status, which is what these
@@ -265,6 +268,153 @@ func TestCouldBeWorktreeName(t *testing.T) {
 	for _, path := range paths {
 		if couldBeWorktreeName(path) {
 			t.Errorf("%q is a path and must never be read as a worktree name", path)
+		}
+	}
+}
+
+// TestReturnAllSkipsASlotReacquiredMidRun pins the identity --all carries from
+// its listing into every release. The run lists the pool once and then works
+// through it, so a slot returned and handed to another acquisition while an
+// earlier confirmation is still open is no longer the worktree the run set out
+// to return: it must be left alone, with its new lease and its new tenant's
+// files intact, and that skip is not a failure.
+func TestReturnAllSkipsASlotReacquiredMidRun(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	dirty := acquireLeaseJSON(t, repoDir, homeDir, "dirty-agent")
+	taken := acquireLeaseJSON(t, repoDir, homeDir, "first-holder")
+	if dirty.Path == taken.Path {
+		t.Fatalf("expected two distinct slots, both are %s", dirty.Path)
+	}
+	// The first slot prompts, which is what holds the run open long enough for
+	// the second slot to change hands underneath it.
+	if err := os.WriteFile(filepath.Join(dirty.Path, "README.md"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	all := exec.Command(treehouseBin, "return", "--all")
+	all.Dir = repoDir
+	all.Env = buildEnv(homeDir)
+	stdin, err := all.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := all.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := all.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if all.ProcessState == nil {
+			_ = all.Process.Kill()
+			_ = all.Wait()
+		}
+	})
+
+	promptRead := make(chan error, 1)
+	go func() {
+		promptRead <- readUntilSuffix(stderr, "[Y/n] ")
+	}()
+	select {
+	case err := <-promptRead:
+		if err != nil {
+			t.Fatalf("failed to read the bulk return prompt: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("return --all did not prompt for the dirty slot")
+	}
+
+	if _, stderrOut, code := runTreehouse(t, repoDir, homeDir, nil, "return", "--force", taken.Path); code != 0 {
+		t.Fatalf("returning the second slot mid-run failed (code %d): %s", code, stderrOut)
+	}
+	reacquired := acquireLeaseJSON(t, repoDir, homeDir, "new-holder")
+	if reacquired.Path != taken.Path {
+		t.Fatalf("expected the freed slot %s to be re-acquired, got %s", taken.Path, reacquired.Path)
+	}
+	if reacquired.LeaseID == taken.LeaseID {
+		t.Fatalf("re-acquisition reused the lease identity %q", taken.LeaseID)
+	}
+	sentinel := filepath.Join(reacquired.Path, "new-holder-work.txt")
+	if err := os.WriteFile(sentinel, []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := io.WriteString(stdin, "y\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rest, err := io.ReadAll(stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(rest)
+	if err := all.Wait(); err != nil {
+		t.Fatalf("a skipped slot is not a failure, expected exit 0, got %v: %s", err, output)
+	}
+	if !strings.Contains(output, "skipped: it was re-acquired") {
+		t.Fatalf("expected the re-acquired slot to be reported skipped, got: %s", output)
+	}
+	if !strings.Contains(output, "Returned 1 of 2 held worktree(s); 1 skipped") {
+		t.Fatalf("expected the summary to count one return and one skip, got: %s", output)
+	}
+
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("the re-acquired slot was reset under its new tenant: %v", err)
+	}
+	for _, entry := range statusEntries(t, repoDir, homeDir) {
+		switch entry.Path {
+		case dirty.Path:
+			if entry.Status != "available" {
+				t.Fatalf("expected the confirmed slot returned, got %+v", entry)
+			}
+		case taken.Path:
+			if entry.Status != "leased" || entry.LeaseID != reacquired.LeaseID {
+				t.Fatalf("expected the re-acquired slot to keep its new lease, got %+v", entry)
+			}
+		}
+	}
+}
+
+// TestReturnAllSkipsQuarantinedSlotsWithoutFailing pins the other skip. A
+// rotated state key (a state version bump does the same) quarantines every
+// entry in a pool: no release may clear one, because its seed inventory can no
+// longer be authenticated. Reporting that as a failure made --all exit 1 on
+// every retry forever, so it is reported as a skip that points at destroy.
+func TestReturnAllSkipsQuarantinedSlotsWithoutFailing(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	first := acquireLeaseJSON(t, repoDir, homeDir, "agent-a")
+	second := acquireLeaseJSON(t, repoDir, homeDir, "agent-b")
+	poolDir := filepath.Dir(filepath.Dir(first.Path))
+
+	if err := os.WriteFile(filepath.Join(poolDir, "treehouse-state.key"), []byte("rotated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, allErr, code := runTreehouse(t, repoDir, homeDir, nil, "return", "--all")
+	if code != 0 {
+		t.Fatalf("a quarantined pool must not report a failure, got code %d: %s", code, allErr)
+	}
+	if !strings.Contains(allErr, "Returned 0 of 2 held worktree(s); 2 skipped") {
+		t.Fatalf("expected both slots counted as skipped, got: %s", allErr)
+	}
+	if !strings.Contains(allErr, "destroy --include-leased") {
+		t.Fatalf("expected the skip to point at destroy, got: %s", allErr)
+	}
+
+	// A quarantine is a refusal, so both homes are exactly as they were.
+	for _, entry := range statusEntries(t, repoDir, homeDir) {
+		if entry.Status != "leased" {
+			t.Fatalf("expected a quarantined slot to stay leased, got %+v", entry)
+		}
+	}
+	for _, path := range []string{first.Path, second.Path} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("quarantined worktree %s was disturbed: %v", path, err)
 		}
 	}
 }
