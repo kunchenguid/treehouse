@@ -991,6 +991,28 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 	return result, err
 }
 
+// FindByName returns the pool entry registered under name, or nil when this
+// pool has no such slot. The name is the identity `treehouse status` prints in
+// its first column and `treehouse lease <name>` already accepts: it belongs to
+// the slot for the slot's whole lifetime, unlike a position in a listing, which
+// moves whenever another slot is created or destroyed. Lookup is by exact
+// match, and a pool never registers two slots under one name.
+//
+// Unlike a path, a name is meaningful only inside the pool that issued it, so
+// callers must resolve the pool from the repository first.
+func FindByName(poolDir, name string) (*WorktreeEntry, error) {
+	state, err := ReadState(poolDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, wt := range state.Worktrees {
+		if wt.Name == name {
+			return &wt, nil
+		}
+	}
+	return nil, nil
+}
+
 func FindByPath(poolDir, path string) (*WorktreeEntry, error) {
 	state, err := ReadState(poolDir)
 	if err != nil {

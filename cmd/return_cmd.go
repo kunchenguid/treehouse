@@ -18,6 +18,7 @@ import (
 
 var (
 	returnForce         bool
+	returnAll           bool
 	returnIfLeaseID     string
 	returnIfLeaseHolder string
 )
@@ -28,28 +29,68 @@ var (
 	errReturnAbortedNonTTY     = errors.New("return aborted: non-tty dirty")
 )
 
+// returnTarget is one worktree a return acts on, paired with the pool that owns
+// it. The two travel together because a path can find its own pool while a name
+// can only be resolved through the repository, and every later step needs both.
+type returnTarget struct {
+	path    string
+	poolDir string
+}
+
 var returnCmd = &cobra.Command{
-	Use:   "return [path]",
+	Use:   "return [path|name]",
 	Short: "Terminate lingering processes and return a worktree",
+	Long: `Release any lease and return a worktree to the pool, after terminating
+lingering processes and verifying no foreign process remains.
+
+The worktree can be named three ways:
+
+  treehouse return                  The worktree you are standing in (or
+                                    $TREEHOUSE_DIR).
+  treehouse return <path>           That worktree, by path. Works from outside
+                                    the repository, because the pool is found
+                                    from the path itself.
+  treehouse return <name>           That worktree, by the name 'treehouse
+                                    status' prints in its first column - the
+                                    same identity 'treehouse lease' takes. A
+                                    name is resolved against the pool of the
+                                    repository you are standing in.
+
+An argument is read as a path first and only then as a name, so an argument that
+already resolves keeps resolving to exactly the same worktree.
+
+  treehouse return --all            Return every held worktree in this
+                                    repository's pool.
+
+--all acts on every slot 'treehouse status' does not report 'available' or
+'damaged': an available slot has nothing to return, and a damaged slot's marker
+cannot be read, so 'treehouse destroy' - not return - is what removes it. Each
+worktree is returned exactly as naming it would be, including the confirmation
+before uncommitted changes are discarded; declining one skips it and the rest
+still run. --all takes no path or name, and cannot be combined with the
+--if-lease-* conditions, which target a single lease identity.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("if-lease-id") && returnIfLeaseID == "" {
 			return fmt.Errorf("--if-lease-id cannot be empty")
 		}
 
-		wtPath, err := resolveWorktreePath(args)
-		if err != nil {
-			return err
-		}
-
-		poolDir, err := resolveReturnPoolDir(wtPath, len(args) > 0)
-		if err != nil {
-			if errors.Is(err, errReturnWorktreeUnmanaged) {
-				return fmt.Errorf("worktree %s is not managed by treehouse", wtPath)
-			}
-			return err
-		}
-
 		conditional := cmd.Flags().Changed("if-lease-id") || cmd.Flags().Changed("if-lease-holder")
+
+		if returnAll {
+			if len(args) > 0 {
+				return fmt.Errorf("--all takes no path or name; it returns every held worktree in this repository's pool")
+			}
+			if conditional {
+				return fmt.Errorf("--all cannot be combined with --if-lease-id or --if-lease-holder; a lease condition identifies one acquisition, so name that worktree instead")
+			}
+			return returnHeldWorktrees()
+		}
+
+		target, err := resolveReturnTarget(args)
+		if err != nil {
+			return err
+		}
+
 		if conditional {
 			preconditions := pool.ReleasePreconditions{}
 			if cmd.Flags().Changed("if-lease-id") {
@@ -58,22 +99,17 @@ var returnCmd = &cobra.Command{
 			if cmd.Flags().Changed("if-lease-holder") {
 				preconditions.ExpectedLeaseHolder = &returnIfLeaseHolder
 			}
-			err = pool.ValidateReleasePreconditions(poolDir, wtPath, preconditions, nil)
+			err = pool.ValidateReleasePreconditions(target.poolDir, target.path, preconditions, nil)
 			if err == nil {
-				err = confirmWorktreeReturn(wtPath)
+				err = confirmWorktreeReturn(target.path)
 			}
 			if err == nil {
-				err = pool.ReleaseConditional(poolDir, wtPath, returnBaseBranch(wtPath), preconditions, func() error {
-					return finalizeWorktreeReturn(wtPath)
+				err = pool.ReleaseConditional(target.poolDir, target.path, returnBaseBranch(target.path), preconditions, func() error {
+					return finalizeWorktreeReturn(target.path)
 				})
 			}
 		} else {
-			err = confirmWorktreeReturn(wtPath)
-			if err == nil {
-				err = pool.ReleaseConditional(poolDir, wtPath, returnBaseBranch(wtPath), pool.ReleasePreconditions{}, func() error {
-					return finalizeWorktreeReturn(wtPath)
-				})
-			}
+			err = releaseWorktree(target)
 		}
 		// An abort is not a success: the worktree, and any lease on it, are
 		// exactly as they were found. Reporting exit 0 here let a caller
@@ -82,12 +118,12 @@ var returnCmd = &cobra.Command{
 		if errors.Is(err, errReturnAbortedNonTTY) {
 			return withExitCode(ExitNotReturned, fmt.Errorf(
 				"🌳 worktree not returned: it has uncommitted changes and the confirmation could not be answered (stdin reached EOF); prune will not reclaim this slot. Use treehouse return --force %s to clean and return it",
-				quoteReturnPath(wtPath)))
+				quoteReturnPath(target.path)))
 		}
 		if errors.Is(err, errReturnAborted) {
 			return withExitCode(ExitNotReturned, fmt.Errorf(
 				"🌳 worktree not returned: cleaning declined, so its uncommitted changes remain and prune will not reclaim this slot. Use treehouse return --force %s to clean and return it",
-				quoteReturnPath(wtPath)))
+				quoteReturnPath(target.path)))
 		}
 		if err != nil {
 			return fmt.Errorf("failed to return worktree: %w", err)
@@ -100,9 +136,108 @@ var returnCmd = &cobra.Command{
 
 func init() {
 	returnCmd.Flags().BoolVar(&returnForce, "force", false, "Clean, reset, and return without prompting")
+	returnCmd.Flags().BoolVar(&returnAll, "all", false, "Return every held worktree in this repository's pool (skips available and damaged slots)")
 	returnCmd.Flags().StringVar(&returnIfLeaseID, "if-lease-id", "", "Return only if the current lease has this identity")
 	returnCmd.Flags().StringVar(&returnIfLeaseHolder, "if-lease-holder", "", "Return only if the current lease has this holder")
 	rootCmd.AddCommand(returnCmd)
+}
+
+// releaseWorktree runs the unconditional return of one worktree: the dirty
+// confirmation, then the release itself. It returns errReturnAborted and
+// errReturnAbortedNonTTY unwrapped, because an abort left the worktree exactly
+// as it was found and every caller has to tell that apart from a failure.
+func releaseWorktree(target returnTarget) error {
+	if err := confirmWorktreeReturn(target.path); err != nil {
+		return err
+	}
+	return pool.ReleaseConditional(target.poolDir, target.path, returnBaseBranch(target.path), pool.ReleasePreconditions{}, func() error {
+		return finalizeWorktreeReturn(target.path)
+	})
+}
+
+// returnableStatus reports whether `return --all` acts on a slot in this state.
+//
+// Available is excluded because there is nothing to return: the slot is already
+// parked and a later `get` will hand it out. Damaged is excluded because its
+// marker is missing or unreadable, so neither the detach nor the reset a return
+// performs can be judged safe, and `destroy` - which `status` already spells out
+// for such a slot - is the verb that removes it. Everything else (leased,
+// in-use, you're here, dirty, unverified) is a slot somebody is holding, which
+// is exactly what a bulk return exists to reclaim.
+//
+// Naming a damaged slot explicitly still returns it, unchanged: the narrow
+// target is a deliberate act, while the bulk one must not surprise.
+func returnableStatus(status string) bool {
+	switch status {
+	case pool.StatusAvailable, pool.StatusDamaged:
+		return false
+	default:
+		return true
+	}
+}
+
+// returnHeldWorktrees implements `return --all`. Each worktree is released
+// exactly as naming it would be, one at a time, and a per-worktree abort or
+// failure never stops the ones after it: a bulk return that gave up on the
+// first dirty slot would leave the rest held with no indication which.
+func returnHeldWorktrees() error {
+	poolDir, err := repositoryPoolDir()
+	if err != nil {
+		return err
+	}
+
+	worktrees, err := pool.List(poolDir)
+	if err != nil {
+		return err
+	}
+
+	var targets []pool.WorktreeStatus
+	var skipped int
+	for _, wt := range worktrees {
+		if returnableStatus(wt.Status) {
+			targets = append(targets, wt)
+			continue
+		}
+		skipped++
+	}
+
+	if len(targets) == 0 {
+		fmt.Fprintf(os.Stderr, "🌳 No held worktrees to return (%d in the pool).\n", len(worktrees))
+		return nil
+	}
+
+	var returned int
+	var aborted, failed []string
+	for _, wt := range targets {
+		fmt.Fprintf(os.Stderr, "🌳 Returning %s (%s) at %s\n", wt.Name, wt.Status, ui.PrettyPath(wt.Path))
+		err := releaseWorktree(returnTarget{path: wt.Path, poolDir: poolDir})
+		switch {
+		case err == nil:
+			returned++
+		case errors.Is(err, errReturnAborted), errors.Is(err, errReturnAbortedNonTTY):
+			aborted = append(aborted, wt.Name)
+			fmt.Fprintf(os.Stderr, "   %s left as found: its uncommitted changes were kept.\n", wt.Name)
+		default:
+			failed = append(failed, wt.Name)
+			fmt.Fprintf(os.Stderr, "   %s failed: %v\n", wt.Name, err)
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "🌳 Returned %d of %d held worktree(s); %d already available or damaged.\n",
+		returned, len(targets), skipped)
+
+	// A failure outranks an abort: retrying is the right response to a failure
+	// and the wrong one to a worktree deliberately left dirty, so the more
+	// urgent of the two decides the exit status.
+	if len(failed) > 0 {
+		return fmt.Errorf("failed to return worktree(s) %s", strings.Join(failed, ", "))
+	}
+	if len(aborted) > 0 {
+		return withExitCode(ExitNotReturned, fmt.Errorf(
+			"🌳 worktree(s) %s not returned: they have uncommitted changes and cleaning was declined or could not be confirmed; prune will not reclaim those slots. Use treehouse return --all --force to clean and return them",
+			strings.Join(aborted, ", ")))
+	}
+	return nil
 }
 
 // quoteReturnPath makes a worktree path safe to paste after
@@ -199,6 +334,89 @@ func finalizeWorktreeReturn(wtPath string) error {
 	return killLingeringProcesses(wtPath)
 }
 
+// resolveReturnTarget resolves the single worktree a return acts on.
+//
+// An argument is read as a PATH first and only then as a slot NAME, so every
+// argument that resolves today keeps resolving to exactly the same worktree:
+// the name reading is reached only where the path reading already failed to
+// find a managed worktree. That ordering matters because the two vocabularies
+// can collide - standing in a pool directory, "1" is both a slot name and a
+// real subdirectory - and a path that already works must never be redirected.
+func resolveReturnTarget(args []string) (returnTarget, error) {
+	wtPath, err := resolveWorktreePath(args)
+	if err != nil {
+		return returnTarget{}, err
+	}
+
+	poolDir, pathErr := resolveReturnPoolDir(wtPath, len(args) > 0)
+	if pathErr == nil {
+		return returnTarget{path: wtPath, poolDir: poolDir}, nil
+	}
+	if len(args) == 0 || !errors.Is(pathErr, errReturnWorktreeUnmanaged) || !couldBeWorktreeName(args[0]) {
+		if errors.Is(pathErr, errReturnWorktreeUnmanaged) {
+			return returnTarget{}, fmt.Errorf("worktree %s is not managed by treehouse", wtPath)
+		}
+		return returnTarget{}, pathErr
+	}
+	return resolveReturnTargetByName(args[0])
+}
+
+// couldBeWorktreeName reports whether an argument can be read as a slot name.
+// A pool names its slots itself and never puts a path separator in a name, so
+// anything holding one is a path and only a path: its failure has to keep
+// reporting the path diagnosis rather than a misleading "no worktree named".
+// Backslash is rejected on every platform - it separates paths on Windows, and
+// no generated slot name contains one anywhere.
+func couldBeWorktreeName(arg string) bool {
+	if arg == "" || arg == "." || arg == ".." {
+		return false
+	}
+	if filepath.IsAbs(arg) {
+		return false
+	}
+	return !strings.ContainsAny(arg, `/\`)
+}
+
+// resolveReturnTargetByName resolves a slot name against the pool of the
+// repository the caller is standing in. Unlike a path, a name carries no
+// information about where its pool lives, so the repository is required - the
+// same contract `treehouse lease <name>` has.
+func resolveReturnTargetByName(name string) (returnTarget, error) {
+	poolDir, err := repositoryPoolDir()
+	if err != nil {
+		return returnTarget{}, fmt.Errorf("%q is not a treehouse-managed worktree path, and a worktree name can only be resolved from inside its repository: %w", name, err)
+	}
+
+	entry, err := pool.FindByName(poolDir, name)
+	if err != nil {
+		return returnTarget{}, err
+	}
+	if entry == nil {
+		return returnTarget{}, unknownWorktreeNameError(poolDir, name)
+	}
+	return returnTarget{path: entry.Path, poolDir: poolDir}, nil
+}
+
+// unknownWorktreeNameError reports an argument that resolved as neither
+// vocabulary. It names both readings, because the user picked one of them and
+// only they know which, and it lists the names the pool does have - the same
+// help `treehouse enter` gives for the same mistake. A pool whose names cannot
+// be listed still produces the refusal: the listing is help, not the verdict.
+func unknownWorktreeNameError(poolDir, name string) error {
+	state, err := pool.ReadState(poolDir)
+	if err != nil {
+		return fmt.Errorf("no worktree named %q in pool, and it is not a treehouse-managed worktree path either. Run 'treehouse status' for details", name)
+	}
+	names := make([]string, 0, len(state.Worktrees))
+	for _, wt := range state.Worktrees {
+		names = append(names, wt.Name)
+	}
+	if len(names) == 0 {
+		return fmt.Errorf("no worktree named %q: the pool is empty, and it is not a treehouse-managed worktree path either. Run 'treehouse get' to create one", name)
+	}
+	return fmt.Errorf("no worktree named %q in pool (available: %s), and it is not a treehouse-managed worktree path either. Run 'treehouse status' for details", name, strings.Join(names, ", "))
+}
+
 func resolveWorktreePath(args []string) (string, error) {
 	if len(args) > 0 {
 		return filepath.Abs(args[0])
@@ -231,6 +449,25 @@ func returnBaseBranch(wtPath string) string {
 	return releaseBaseBranch(repoRoot, cfg)
 }
 
+// repositoryPoolDir resolves the pool serving the repository the caller is
+// standing in. Both of return's repository-scoped forms - a slot name and
+// --all - go through it, because neither carries a path to find a pool from.
+func repositoryPoolDir() (string, error) {
+	repoRoot, err := vcs.FindMainRepoRoot()
+	if err != nil {
+		return "", fmt.Errorf("not in a git or jj repository: %w", err)
+	}
+	return poolDirForRepoRoot(repoRoot)
+}
+
+func poolDirForRepoRoot(repoRoot string) (string, error) {
+	cfg, err := config.Load(repoRoot)
+	if err != nil {
+		return "", fmt.Errorf("failed to load config: %w", err)
+	}
+	return config.ResolvePoolDir(repoRoot, config.ResolveRoot(rootFlag, cfg))
+}
+
 func resolveReturnPoolDir(wtPath string, explicitPath bool) (string, error) {
 	// The built-in layout puts a worktree two levels under its pool, which lets a
 	// return succeed even when the repository is gone. The candidate is confirmed
@@ -261,12 +498,7 @@ func resolveReturnPoolDir(wtPath string, explicitPath bool) (string, error) {
 		return "", fmt.Errorf("not in a git or jj repository: %w", err)
 	}
 
-	cfg, err := config.Load(repoRoot)
-	if err != nil {
-		return "", fmt.Errorf("failed to load config: %w", err)
-	}
-
-	fallbackPoolDir, err := config.ResolvePoolDir(repoRoot, config.ResolveRoot(rootFlag, cfg))
+	fallbackPoolDir, err := poolDirForRepoRoot(repoRoot)
 	if err != nil {
 		return "", err
 	}
