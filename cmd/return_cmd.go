@@ -70,11 +70,12 @@ leased slot: --all exists to reclaim a whole pool, so it clears leased and
 in-use slots too. Each worktree is returned exactly as naming it would be,
 including the confirmation before uncommitted changes are discarded; declining
 one skips it and the rest still run. Each release is pinned to the lease the
-listing saw: a slot leased then is skipped if the lease changed hands, and a
-slot unleased then is skipped if it has been leased since. A slot handed to
-another plain 'treehouse get' carries no lease to compare, so it is returned
-like any other in-use slot. --all takes no path or name, and cannot be combined
-with the --if-lease-* conditions, which target a single lease identity.`,
+listing saw: a slot leased then is skipped unless that same lease is still on
+it, and a slot unleased then is skipped if it has been leased since. A slot
+handed to another plain 'treehouse get' carries no lease to compare, so it is
+returned like any other in-use slot. --all takes no path or name, and cannot
+be combined with the --if-lease-* conditions, which target a single lease
+identity.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("if-lease-id") && returnIfLeaseID == "" {
 			return fmt.Errorf("--if-lease-id cannot be empty")
@@ -142,8 +143,9 @@ func init() {
 // as it was found and every caller has to tell that apart from a failure.
 //
 // The preconditions run first so a slot the release already knows it will
-// refuse - a lease that changed hands, or a quarantine no return can clear - is
-// never announced as a dirty worktree about to be cleaned. Offering to discard
+// refuse - a lease that is no longer the one observed, or a quarantine no
+// return can clear - is never announced as a dirty worktree about to be
+// cleaned. Offering to discard
 // someone's uncommitted changes and then refusing anyway is worse than refusing
 // outright. Both checks reach the same `pool` gate, so the pre-check and the
 // release cannot disagree; the release re-runs them under its own state lock,
@@ -165,7 +167,9 @@ func releaseWorktree(target returnTarget, preconditions pool.ReleasePrecondition
 // confirmation in the run, a far wider window than a named return has.
 //
 // A leased slot is pinned to its lease ID: every acquisition mints a new one,
-// so a takeover can never match. An unleased observation carries the empty
+// so neither a takeover nor a plain return in between can still match. The
+// refusal reports only that, never WHY the lease changed: the pool answers
+// whether the identity still holds, not who moved it. An unleased observation carries the empty
 // identity, which the pool reads as "expected no lease" and so refuses a slot
 // leased since. That is the whole guarantee, and it is bounded by what
 // ReleasePreconditions can express: a slot handed to another plain
@@ -218,10 +222,12 @@ func returnableStatus(status string) bool {
 // on the first dirty slot would leave the rest held with no indication which.
 //
 // A slot is skipped, and the run neither fails nor reports an abort for it,
-// when it is no longer the worktree the listing described (re-acquired) or when
-// no release can clear it (quarantined without a trusted seed inventory).
-// Nothing went wrong in either case, and calling them failures made a
-// quarantined pool exit 1 on every retry forever.
+// when the lease on it is no longer the one the listing saw (returned or taken
+// over since) or when no release can clear it (quarantined without a trusted
+// seed inventory). Nothing went wrong in either case, and calling them failures
+// made a quarantined pool exit 1 on every retry forever. A run where every slot
+// was skipped still exits 0: nothing it set out to return was still there to
+// return.
 func returnHeldWorktrees() error {
 	poolDir, err := repositoryPoolDir()
 	if err != nil {
@@ -260,7 +266,7 @@ func returnHeldWorktrees() error {
 		// half-done, so retrying the run would report the same thing forever.
 		case errors.Is(err, pool.ErrLeasePreconditionFailed):
 			skipped = append(skipped, wt.Name)
-			fmt.Fprintf(os.Stderr, "   %s skipped: it was re-acquired after this run listed it, so it is no longer the worktree this run set out to return.\n", wt.Name)
+			fmt.Fprintf(os.Stderr, "   %s skipped: it is no longer the acquisition this run listed, so it was left alone (%v).\n", wt.Name, err)
 		case errors.Is(err, pool.ErrSeedInventoryUntrusted):
 			skipped = append(skipped, wt.Name)
 			fmt.Fprintf(os.Stderr, "   %s skipped: %v\n", wt.Name, err)

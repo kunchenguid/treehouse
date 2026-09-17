@@ -292,39 +292,7 @@ func TestReturnAllSkipsASlotReacquiredMidRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	all := exec.Command(treehouseBin, "return", "--all")
-	all.Dir = repoDir
-	all.Env = buildEnv(homeDir)
-	stdin, err := all.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stderr, err := all.StderrPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := all.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if all.ProcessState == nil {
-			_ = all.Process.Kill()
-			_ = all.Wait()
-		}
-	})
-
-	promptRead := make(chan error, 1)
-	go func() {
-		promptRead <- readUntilSuffix(stderr, "[Y/n] ")
-	}()
-	select {
-	case err := <-promptRead:
-		if err != nil {
-			t.Fatalf("failed to read the bulk return prompt: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("return --all did not prompt for the dirty slot")
-	}
+	all, stdin, stderr := startReturnAllAtDirtyPrompt(t, repoDir, homeDir)
 
 	if _, stderrOut, code := runTreehouse(t, repoDir, homeDir, nil, "return", "--force", taken.Path); code != 0 {
 		t.Fatalf("returning the second slot mid-run failed (code %d): %s", code, stderrOut)
@@ -341,21 +309,11 @@ func TestReturnAllSkipsASlotReacquiredMidRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := io.WriteString(stdin, "y\n"); err != nil {
-		t.Fatal(err)
+	output, waitErr := finishReturnAllAtPrompt(t, all, stdin, stderr, "y\n")
+	if waitErr != nil {
+		t.Fatalf("a skipped slot is not a failure, expected exit 0, got %v: %s", waitErr, output)
 	}
-	if err := stdin.Close(); err != nil {
-		t.Fatal(err)
-	}
-	rest, err := io.ReadAll(stderr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	output := string(rest)
-	if err := all.Wait(); err != nil {
-		t.Fatalf("a skipped slot is not a failure, expected exit 0, got %v: %s", err, output)
-	}
-	if !strings.Contains(output, "skipped: it was re-acquired") {
+	if !strings.Contains(output, "skipped: it is no longer the acquisition this run listed") {
 		t.Fatalf("expected the re-acquired slot to be reported skipped, got: %s", output)
 	}
 	if !strings.Contains(output, "Returned 1 of 2 held worktree(s); 1 skipped") {
@@ -429,6 +387,107 @@ func TestReturnAllSkipsQuarantinedSlotsWithoutFailing(t *testing.T) {
 	for _, path := range []string{first.Path, second.Path} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("quarantined worktree %s was disturbed: %v", path, err)
+		}
+	}
+}
+
+// startReturnAllAtDirtyPrompt launches `treehouse return --all` and blocks until
+// it is waiting on the dirty confirmation of its first target. The run is then
+// held open, which is the window every mid-run change in these tests lands in.
+func startReturnAllAtDirtyPrompt(t *testing.T, repoDir, homeDir string) (*exec.Cmd, io.WriteCloser, io.ReadCloser) {
+	t.Helper()
+
+	all := exec.Command(treehouseBin, "return", "--all")
+	all.Dir = repoDir
+	all.Env = buildEnv(homeDir)
+	stdin, err := all.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := all.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := all.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if all.ProcessState == nil {
+			_ = all.Process.Kill()
+			_ = all.Wait()
+		}
+	})
+
+	promptRead := make(chan error, 1)
+	go func() {
+		promptRead <- readUntilSuffix(stderr, "[Y/n] ")
+	}()
+	select {
+	case err := <-promptRead:
+		if err != nil {
+			t.Fatalf("failed to read the bulk return prompt: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("return --all did not prompt for the dirty slot")
+	}
+	return all, stdin, stderr
+}
+
+// finishReturnAllAtPrompt answers the open confirmation and reports everything
+// the run printed after it, with the run's own exit error.
+func finishReturnAllAtPrompt(t *testing.T, all *exec.Cmd, stdin io.WriteCloser, stderr io.ReadCloser, answer string) (string, error) {
+	t.Helper()
+
+	if _, err := io.WriteString(stdin, answer); err != nil {
+		t.Fatal(err)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rest, err := io.ReadAll(stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(rest), all.Wait()
+}
+
+// TestReturnAllSkipReportsNoCauseForAParkedSlot covers the other half of the
+// same sentinel. A slot whose lease was simply RETURNED mid-run is refused for
+// exactly the reason a taken-over one is - the lease is no longer the one the
+// listing saw - but nobody took it, so the report must not name re-acquisition.
+func TestReturnAllSkipReportsNoCauseForAParkedSlot(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	dirty := acquireLeaseJSON(t, repoDir, homeDir, "dirty-agent")
+	finishing := acquireLeaseJSON(t, repoDir, homeDir, "finishing-agent")
+	if dirty.Path == finishing.Path {
+		t.Fatalf("expected two distinct slots, both are %s", dirty.Path)
+	}
+	if err := os.WriteFile(filepath.Join(dirty.Path, "README.md"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	all, stdin, stderr := startReturnAllAtDirtyPrompt(t, repoDir, homeDir)
+
+	// The second agent parks its own slot while the run waits. Nobody takes it.
+	if _, stderrOut, code := runTreehouse(t, repoDir, homeDir, nil, "return", finishing.Path); code != 0 {
+		t.Fatalf("the second agent's own return failed (code %d): %s", code, stderrOut)
+	}
+
+	output, waitErr := finishReturnAllAtPrompt(t, all, stdin, stderr, "y\n")
+	if waitErr != nil {
+		t.Fatalf("a skipped slot is not a failure, expected exit 0, got %v: %s", waitErr, output)
+	}
+	if !strings.Contains(output, "skipped: it is no longer the acquisition this run listed") {
+		t.Fatalf("expected the parked slot to be reported skipped, got: %s", output)
+	}
+	if strings.Contains(output, "re-acquired") {
+		t.Fatalf("nobody took this slot over, so the report must not say so: %s", output)
+	}
+
+	for _, entry := range statusEntries(t, repoDir, homeDir) {
+		if entry.Status != "available" {
+			t.Fatalf("expected every slot available after the run, got %+v", entry)
 		}
 	}
 }

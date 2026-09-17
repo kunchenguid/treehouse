@@ -445,6 +445,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			// HEAD is still the one whose ancestry was checked and the tree is
 			// still clean under the exclusive lock.
 			seededPaths := wt.SeededPaths
+			if !wt.SeedInventoryKnown {
+				seededPaths = nil
+			}
 			if err := vcs.ResetWorktreeToRefWithSeededPaths(wt.Path, resetRef, head, true, seededPaths); err != nil {
 				continue
 			}
