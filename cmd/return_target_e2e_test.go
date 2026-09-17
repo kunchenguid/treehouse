@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
@@ -488,6 +489,54 @@ func TestReturnAllSkipReportsNoCauseForAParkedSlot(t *testing.T) {
 	for _, entry := range statusEntries(t, repoDir, homeDir) {
 		if entry.Status != "available" {
 			t.Fatalf("expected every slot available after the run, got %+v", entry)
+		}
+	}
+}
+
+// TestReturnAllHonorsEveryPipedAnswer pins the scripted form of the bulk
+// confirmation, which is what `--all` invites. Both answers arrive in a single
+// write, exactly as a pipe delivers them, so a prompt that reads more bytes off
+// the descriptor than its own line must keep the remainder for the next prompt.
+// A terminal never shows this: canonical mode hands over one line per read.
+func TestReturnAllHonorsEveryPipedAnswer(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	first := acquireLeaseJSON(t, repoDir, homeDir, "agent-a")
+	second := acquireLeaseJSON(t, repoDir, homeDir, "agent-b")
+	if first.Path == second.Path {
+		t.Fatalf("expected two distinct slots, both are %s", first.Path)
+	}
+	// Both dirty, so both reach the confirmation.
+	for _, path := range []string{first.Path, second.Path} {
+		if err := os.WriteFile(filepath.Join(path, "README.md"), []byte("dirty\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	all := exec.Command(treehouseBin, "return", "--all")
+	all.Dir = repoDir
+	all.Env = buildEnv(homeDir)
+	all.Stdin = strings.NewReader("y\ny\n")
+	var errBuf bytes.Buffer
+	all.Stderr = &errBuf
+
+	runErr := all.Run()
+	output := errBuf.String()
+	if runErr != nil {
+		t.Fatalf("every slot was confirmed, so the run must exit 0, got %v: %s", runErr, output)
+	}
+	if !strings.Contains(output, "Returned 2 of 2 held worktree(s)") {
+		t.Fatalf("expected both confirmed slots returned, got: %s", output)
+	}
+
+	for _, entry := range statusEntries(t, repoDir, homeDir) {
+		if entry.Status != "available" {
+			t.Fatalf("expected every confirmed slot released, got %+v", entry)
+		}
+	}
+	for _, path := range []string{first.Path, second.Path} {
+		if got := gitCmd(t, path, "status", "--porcelain"); got != "" {
+			t.Fatalf("expected %s cleaned by its confirmation, git status:\n%s", path, got)
 		}
 	}
 }
