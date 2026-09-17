@@ -17,7 +17,15 @@ import (
 // status `return --all` selects on are the same two fields.
 func statusEntries(t *testing.T, repoDir, homeDir string) []statusJSONResult {
 	t.Helper()
-	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "status", "--json")
+	return statusEntriesFromDir(t, repoDir, repoDir, homeDir, nil)
+}
+
+// statusEntriesFromDir is the same reading taken from a chosen working
+// directory and environment, which is how the tests below observe a slot whose
+// classification depends on where the caller is standing.
+func statusEntriesFromDir(t *testing.T, repoDir, workDir, homeDir string, extraEnv []string) []statusJSONResult {
+	t.Helper()
+	stdout, stderr, code := runTreehouseFromDir(t, repoDir, workDir, homeDir, extraEnv, "status", "--json")
 	if code != 0 {
 		t.Fatalf("status --json failed (code %d): %s", code, stderr)
 	}
@@ -601,5 +609,104 @@ func TestReturnAllReturnsTheDirtySlotYouStandIn(t *testing.T) {
 	}
 	if got := statusEntry(t, repoDir, homeDir, "1"); got.Status != "available" {
 		t.Fatalf("expected the dirty slot released, got %+v", got)
+	}
+}
+
+// TestReturnAllLeavesAloneTheDamagedSlotYouStandIn pins the damaged exclusion
+// as the unconditional rule every doc states. A missing marker means the slot's
+// own contents cannot be judged, which is what `destroy` answers; standing in
+// it does not make it readable, so the cwd must not relabel it into the bulk
+// target set. The pool is in-project here because that is the layout where a
+// markerless slot would otherwise be read through the repository ENCLOSING it.
+func TestReturnAllLeavesAloneTheDamagedSlotYouStandIn(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	inProject := []string{"TREEHOUSE_ROOT=."}
+
+	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, inProject, "get", "--lease")
+	if code != 0 {
+		t.Fatalf("get --lease failed (code %d): %s", code, stderr)
+	}
+	wtPath := strings.TrimSpace(stdout)
+	if wtPath == "" {
+		t.Fatal("could not capture the leased worktree path")
+	}
+	// Parked first, so the missing marker is the only thing classifying it.
+	if _, stderr, code := runTreehouse(t, repoDir, homeDir, inProject, "return", wtPath); code != 0 {
+		t.Fatalf("parking the slot failed (code %d): %s", code, stderr)
+	}
+	if err := os.Remove(filepath.Join(wtPath, ".git")); err != nil {
+		t.Fatalf("removing the slot marker: %v", err)
+	}
+
+	standingIn := statusEntriesFromDir(t, repoDir, wtPath, homeDir, inProject)
+	if len(standingIn) != 1 || standingIn[0].Status != "damaged" {
+		t.Fatalf("standing in a damaged slot must not relabel it, got %+v", standingIn)
+	}
+
+	_, allErr, code := runTreehouseFromDir(t, repoDir, wtPath, homeDir, inProject, "return", "--all")
+	if code != 0 {
+		t.Fatalf("a pool holding nothing must exit 0, got %d: %s", code, allErr)
+	}
+	if strings.Contains(allErr, "Returning") {
+		t.Fatalf("a damaged slot must never be a bulk target, got: %s", allErr)
+	}
+	if !strings.Contains(allErr, "No held worktrees to return") {
+		t.Fatalf("expected the damaged slot reported unheld, got: %s", allErr)
+	}
+
+	// Naming it is a deliberate act and still works, exactly as before.
+	if _, namedErr, code := runTreehouse(t, repoDir, homeDir, inProject, "return", wtPath); code != 0 {
+		t.Fatalf("naming a damaged slot must still return it (code %d): %s", code, namedErr)
+	}
+}
+
+// TestReturnAllSkipsASlotLeasedMidRun pins the other lease predicate. A slot
+// observed UNLEASED carries "expect no lease" into its release, so a
+// `treehouse lease` landing while an earlier confirmation holds the run open
+// makes it no longer the acquisition the run listed.
+func TestReturnAllSkipsASlotLeasedMidRun(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	dirty := acquireLeaseJSON(t, repoDir, homeDir, "dirty-agent")
+	unleased := acquireLeaseJSON(t, repoDir, homeDir, "finishing-agent")
+	if _, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "return", unleased.Path); code != 0 {
+		t.Fatalf("parking the second slot failed (code %d): %s", code, stderr)
+	}
+	// Both dirty: the first to hold the run open at its prompt, the second so
+	// it is a held target while carrying no lease.
+	for _, path := range []string{dirty.Path, unleased.Path} {
+		if err := os.WriteFile(filepath.Join(path, "README.md"), []byte("dirty\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	all, stdin, stderr := startReturnAllAtDirtyPrompt(t, repoDir, homeDir)
+
+	if _, leaseErr, code := runTreehouse(t, repoDir, homeDir, nil, "lease", "2"); code != 0 {
+		t.Fatalf("leasing the second slot mid-run failed (code %d): %s", code, leaseErr)
+	}
+
+	output, waitErr := finishReturnAllAtPrompt(t, all, stdin, stderr, "y\n")
+	if waitErr != nil {
+		t.Fatalf("a skipped slot is not a failure, expected exit 0, got %v: %s", waitErr, output)
+	}
+	if !strings.Contains(output, "skipped: it is no longer the acquisition this run listed") {
+		t.Fatalf("expected the newly leased slot to be reported skipped, got: %s", output)
+	}
+
+	for _, entry := range statusEntries(t, repoDir, homeDir) {
+		switch entry.Path {
+		case dirty.Path:
+			if entry.Status != "available" {
+				t.Fatalf("expected the confirmed slot returned, got %+v", entry)
+			}
+		case unleased.Path:
+			if entry.Status != "leased" {
+				t.Fatalf("expected the newly leased slot left alone, got %+v", entry)
+			}
+		}
+	}
+	if got := gitCmd(t, unleased.Path, "status", "--porcelain"); got == "" {
+		t.Fatal("expected the skipped slot to keep its uncommitted changes")
 	}
 }

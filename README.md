@@ -197,7 +197,7 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `enter`   | `--print-path` | Print only the worktree's absolute path to stdout instead of opening a subshell (for `cd "$(treehouse enter --print-path 1)"`) |
 | `status`  | `--json` | Print worktree status and lease metadata as JSON |
 | `return`  | `--force` | Clean, reset, and return without prompting |
-| `return`  | `--all`   | Return every held worktree in this repository's pool; skips slots `status` reports `available` or `damaged` |
+| `return`  | `--all`   | Return every held worktree in this repository's pool; leaves alone slots `status` reports `available` or `damaged`, and a `you're here` slot nobody else holds |
 | `return`  | `--if-lease-id` | Return only if the current lease has the expected per-acquisition identity |
 | `return`  | `--if-lease-holder` | Return only if the current lease has the expected holder |
 | `prune`   | `--yes`   | Delete listed prune candidates instead of doing a dry run |

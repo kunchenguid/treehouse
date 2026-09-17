@@ -169,17 +169,20 @@ func releaseWorktree(target returnTarget, preconditions pool.ReleasePrecondition
 // the release of that slot. The two instants are separated by every earlier
 // confirmation in the run, a far wider window than a named return has.
 //
-// A leased slot is pinned to its lease ID: every acquisition mints a new one,
-// so neither a takeover nor a plain return in between can still match. The
-// refusal reports only that, never WHY the lease changed: the pool answers
-// whether the identity still holds, not who moved it. An unleased observation carries the empty
-// identity, which the pool reads as "expected no lease" and so refuses a slot
-// leased since. That is the whole guarantee, and it is bounded by what
-// ReleasePreconditions can express: a slot handed to another plain
-// `treehouse get` is still unleased, so its new owner reservation is NOT
-// detected - consistent with `--all` reclaiming in-use slots by design. A
-// leased slot with no ID (a state file predating lease IDs) offers nothing to
-// compare and keeps the unconditional release it has today.
+// The two observations are two DIFFERENT predicates, and each call below names
+// the one it means rather than encoding it in a value. A leased slot is pinned
+// to its lease ID: every acquisition mints a new one, so neither a takeover nor
+// a plain return in between can still match. The refusal reports only that,
+// never WHY the lease changed: the pool answers whether the identity still
+// holds, not who moved it. An unleased observation asks for RequireUnleased,
+// which refuses the slot once somebody has leased it.
+//
+// That is the whole guarantee, and it is bounded by what ReleasePreconditions
+// can express: a slot handed to another plain `treehouse get` is still
+// unleased, so its new owner reservation is NOT detected - consistent with
+// `--all` reclaiming in-use slots by design. A leased slot with no ID (a state
+// file predating lease IDs) offers nothing to compare and keeps the
+// unconditional release it has today.
 func bulkReturnPreconditions(wt pool.WorktreeStatus) pool.ReleasePreconditions {
 	if wt.Status == pool.StatusLeased {
 		if wt.LeaseID == "" {
@@ -188,8 +191,7 @@ func bulkReturnPreconditions(wt pool.WorktreeStatus) pool.ReleasePreconditions {
 		expected := wt.LeaseID
 		return pool.ReleasePreconditions{ExpectedLeaseID: &expected}
 	}
-	unleased := ""
-	return pool.ReleasePreconditions{ExpectedLeaseID: &unleased}
+	return pool.ReleasePreconditions{RequireUnleased: true}
 }
 
 // returnableStatus reports whether `return --all` acts on a slot in this state.

@@ -4088,6 +4088,10 @@ func TestList_ReportsYoureHereThroughASymlinkedPoolPath(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A real marker, so the slot is an ordinary healthy one. A markerless
+	// directory is a DAMAGED slot, which List reports as such wherever the
+	// caller stands, and this test would then assert nothing about the cwd.
+	runGit(t, physicalSlot, "init", "--initial-branch=main")
 	link := filepath.Join(base, "link")
 	if err := os.Symlink(filepath.Join(base, "slots"), link); err != nil {
 		t.Skipf("cannot create symlinks here: %v", err)
@@ -4162,4 +4166,62 @@ func captureStderr(t *testing.T, f func()) string {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// TestReleasePreconditions_LeaseIdentityAndAbsenceAreSeparatePredicates pins the
+// split between "still exactly this acquisition" and "still nobody's". They are
+// opposite assertions, so neither an empty identity nor the two together can
+// describe a reachable worktree: both are refused as a CALL-SITE error, with a
+// sentinel a release classifier must never mistake for a lease state, and
+// nothing about the worktree changes.
+func TestReleasePreconditions_LeaseIdentityAndAbsenceAreSeparatePredicates(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	lease, err := AcquireLeaseInfo(repoDir, poolDir, 4, nil, "holder-A")
+	if err != nil {
+		t.Fatalf("AcquireLeaseInfo failed: %v", err)
+	}
+
+	empty := ""
+	holder := lease.LeaseHolder
+	refused := []struct {
+		name          string
+		preconditions ReleasePreconditions
+	}{
+		{"empty identity is not a lease", ReleasePreconditions{ExpectedLeaseID: &empty}},
+		{"identity and absence together", ReleasePreconditions{ExpectedLeaseID: &lease.LeaseID, RequireUnleased: true}},
+		{"holder and absence together", ReleasePreconditions{ExpectedLeaseHolder: &holder, RequireUnleased: true}},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ReleaseConditional(poolDir, lease.Path, "", tc.preconditions, nil)
+			if !errors.Is(err, ErrInvalidReleasePreconditions) {
+				t.Fatalf("release = %v, want ErrInvalidReleasePreconditions", err)
+			}
+			if errors.Is(err, ErrLeasePreconditionFailed) {
+				t.Fatalf("a call-site error must not read as a lease state: %v", err)
+			}
+			state, err := ReadState(poolDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !state.Worktrees[0].Leased || state.Worktrees[0].LeaseID != lease.LeaseID {
+				t.Fatalf("a refused call mutated the lease: %#v", state.Worktrees[0])
+			}
+		})
+	}
+
+	// Each predicate then refuses exactly the state it is meant to refuse.
+	if err := ReleaseConditional(poolDir, lease.Path, "", ReleasePreconditions{RequireUnleased: true}, nil); !errors.Is(err, ErrLeasePreconditionFailed) {
+		t.Fatalf("RequireUnleased on a leased worktree = %v, want a lease precondition failure", err)
+	}
+	stale := "not-the-current-identity"
+	if err := ReleaseConditional(poolDir, lease.Path, "", ReleasePreconditions{ExpectedLeaseID: &stale}, nil); !errors.Is(err, ErrLeasePreconditionFailed) {
+		t.Fatalf("a stale identity = %v, want a lease precondition failure", err)
+	}
+	if err := ReleaseConditional(poolDir, lease.Path, "", ReleasePreconditions{ExpectedLeaseID: &lease.LeaseID}, nil); err != nil {
+		t.Fatalf("the current identity must still release: %v", err)
+	}
+	if err := ReleaseConditional(poolDir, lease.Path, "", ReleasePreconditions{RequireUnleased: true}, nil); err != nil {
+		t.Fatalf("RequireUnleased on the now-parked worktree must pass: %v", err)
+	}
 }
