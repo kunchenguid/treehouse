@@ -382,7 +382,12 @@ func isCmdEnvNameChar(c byte) bool {
 }
 
 func confirmWorktreeReturn(wtPath string) error {
-	if !returnForce {
+	// A markerless slot's dirtiness must never be read: dispatch on such a path
+	// falls back to the configured backend, which in an in-project pool would
+	// answer with the uncommitted changes of the repository ENCLOSING the pool.
+	// It has no changes of its own to offer either, because the return never
+	// resets it.
+	if !returnForce && vcs.WorktreeBackendName(wtPath) != "" {
 		dirty, _ := vcs.IsDirty(wtPath)
 		if dirty {
 			ok, err := ui.Confirm("Worktree has uncommitted changes. Clean and return?", true)

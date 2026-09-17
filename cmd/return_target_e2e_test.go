@@ -710,3 +710,51 @@ func TestReturnAllSkipsASlotLeasedMidRun(t *testing.T) {
 		t.Fatal("expected the skipped slot to keep its uncommitted changes")
 	}
 }
+
+// TestReturnAllNeverPromptsOnAMarkerlessSlot pins the third instance of one
+// rule: no markerless path on the return path may reach a backend through the
+// fallback. A slot whose marker is gone is never reset, so it has no
+// uncommitted changes of its own; asking for them in an in-project pool
+// answered with the ENCLOSING repository's, which scripted a permanent abort
+// over changes that were never in the slot.
+func TestReturnAllNeverPromptsOnAMarkerlessSlot(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	inProject := []string{"TREEHOUSE_ROOT=."}
+
+	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, inProject, "get", "--lease")
+	if code != 0 {
+		t.Fatalf("get --lease failed (code %d): %s", code, stderr)
+	}
+	wtPath := strings.TrimSpace(stdout)
+	if wtPath == "" {
+		t.Fatal("could not capture the leased worktree path")
+	}
+	// Leased, so the slot is a bulk target even once its marker is gone.
+	if err := os.Remove(filepath.Join(wtPath, ".git")); err != nil {
+		t.Fatalf("removing the slot marker: %v", err)
+	}
+	// The ENCLOSING repository is the one with uncommitted changes.
+	enclosing := filepath.Join(repoDir, "enclosing-change.txt")
+	if err := os.WriteFile(enclosing, []byte("not the slot's\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, allErr, code := runTreehouse(t, repoDir, homeDir, inProject, "return", "--all")
+	if strings.Contains(allErr, "Clean and return?") {
+		t.Fatalf("a markerless slot has no changes of its own to offer, got: %s", allErr)
+	}
+	if code != 0 {
+		t.Fatalf("expected no abort over a foreign repository's changes, got code %d: %s", code, allErr)
+	}
+	if !strings.Contains(allErr, "Returned 1 of 1 held worktree(s)") {
+		t.Fatalf("expected the leased slot released, got: %s", allErr)
+	}
+
+	if _, err := os.Stat(enclosing); err != nil {
+		t.Fatalf("the enclosing repository's change was disturbed: %v", err)
+	}
+	entries := statusEntriesFromDir(t, repoDir, repoDir, homeDir, inProject)
+	if len(entries) != 1 || entries[0].Status != "damaged" {
+		t.Fatalf("expected the lease cleared and the slot left for destroy, got %+v", entries)
+	}
+}
