@@ -391,6 +391,14 @@ func TestReturnAllSkipsQuarantinedSlotsWithoutFailing(t *testing.T) {
 	second := acquireLeaseJSON(t, repoDir, homeDir, "agent-b")
 	poolDir := filepath.Dir(filepath.Dir(first.Path))
 
+	// Uncommitted work in one of them. A quarantined slot can never be
+	// released, so the run must refuse it outright rather than first offer to
+	// discard these changes.
+	dirtyFile := filepath.Join(first.Path, "README.md")
+	if err := os.WriteFile(dirtyFile, []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := os.WriteFile(filepath.Join(poolDir, "treehouse-state.key"), []byte("rotated"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -404,6 +412,12 @@ func TestReturnAllSkipsQuarantinedSlotsWithoutFailing(t *testing.T) {
 	}
 	if !strings.Contains(allErr, "destroy --include-leased") {
 		t.Fatalf("expected the skip to point at destroy, got: %s", allErr)
+	}
+	if strings.Contains(allErr, "Clean and return?") {
+		t.Fatalf("a slot that cannot be released must not be offered for cleaning, got: %s", allErr)
+	}
+	if got := gitCmd(t, first.Path, "status", "--porcelain"); got == "" {
+		t.Fatal("expected the quarantined slot to keep its uncommitted changes")
 	}
 
 	// A quarantine is a refusal, so both homes are exactly as they were.

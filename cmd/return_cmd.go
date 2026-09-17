@@ -69,11 +69,12 @@ is deliberately wider than 'prune' and 'destroy --all', which never touch a
 leased slot: --all exists to reclaim a whole pool, so it clears leased and
 in-use slots too. Each worktree is returned exactly as naming it would be,
 including the confirmation before uncommitted changes are discarded; declining
-one skips it and the rest still run. A slot re-acquired while the run works
-through the pool is skipped rather than reset, because it is no longer the
-worktree the run set out to return. --all takes no path or name, and cannot be
-combined with the --if-lease-* conditions, which target a single lease
-identity.`,
+one skips it and the rest still run. Each release is pinned to the lease the
+listing saw: a slot leased then is skipped if the lease changed hands, and a
+slot unleased then is skipped if it has been leased since. A slot handed to
+another plain 'treehouse get' carries no lease to compare, so it is returned
+like any other in-use slot. --all takes no path or name, and cannot be combined
+with the --if-lease-* conditions, which target a single lease identity.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("if-lease-id") && returnIfLeaseID == "" {
 			return fmt.Errorf("--if-lease-id cannot be empty")
@@ -140,10 +141,13 @@ func init() {
 // errReturnAbortedNonTTY unwrapped, because an abort left the worktree exactly
 // as it was found and every caller has to tell that apart from a failure.
 //
-// The preconditions are checked before the confirmation so a slot this release
-// will refuse is never announced as a dirty worktree about to be cleaned; the
-// release re-checks them under its own state lock, which is what actually
-// fences the reset.
+// The preconditions run first so a slot the release already knows it will
+// refuse - a lease that changed hands, or a quarantine no return can clear - is
+// never announced as a dirty worktree about to be cleaned. Offering to discard
+// someone's uncommitted changes and then refusing anyway is worse than refusing
+// outright. Both checks reach the same `pool` gate, so the pre-check and the
+// release cannot disagree; the release re-runs them under its own state lock,
+// which is what actually fences the reset.
 func releaseWorktree(target returnTarget, preconditions pool.ReleasePreconditions) error {
 	if err := pool.ValidateReleasePreconditions(target.poolDir, target.path, preconditions, nil); err != nil {
 		return err
@@ -156,17 +160,19 @@ func releaseWorktree(target returnTarget, preconditions pool.ReleasePrecondition
 	})
 }
 
-// bulkReturnPreconditions carries what the `--all` listing observed about a
-// slot into its release, so a slot re-acquired in between is refused instead of
-// reset. The two instants are separated by every earlier confirmation in the
-// run, a far wider window than a named return has.
+// bulkReturnPreconditions carries the LEASE the `--all` listing observed into
+// the release of that slot. The two instants are separated by every earlier
+// confirmation in the run, a far wider window than a named return has.
 //
-// A leased slot is identified by its lease ID: every acquisition mints a new
-// one, so a takeover can never match. An unleased observation carries the empty
+// A leased slot is pinned to its lease ID: every acquisition mints a new one,
+// so a takeover can never match. An unleased observation carries the empty
 // identity, which the pool reads as "expected no lease" and so refuses a slot
-// leased since. A leased slot with no ID - a state file predating lease IDs, or
-// a quarantined entry - offers nothing to compare, so it keeps the
-// unconditional release it has today.
+// leased since. That is the whole guarantee, and it is bounded by what
+// ReleasePreconditions can express: a slot handed to another plain
+// `treehouse get` is still unleased, so its new owner reservation is NOT
+// detected - consistent with `--all` reclaiming in-use slots by design. A
+// leased slot with no ID (a state file predating lease IDs) offers nothing to
+// compare and keeps the unconditional release it has today.
 func bulkReturnPreconditions(wt pool.WorktreeStatus) pool.ReleasePreconditions {
 	if wt.Status == pool.StatusLeased {
 		if wt.LeaseID == "" {

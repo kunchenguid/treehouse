@@ -445,9 +445,6 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			// HEAD is still the one whose ancestry was checked and the tree is
 			// still clean under the exclusive lock.
 			seededPaths := wt.SeededPaths
-			if !wt.SeedInventoryKnown {
-				seededPaths = nil
-			}
 			if err := vcs.ResetWorktreeToRefWithSeededPaths(wt.Path, resetRef, head, true, seededPaths); err != nil {
 				continue
 			}
@@ -737,8 +734,13 @@ func Release(poolDir, worktreePath string) error {
 }
 
 // ValidateReleasePreconditions checks that a managed worktree still matches
-// the requested lease, then runs guarded (when non-nil) while still holding the
-// state lock. No release effects are performed either way.
+// the requested lease AND that a release of it is possible at all, then runs
+// guarded (when non-nil) while still holding the state lock. No release effects
+// are performed either way.
+//
+// It shares releasableWorktree with ReleaseConditional, so the two always agree:
+// a caller that passes here is refused later only by something that changed
+// since, never by a condition the release knew about all along.
 //
 // guarded is how a caller performs a worktree action that must not run on a slot
 // someone else has taken over - get's exit-time detach, which would move the
@@ -762,7 +764,8 @@ func ValidateReleasePreconditions(poolDir, worktreePath string, preconditions Re
 	})
 }
 
-// ReleaseConditional verifies any lease preconditions, runs beforeReset, resets
+// ReleaseConditional verifies any lease preconditions and the quarantine state
+// (both through releasableWorktree, under the lock), runs beforeReset, resets
 // the worktree, and clears its reservation while holding one state lock. The
 // callback is invoked only after all preconditions match and runs under that
 // lock so caller-side termination or detachment cannot race a later acquisition.
@@ -795,11 +798,6 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 		wt, err := releasableWorktree(&state, worktreePath, preconditions)
 		if err != nil {
 			return err
-		}
-		// Clearing a safety quarantine without a trusted seed inventory could
-		// expose ignored files hidden by a mutable manifest.
-		if !wt.SeedInventoryKnown {
-			return fmt.Errorf("%w: worktree %s is quarantined without a trusted seed inventory; inspect it and use destroy --include-leased instead", ErrSeedInventoryUntrusted, worktreePath)
 		}
 		branch, fallback, requested := "", "", ""
 		if !markerless {
@@ -861,6 +859,17 @@ func releasableWorktree(state *State, worktreePath string, preconditions Release
 		}
 		if err := validateReleasePreconditions(*wt, preconditions); err != nil {
 			return nil, err
+		}
+		// Clearing a safety quarantine without a trusted seed inventory could
+		// expose ignored files hidden by a mutable manifest. It is judged here,
+		// with the preconditions, so that every caller learns a release is
+		// impossible BEFORE it prepares one: `return` would otherwise offer to
+		// discard a worktree's uncommitted changes and then refuse it anyway.
+		// It is judged AFTER the preconditions so a caller that named a lease,
+		// or `get` confirming its own reservation, still gets the answer to the
+		// question it asked.
+		if !wt.SeedInventoryKnown {
+			return nil, fmt.Errorf("%w: worktree %s is quarantined without a trusted seed inventory; inspect it and use destroy --include-leased instead", ErrSeedInventoryUntrusted, worktreePath)
 		}
 		return wt, nil
 	}
