@@ -38,13 +38,17 @@ func Confirm(message string, defaultYes bool) (bool, error) {
 	// non-empty line AND an error. Returning early on the error alone discards
 	// an answer the operator actually gave: the prompt reads as unanswered, the
 	// worktree stays held, and the command reports an abort over an explicit
-	// confirmation. Only an error with nothing read is genuinely unanswered.
-	input, err := promptReader().ReadString('\n')
+	// confirmation. The read is therefore normalized FIRST and judged on the
+	// same value the interpretation below uses: an errored read that carried
+	// only whitespace holds no answer, so it stays unanswered instead of
+	// selecting the default. A blank line with no error is the bare Enter the
+	// [Y/n] hint documents, and still selects the default.
+	line, err := promptReader().ReadString('\n')
+	input := strings.TrimSpace(strings.ToLower(line))
 	if err != nil && input == "" {
 		return defaultYes, err
 	}
 
-	input = strings.TrimSpace(strings.ToLower(input))
 	if input == "" {
 		return defaultYes, nil
 	}

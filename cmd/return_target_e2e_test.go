@@ -595,36 +595,95 @@ func TestReturnAllHonorsAnUnterminatedFinalAnswer(t *testing.T) {
 }
 
 // TestConfirmEOFWithNothingReadStaysUnanswered guards the other side of that
-// boundary: an error with NO input really is an unanswered prompt, and must
-// keep aborting rather than being read as the default. Without this, widening
-// the EOF handling could silently turn a closed stdin into a "yes" that
-// discards uncommitted work.
+// boundary: an error carrying no ANSWER really is an unanswered prompt, and
+// must keep aborting rather than being read as the default. The prompt trims
+// before it interprets, so the trimmed value is what decides whether the read
+// was answered at all - whitespace that arrives with the error holds no answer
+// either. Without this, widening the EOF handling could silently turn a closed
+// stdin into a "yes" that discards uncommitted work.
 func TestConfirmEOFWithNothingReadStaysUnanswered(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stdin string
+	}{
+		{name: "closed stdin", stdin: ""},
+		{name: "a space at EOF", stdin: " "},
+		{name: "a tab at EOF", stdin: "\t"},
+		{name: "blanks at EOF", stdin: "  \t "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repoDir, homeDir := setupTestRepo(t)
+
+			lease := acquireLeaseJSON(t, repoDir, homeDir, "agent-a")
+			if err := os.WriteFile(filepath.Join(lease.Path, "README.md"), []byte("dirty\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			all := exec.Command(treehouseBin, "return", "--all")
+			all.Dir = repoDir
+			all.Env = buildEnv(homeDir)
+			all.Stdin = strings.NewReader(tc.stdin)
+			var errBuf bytes.Buffer
+			all.Stderr = &errBuf
+
+			runErr := all.Run()
+			output := errBuf.String()
+			if runErr == nil {
+				t.Fatalf("an unanswerable dirty confirmation must not report success: %s", output)
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != ExitNotReturned {
+				t.Fatalf("expected exit %d for an unanswered dirty prompt, got %v: %s", ExitNotReturned, runErr, output)
+			}
+			if got := gitCmd(t, lease.Path, "status", "--porcelain"); got == "" {
+				t.Fatal("expected the unanswered slot to keep its uncommitted changes")
+			}
+		})
+	}
+}
+
+// TestReturnAllKeepsChangesWhenTheFinalPromptGetsOnlyBlanks is the multi-prompt
+// shape of the same boundary, which is the one `--all` invites: the first
+// answer is real and the second prompt reads whitespace together with the EOF.
+// Judging the raw read rather than the trimmed one would let that blank select
+// the default - "yes" for the dirty confirmation - and discard uncommitted work
+// on a prompt nobody answered.
+func TestReturnAllKeepsChangesWhenTheFinalPromptGetsOnlyBlanks(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 
-	lease := acquireLeaseJSON(t, repoDir, homeDir, "agent-a")
-	if err := os.WriteFile(filepath.Join(lease.Path, "README.md"), []byte("dirty\n"), 0o644); err != nil {
-		t.Fatal(err)
+	first := acquireLeaseJSON(t, repoDir, homeDir, "agent-a")
+	second := acquireLeaseJSON(t, repoDir, homeDir, "agent-b")
+	if first.Path == second.Path {
+		t.Fatalf("expected two distinct slots, both are %s", first.Path)
+	}
+	for _, path := range []string{first.Path, second.Path} {
+		if err := os.WriteFile(filepath.Join(path, "README.md"), []byte("dirty\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	all := exec.Command(treehouseBin, "return", "--all")
 	all.Dir = repoDir
 	all.Env = buildEnv(homeDir)
-	all.Stdin = strings.NewReader("")
+	all.Stdin = strings.NewReader("y\n ")
 	var errBuf bytes.Buffer
 	all.Stderr = &errBuf
 
 	runErr := all.Run()
 	output := errBuf.String()
-	if runErr == nil {
-		t.Fatalf("an unanswerable dirty confirmation must not report success: %s", output)
-	}
 	var exitErr *exec.ExitError
 	if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != ExitNotReturned {
-		t.Fatalf("expected exit %d for an unanswered dirty prompt, got %v: %s", ExitNotReturned, runErr, output)
+		t.Fatalf("expected exit %d for the unanswered second prompt, got %v: %s", ExitNotReturned, runErr, output)
 	}
-	if got := gitCmd(t, lease.Path, "status", "--porcelain"); got == "" {
-		t.Fatal("expected the unanswered slot to keep its uncommitted changes")
+
+	kept := 0
+	for _, path := range []string{first.Path, second.Path} {
+		if gitCmd(t, path, "status", "--porcelain") != "" {
+			kept++
+		}
+	}
+	if kept != 1 {
+		t.Fatalf("expected the answered slot cleaned and the unanswered one kept, %d of 2 still dirty: %s", kept, output)
 	}
 }
 
