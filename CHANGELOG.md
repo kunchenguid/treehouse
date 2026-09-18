@@ -1,5 +1,35 @@
 # Changelog
 
+## [3.0.0](https://github.com/kunchenguid/treehouse/compare/v2.3.0...v3.0.0) (2026-09-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cmd:** `treehouse return` now exits 3, not 0, when it leaves a dirty worktree in place, and `treehouse get` does the same when its subshell exits leaving one dirty. Callers that read exit 0 as "the slot was released" were reading the bug this fixes; scripts under `set -e`, or using `treehouse return "$p" && next-step`, will now stop or branch differently at a dirty abort. Pass --force to clean and return, or treat exit 3 as "not returned".
+
+### Features
+
+* add Nix package manager install support ([#113](https://github.com/kunchenguid/treehouse/issues/113)) ([4307a30](https://github.com/kunchenguid/treehouse/commit/4307a30f6d18457200dbd15954a56d75749454b8))
+* add per-acquisition file seeding manifests ([#131](https://github.com/kunchenguid/treehouse/issues/131)) ([67c9f2f](https://github.com/kunchenguid/treehouse/commit/67c9f2fd5e662321b3481255ffa633540d5d793e))
+* **cmd:** report checked-out branches in status ([#134](https://github.com/kunchenguid/treehouse/issues/134)) ([ee8652b](https://github.com/kunchenguid/treehouse/commit/ee8652b8464ae1d673053a627e7dad75ac2f3406))
+* **cmd:** return a worktree by name and add return --all ([#143](https://github.com/kunchenguid/treehouse/issues/143)) ([99f4db2](https://github.com/kunchenguid/treehouse/commit/99f4db2bbeececc1e6f136a88f79002e5a707174))
+* **pool:** add lease command to durably lease an existing worktree ([#128](https://github.com/kunchenguid/treehouse/issues/128)) ([b227e59](https://github.com/kunchenguid/treehouse/commit/b227e59cf73fd15d69f00b580da0f5bee6b38fce))
+* **pool:** make where a new pool worktree is placed configurable ([#140](https://github.com/kunchenguid/treehouse/issues/140)) ([6d33753](https://github.com/kunchenguid/treehouse/commit/6d33753e94ac3ddf08d7953f3e200ba9bb8b00d5))
+* **pool:** opt-in unique worktree directory names for get ([#126](https://github.com/kunchenguid/treehouse/issues/126)) ([cee9ea1](https://github.com/kunchenguid/treehouse/commit/cee9ea11337afea0e5e1431317b81200d4e8bd18))
+* **pool:** seed ignored files from .worktreeinclude ([#129](https://github.com/kunchenguid/treehouse/issues/129)) ([0e87c62](https://github.com/kunchenguid/treehouse/commit/0e87c62b0494fd08bc5df230797cfb44a10dd814))
+* **pool:** support configurable base branch for get ([#119](https://github.com/kunchenguid/treehouse/issues/119)) ([c98e9de](https://github.com/kunchenguid/treehouse/commit/c98e9de0a8ad85d9551ccce85ecd96c8b9a8dff5))
+
+
+### Bug Fixes
+
+* **cmd:** exit non-zero when a dirty worktree is not returned ([#138](https://github.com/kunchenguid/treehouse/issues/138)) ([e57daab](https://github.com/kunchenguid/treehouse/commit/e57daab3e0c038750d251c779d1c3e294156fa7f))
+* **cmd:** paste-safe dirty non-TTY return --force hints ([#122](https://github.com/kunchenguid/treehouse/issues/122)) ([59762c9](https://github.com/kunchenguid/treehouse/commit/59762c9dd545cca29517e6b7333ec5a23e67ee85))
+* **config:** warn when repository hooks are ignored ([#141](https://github.com/kunchenguid/treehouse/issues/141)) ([8e3ceff](https://github.com/kunchenguid/treehouse/commit/8e3ceffb090d335ea459fa5bd53754ac3a87b6b4))
+* pin nix-build to flake-locked nixpkgs and extract package.nix ([#135](https://github.com/kunchenguid/treehouse/issues/135)) ([30723fc](https://github.com/kunchenguid/treehouse/commit/30723fc0baa2ce05969c96dd245a163333945596))
+* **pool:** report only the processes return would terminate in status ([#139](https://github.com/kunchenguid/treehouse/issues/139)) ([af57b33](https://github.com/kunchenguid/treehouse/commit/af57b33ff8a80b3b1b476b3f060677a3271201a5))
+* **shell:** start supported user shells as interactive login sessions ([#120](https://github.com/kunchenguid/treehouse/issues/120)) ([db06078](https://github.com/kunchenguid/treehouse/commit/db06078c6f5569e539b8cdb7703f38fdefe06382))
+* **updater:** replace a running Windows exe without a fixed .old backup ([#121](https://github.com/kunchenguid/treehouse/issues/121)) ([bdbd0f8](https://github.com/kunchenguid/treehouse/commit/bdbd0f89164ba87cda5d48b53dfb3e04836dc6f7))
+
 ## [2.3.0](https://github.com/kunchenguid/treehouse/compare/v2.2.1...v2.3.0) (2026-08-21)
 
 
