@@ -33,8 +33,14 @@ func Confirm(message string, defaultYes bool) (bool, error) {
 
 	fmt.Fprintf(os.Stderr, "%s [%s] ", message, hint)
 
+	// ReadString reports io.EOF together with whatever it had already read, so
+	// a final answer that arrives without a trailing newline comes back as a
+	// non-empty line AND an error. Returning early on the error alone discards
+	// an answer the operator actually gave: the prompt reads as unanswered, the
+	// worktree stays held, and the command reports an abort over an explicit
+	// confirmation. Only an error with nothing read is genuinely unanswered.
 	input, err := promptReader().ReadString('\n')
-	if err != nil {
+	if err != nil && input == "" {
 		return defaultYes, err
 	}
 

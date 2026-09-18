@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -546,6 +547,84 @@ func TestReturnAllHonorsEveryPipedAnswer(t *testing.T) {
 		if got := gitCmd(t, path, "status", "--porcelain"); got != "" {
 			t.Fatalf("expected %s cleaned by its confirmation, git status:\n%s", path, got)
 		}
+	}
+}
+
+// TestReturnAllHonorsAnUnterminatedFinalAnswer pins the boundary the buffered
+// reader alone does not cover: bufio reports io.EOF TOGETHER with whatever it
+// had already read, so a final answer typed or piped without a trailing newline
+// arrives as a non-empty line and an error at once. Treating the error as
+// decisive discards an answer the operator actually gave - the slot reads as
+// unanswered, stays held, and the run reports an abort over an explicit
+// confirmation. The input here deliberately ends without "\n"; adding one makes
+// the test pass against the broken code and prove nothing.
+func TestReturnAllHonorsAnUnterminatedFinalAnswer(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	first := acquireLeaseJSON(t, repoDir, homeDir, "agent-a")
+	second := acquireLeaseJSON(t, repoDir, homeDir, "agent-b")
+	if first.Path == second.Path {
+		t.Fatalf("expected two distinct slots, both are %s", first.Path)
+	}
+	for _, path := range []string{first.Path, second.Path} {
+		if err := os.WriteFile(filepath.Join(path, "README.md"), []byte("dirty\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	all := exec.Command(treehouseBin, "return", "--all")
+	all.Dir = repoDir
+	all.Env = buildEnv(homeDir)
+	all.Stdin = strings.NewReader("y\ny")
+	var errBuf bytes.Buffer
+	all.Stderr = &errBuf
+
+	runErr := all.Run()
+	output := errBuf.String()
+	if runErr != nil {
+		t.Fatalf("both slots were confirmed, so the run must exit 0, got %v: %s", runErr, output)
+	}
+	if !strings.Contains(output, "Returned 2 of 2 held worktree(s)") {
+		t.Fatalf("expected the unterminated final answer honored, got: %s", output)
+	}
+	for _, entry := range statusEntries(t, repoDir, homeDir) {
+		if entry.Status != "available" {
+			t.Fatalf("expected every confirmed slot released, got %+v", entry)
+		}
+	}
+}
+
+// TestConfirmEOFWithNothingReadStaysUnanswered guards the other side of that
+// boundary: an error with NO input really is an unanswered prompt, and must
+// keep aborting rather than being read as the default. Without this, widening
+// the EOF handling could silently turn a closed stdin into a "yes" that
+// discards uncommitted work.
+func TestConfirmEOFWithNothingReadStaysUnanswered(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	lease := acquireLeaseJSON(t, repoDir, homeDir, "agent-a")
+	if err := os.WriteFile(filepath.Join(lease.Path, "README.md"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	all := exec.Command(treehouseBin, "return", "--all")
+	all.Dir = repoDir
+	all.Env = buildEnv(homeDir)
+	all.Stdin = strings.NewReader("")
+	var errBuf bytes.Buffer
+	all.Stderr = &errBuf
+
+	runErr := all.Run()
+	output := errBuf.String()
+	if runErr == nil {
+		t.Fatalf("an unanswerable dirty confirmation must not report success: %s", output)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != ExitNotReturned {
+		t.Fatalf("expected exit %d for an unanswered dirty prompt, got %v: %s", ExitNotReturned, runErr, output)
+	}
+	if got := gitCmd(t, lease.Path, "status", "--porcelain"); got == "" {
+		t.Fatal("expected the unanswered slot to keep its uncommitted changes")
 	}
 }
 
