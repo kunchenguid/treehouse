@@ -57,7 +57,7 @@ type workflowFile struct {
 // requireActionPin is the immutable commit the workflow must delegate to. A
 // mutable ref such as @main would let the pull request under judgement rewrite
 // its own judge; bumping this is a separate, deliberate pull request.
-const requireActionPin = "kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6"
+const requireActionPin = "kunchenguid/no-mistakes/.github/actions/require-no-mistakes@f6441c96c352a18b9cadcaef6b6c7017e9ac3970"
 
 // loadGateStep verifies the shipped workflow still delegates the required check
 // to the pinned shared action, then returns the script invocation these tests
