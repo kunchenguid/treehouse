@@ -39,19 +39,34 @@ type gateStep struct {
 	run string
 }
 
+type workflowStep struct {
+	Name string            `yaml:"name"`
+	Uses string            `yaml:"uses"`
+	Run  string            `yaml:"run"`
+	Env  map[string]string `yaml:"env"`
+	With map[string]string `yaml:"with"`
+}
+
+type workflowJob struct {
+	Name        string            `yaml:"name"`
+	If          string            `yaml:"if"`
+	Permissions map[string]string `yaml:"permissions"`
+	Steps       []workflowStep    `yaml:"steps"`
+}
+
 type workflowFile struct {
-	Jobs map[string]struct {
-		Name        string            `yaml:"name"`
-		If          string            `yaml:"if"`
-		Permissions map[string]string `yaml:"permissions"`
-		Steps       []struct {
-			Name string            `yaml:"name"`
-			Uses string            `yaml:"uses"`
-			Run  string            `yaml:"run"`
-			Env  map[string]string `yaml:"env"`
-			With map[string]string `yaml:"with"`
-		} `yaml:"steps"`
-	} `yaml:"jobs"`
+	Permissions map[string]string      `yaml:"permissions"`
+	Jobs        map[string]workflowJob `yaml:"jobs"`
+}
+
+// cachedPRLookupInputs are the event-payload facts v1.80.1 must read live
+// from one GitHub API response instead of accepting as action inputs.
+var cachedPRLookupInputs = []string{
+	"pr-body",
+	"pr-head-sha",
+	"pr-head-ref",
+	"pr-author",
+	"pr-number",
 }
 
 // requireActionPin is the immutable commit the workflow must delegate to. A
@@ -700,4 +715,149 @@ func TestGateWorkflowHasNoPathFilter(t *testing.T) {
 	if filter.kind != "none" {
 		t.Fatalf("gate workflow must not filter by path, got %s filter %v", filter.kind, filter.patterns)
 	}
+}
+
+// TestGateWorkflowLiveLookup locks the v1.80.1 caller contract on the shipped
+// workflow: the shared action reads the live PR body and head from one API
+// response, which fails closed without pull-requests: read. A pin-only
+// assertion stayed green if a later edit restored cached PR inputs, restored
+// the Fetch current PR body step, or dropped that permission.
+func TestGateWorkflowLiveLookup(t *testing.T) {
+	data, err := os.ReadFile(gateWorkflowPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", gateWorkflowPath, err)
+	}
+	var wf workflowFile
+	if err := yaml.Unmarshal(data, &wf); err != nil {
+		t.Fatalf("parse %s: %v", gateWorkflowPath, err)
+	}
+	if got := gateLiveLookupViolations(wf); len(got) > 0 {
+		t.Fatalf("live lookup contract broken:\n%s", strings.Join(got, "\n"))
+	}
+}
+
+func TestGateLiveLookupViolationsRejectStaleCaller(t *testing.T) {
+	action := workflowStep{
+		Uses: requireActionPin,
+		With: map[string]string{"exempt-authors": "github-actions[bot]"},
+	}
+	readPR := map[string]string{"contents": "read", "pull-requests": "read"}
+
+	t.Run("missing pull-requests permission", func(t *testing.T) {
+		wf := liveLookupWorkflow(map[string]string{"contents": "read"}, nil, []workflowStep{action})
+		got := strings.Join(gateLiveLookupViolations(wf), "\n")
+		if !strings.Contains(got, "pull-requests") {
+			t.Fatalf("want a pull-requests permission violation, got %q", got)
+		}
+	})
+
+	t.Run("job-level permissions drop pull-requests read", func(t *testing.T) {
+		wf := liveLookupWorkflow(readPR, map[string]string{"contents": "read"}, []workflowStep{action})
+		got := strings.Join(gateLiveLookupViolations(wf), "\n")
+		if !strings.Contains(got, "pull-requests") {
+			t.Fatalf("want a pull-requests permission violation, got %q", got)
+		}
+	})
+
+	t.Run("restored fetch step", func(t *testing.T) {
+		wf := liveLookupWorkflow(readPR, nil, []workflowStep{
+			{Name: "Fetch current PR body", Run: "gh api repos/.../pulls/..."},
+			action,
+		})
+		got := strings.Join(gateLiveLookupViolations(wf), "\n")
+		if !strings.Contains(got, "inline") {
+			t.Fatalf("want an inline fetch-step violation, got %q", got)
+		}
+	})
+
+	t.Run("restored cached PR inputs", func(t *testing.T) {
+		stale := action
+		stale.With = map[string]string{
+			"exempt-authors": "github-actions[bot]",
+			"pr-body":        "${{ steps.pr-body.outputs.body }}",
+			"pr-head-sha":    "${{ github.event.pull_request.head.sha }}",
+			"pr-head-ref":    "${{ github.event.pull_request.head.ref }}",
+			"pr-author":      "${{ github.event.pull_request.user.login }}",
+			"pr-number":      "${{ github.event.pull_request.number }}",
+		}
+		wf := liveLookupWorkflow(readPR, nil, []workflowStep{stale})
+		got := strings.Join(gateLiveLookupViolations(wf), "\n")
+		for _, key := range cachedPRLookupInputs {
+			if !strings.Contains(got, key) {
+				t.Fatalf("want a cached %s input violation, got %q", key, got)
+			}
+		}
+	})
+
+	t.Run("current caller shape is clean", func(t *testing.T) {
+		wf := liveLookupWorkflow(readPR, nil, []workflowStep{action})
+		if got := gateLiveLookupViolations(wf); len(got) > 0 {
+			t.Fatalf("clean caller reported violations:\n%s", strings.Join(got, "\n"))
+		}
+	})
+}
+
+func liveLookupWorkflow(workflowPerm, jobPerm map[string]string, steps []workflowStep) workflowFile {
+	return workflowFile{
+		Permissions: workflowPerm,
+		Jobs: map[string]workflowJob{
+			"check": {
+				Name:        requiredCheckContext,
+				Permissions: jobPerm,
+				Steps:       steps,
+			},
+		},
+	}
+}
+
+func grantsPullRequestsRead(value string) bool {
+	return value == "read" || value == "write"
+}
+
+func isRequireNoMistakesAction(uses string) bool {
+	return strings.Contains(uses, "/.github/actions/require-no-mistakes@")
+}
+
+func gateLiveLookupViolations(wf workflowFile) []string {
+	var (
+		jobID string
+		job   workflowJob
+	)
+	for id, candidate := range wf.Jobs {
+		if candidate.Name != requiredCheckContext {
+			continue
+		}
+		jobID = id
+		job = candidate
+		break
+	}
+	if jobID == "" {
+		return []string{fmt.Sprintf("no job named %q", requiredCheckContext)}
+	}
+
+	var out []string
+	perm := ""
+	if job.Permissions != nil {
+		perm = job.Permissions["pull-requests"]
+	} else if wf.Permissions != nil {
+		perm = wf.Permissions["pull-requests"]
+	}
+	if !grantsPullRequestsRead(perm) {
+		out = append(out, fmt.Sprintf("job %q effective pull-requests permission %q, want read", jobID, perm))
+	}
+
+	for i, step := range job.Steps {
+		if strings.TrimSpace(step.Run) != "" {
+			out = append(out, fmt.Sprintf("job %q step %d still runs inline commands; live lookup must not fetch the PR body first", jobID, i))
+		}
+		if !isRequireNoMistakesAction(step.Uses) {
+			continue
+		}
+		for _, key := range cachedPRLookupInputs {
+			if _, ok := step.With[key]; ok {
+				out = append(out, fmt.Sprintf("job %q passes cached %s into require-no-mistakes; live lookup reads body and head from one response", jobID, key))
+			}
+		}
+	}
+	return out
 }
