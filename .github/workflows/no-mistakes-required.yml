@@ -50,3 +50,4 @@ jobs:
           exempt-authors: |
             github-actions[bot]
             dependabot[bot]
+            kunchenguid
