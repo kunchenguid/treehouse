@@ -113,6 +113,49 @@ func TestAcquireBranchCollisionDoesNotRunRedundantDetachHook(t *testing.T) {
 	}
 }
 
+func TestAcquireBranchRejectedReferenceTransactionPreservesIgnoredOutput(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clearOwnerReservation(t, poolDir, wtPath)
+	hook := filepath.Join(repoDir, ".git", "hooks", "reference-transaction")
+	script := "#!/bin/sh\n" +
+		"[ \"$1\" = prepared ] || exit 0\n" +
+		"input=$(cat)\n" +
+		"case \"$input\" in *' refs/heads/feature'*) ;; *) exit 0 ;; esac\n" +
+		"printf 'hook work\\n' > ignored.tmp\n" +
+		"exit 1\n"
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".git", "info", "exclude"), []byte("ignored.tmp\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = AcquireWithOptions(repoDir, poolDir, 1, nil, AcquireOptions{Branch: "feature"})
+	if err == nil || !strings.Contains(err.Error(), "quarantined") {
+		t.Fatalf("rejected branch creation = %v, want quarantine", err)
+	}
+	if got := gitOut(t, wtPath, "branch", "--show-current"); got != "" {
+		t.Fatalf("failed creation left HEAD on %q, want detached", got)
+	}
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Worktrees) != 1 || state.Worktrees[0].Path != wtPath || !state.Worktrees[0].Leased || state.Worktrees[0].LeaseHolder != "quarantined: branch creation cleanup failed" {
+		t.Fatalf("hook output slot was not quarantined: %#v", state.Worktrees)
+	}
+	content, err := os.ReadFile(filepath.Join(wtPath, "ignored.tmp"))
+	if err != nil || string(content) != "hook work\n" {
+		t.Fatalf("ignored hook output = %q, error %v", content, err)
+	}
+	if _, err := Acquire(repoDir, poolDir, 1, nil); err == nil {
+		t.Fatal("quarantined slot was reused")
+	}
+}
+
 func TestAcquireBranchCleanupFailureQuarantinesRecycledSlot(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 	wtPath, err := Acquire(repoDir, poolDir, 1, nil)

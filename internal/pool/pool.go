@@ -544,9 +544,12 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 					// redundant detach runs post-checkout hooks and may create
 					// ignored output in a slot about to be reused.
 					_, detached, headErr := vcs.CheckedOutBranch(wt.Path)
+					// A rejecting reference-transaction hook can write ignored
+					// files while leaving HEAD detached and the tree clean.
+					unknown, inspectErr := vcs.HasUnseededBranchCreationOutput(wt.Path, seededPaths)
 					state.Worktrees[i].OwnerPID = 0
 					state.Worktrees[i].OwnerStartedAt = 0
-					if created || headErr != nil || !detached {
+					if created || headErr != nil || !detached || inspectErr != nil || unknown {
 						state.Worktrees[i].Leased = true
 						state.Worktrees[i].LeaseHolder = "quarantined: branch creation cleanup failed"
 						if created {
@@ -559,10 +562,13 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 					if writeErr := WriteState(poolDir, state); writeErr != nil {
 						return fmt.Errorf("failed to create branch %q in %s: %w (state cleanup failed: %v)", opts.branch, wt.Path, branchErr, writeErr)
 					}
+					if inspectErr != nil {
+						return fmt.Errorf("failed to create branch %q in %s: %w (worktree inspection failed: %v; worktree quarantined for inspection)", opts.branch, wt.Path, branchErr, inspectErr)
+					}
 					if headErr != nil {
 						return fmt.Errorf("failed to create branch %q in %s: %w (HEAD inspection failed: %v; worktree quarantined for inspection)", opts.branch, wt.Path, branchErr, headErr)
 					}
-					if created || !detached {
+					if created || !detached || unknown {
 						return fmt.Errorf("failed to create branch %q in %s: %w (worktree quarantined for inspection)", opts.branch, wt.Path, branchErr)
 					}
 					return fmt.Errorf("failed to create branch %q in %s: %w", opts.branch, wt.Path, branchErr)

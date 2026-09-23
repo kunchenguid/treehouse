@@ -375,6 +375,20 @@ func HasUnseededWorktreeOutput(worktreePath string, seededPaths []string) (bool,
 	return gitvcs.HasUnseededWorktreeOutput(worktreePath, seededPaths)
 }
 
+// HasUnseededBranchCreationOutput inspects a recycled slot after branch
+// creation fails without running checkout. Post-checkout hooks cannot have run
+// on this path, but reference-transaction hooks can have written output.
+func HasUnseededBranchCreationOutput(worktreePath string, seededPaths []string) (bool, error) {
+	name, err := WorktreeBackendNameChecked(worktreePath)
+	if err != nil {
+		return true, err
+	}
+	if name != "git" {
+		return true, nil
+	}
+	return gitvcs.HasUnseededBranchCreationOutput(worktreePath, seededPaths)
+}
+
 // AddWorktree creates a new worktree at path based on branch.
 func AddWorktree(repoRoot, path, branch string) error {
 	return backendFor(repoRoot).AddWorktree(repoRoot, path, branch)

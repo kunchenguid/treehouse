@@ -639,24 +639,45 @@ func RemoveCleanWorktree(repoRoot, path string) error {
 	return err
 }
 
+// HasUnseededBranchCreationOutput ignores checkout-hook uncertainty when no
+// checkout ran, but inspects reference-transaction hooks and worktree output.
+func HasUnseededBranchCreationOutput(worktreePath string, seededPaths []string) (bool, error) {
+	return hasUnseededWorktreeOutput(worktreePath, seededPaths, false)
+}
+
 // HasUnseededWorktreeOutput refuses removal when hooks may still write, or
 // when any untracked output is not a known copied seed.
 func HasUnseededWorktreeOutput(worktreePath string, seededPaths []string) (bool, error) {
-	// A custom hooks path can be relative to the invocation directory and
-	// may contain asynchronous post-checkout work. Treat any configured path
-	// as hook-capable rather than trying to prove its contents harmless.
+	return hasUnseededWorktreeOutput(worktreePath, seededPaths, true)
+}
+
+func hasUnseededWorktreeOutput(worktreePath string, seededPaths []string, checkoutPossible bool) (bool, error) {
+	// A configured hooks path can be relative to the invocation directory.
+	// Preserve the existing fail-closed rule for worktree-add checkout hooks.
 	hooksPath := exec.Command("git", "config", "--get", "core.hooksPath")
 	hooksPath.Dir = worktreePath
+	var configuredHooksPath string
 	if out, err := hooksPath.Output(); err == nil {
-		if len(bytes.TrimSpace(out)) > 0 {
-			return true, nil
-		}
+		configuredHooksPath = strings.TrimSpace(string(out))
 	} else if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
 		return true, err
 	}
-	hook, err := runGit(worktreePath, "rev-parse", "--git-path", "hooks/post-checkout")
-	if err != nil {
-		return true, err
+	if checkoutPossible && configuredHooksPath != "" {
+		return true, nil
+	}
+	hookName := "reference-transaction"
+	if checkoutPossible {
+		hookName = "post-checkout"
+	}
+	var hook string
+	if configuredHooksPath != "" {
+		hook = filepath.Join(configuredHooksPath, hookName)
+	} else {
+		var err error
+		hook, err = runGit(worktreePath, "rev-parse", "--git-path", "hooks/"+hookName)
+		if err != nil {
+			return true, err
+		}
 	}
 	if !filepath.IsAbs(hook) {
 		hook = filepath.Join(worktreePath, hook)
