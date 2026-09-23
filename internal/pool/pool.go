@@ -368,6 +368,11 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 	if opts.branch != "" && vcs.BackendNameFor(repoRoot) != "git" {
 		return LeaseInfo{}, fmt.Errorf("cannot create branch %q: --branch is only supported by the git backend; remove --branch to acquire a jj workspace", opts.branch)
 	}
+	if opts.branch != "" {
+		if err := vcs.ValidateBranchName(repoRoot, opts.branch); err != nil {
+			return LeaseInfo{}, fmt.Errorf("invalid branch %q: %w", opts.branch, err)
+		}
+	}
 
 	// Said out loud rather than resolved silently: a template names the leaf
 	// itself, so unique_leaf has nothing left to rename, and a pool that sets
@@ -653,6 +658,14 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			fmt.Fprintf(os.Stderr, "🌳 Warning: failed to prune stale worktrees: %v\n", err)
 		}
 
+		var expectedCommit string
+		if opts.branch != "" {
+			expectedCommit, err = vcs.BranchCommit(repoRoot, branch)
+			if err != nil {
+				return fmt.Errorf("failed to resolve base commit for branch %q: %w", opts.branch, err)
+			}
+		}
+
 		if err := vcs.AddWorktree(repoRoot, wtPath, branch); err != nil {
 			return fmt.Errorf("failed to create worktree: %w", err)
 		}
@@ -694,6 +707,16 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			return err
 		}
 		if opts.branch != "" {
+			matches, verifyErr := vcs.WorktreeAtCommit(wtPath, expectedCommit)
+			if verifyErr != nil || !matches {
+				entry := &state.Worktrees[len(state.Worktrees)-1]
+				entry.LeaseHolder = "quarantined: worktree-add checkout changed HEAD"
+				entry.LeasedAt = time.Now()
+				if writeErr := WriteState(poolDir, state); writeErr != nil {
+					return fmt.Errorf("cannot create branch %q in %s: worktree is not detached at selected base commit %s (verification: %v; quarantine failed: %v)", opts.branch, wtPath, expectedCommit, verifyErr, writeErr)
+				}
+				return fmt.Errorf("cannot create branch %q in %s: worktree is not detached at selected base commit %s (verification: %v; worktree quarantined for inspection)", opts.branch, wtPath, expectedCommit, verifyErr)
+			}
 			if branchErr := createBranch(wtPath, opts.branch); branchErr != nil {
 				if errors.Is(branchErr, vcs.ErrBranchCreated) {
 					entry := &state.Worktrees[len(state.Worktrees)-1]

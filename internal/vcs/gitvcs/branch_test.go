@@ -63,6 +63,27 @@ func TestCreateBranchAcceptsCompletedCheckoutAfterHookFailure(t *testing.T) {
 	}
 }
 
+func TestCreateBranchReportsCheckoutOutputWhenPostconditionFails(t *testing.T) {
+	err := createBranch("worktree", "feature", func(_ string, args ...string) (string, error) {
+		switch args[0] {
+		case "rev-parse":
+			return "initial-commit", nil
+		case "branch":
+			return "", nil
+		case "checkout":
+			return "successful hook diagnostic", nil
+		case "symbolic-ref":
+			return "main", nil
+		default:
+			t.Fatalf("unexpected git command: %v", args)
+			return "", nil
+		}
+	})
+	if !errors.Is(err, ErrBranchCreated) || !strings.Contains(err.Error(), "successful hook diagnostic") {
+		t.Fatalf("postcondition failure = %v, want checkout output and retained branch", err)
+	}
+}
+
 func TestCreateBranchReturnsFailureWhenCheckoutDidNotSelectBranch(t *testing.T) {
 	checkoutErr := errors.New("checkout failed")
 	err := createBranch("worktree", "feature", func(_ string, args ...string) (string, error) {

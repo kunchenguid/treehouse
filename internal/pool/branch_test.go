@@ -34,6 +34,59 @@ func TestAcquireBranchCreatesAtAcquiredCommitBeforeHook(t *testing.T) {
 	}
 }
 
+func TestAcquireBranchRejectsWorktreeAddHookChangingBase(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	developTip := addBranch(t, repoDir, "develop", "develop-only.txt")
+	hook := filepath.Join(repoDir, ".git", "hooks", "post-checkout")
+	script := "#!/bin/sh\n" +
+		"[ \"$(git symbolic-ref -q --short HEAD)\" = '' ] || exit 0\n" +
+		"printf 'hook work\\n' > ignored.tmp\n" +
+		"git symbolic-ref HEAD refs/heads/main\n"
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".git", "info", "exclude"), []byte("ignored.tmp\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := AcquireWithOptions(repoDir, poolDir, 1, nil, AcquireOptions{BaseBranch: "develop", Branch: "feature"})
+	if err == nil || !strings.Contains(err.Error(), "quarantined") {
+		t.Fatalf("changed base acquisition = %v, want quarantine", err)
+	}
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Worktrees) != 1 || !state.Worktrees[0].Leased {
+		t.Fatalf("worktree-add hook output not quarantined: %#v", state.Worktrees)
+	}
+	content, err := os.ReadFile(filepath.Join(state.Worktrees[0].Path, "ignored.tmp"))
+	if err != nil || string(content) != "hook work\n" {
+		t.Fatalf("hook output = %q, error %v", content, err)
+	}
+	if got := gitOut(t, repoDir, "rev-parse", "refs/heads/develop"); got != developTip {
+		t.Fatalf("selected base changed from %s to %s", developTip, got)
+	}
+	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/feature")
+	cmd.Dir = repoDir
+	if err := cmd.Run(); err == nil {
+		t.Fatal("feature was created at a different commit")
+	}
+}
+
+func TestAcquireInvalidBranchWithReferenceHookLeavesCapacity(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	hook := filepath.Join(repoDir, ".git", "hooks", "reference-transaction")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcquireWithOptions(repoDir, poolDir, 1, nil, AcquireOptions{Branch: "invalid branch"}); err == nil {
+		t.Fatal("invalid branch unexpectedly accepted")
+	}
+	if _, err := Acquire(repoDir, poolDir, 1, nil); err != nil {
+		t.Fatalf("invalid branch stranded capacity: %v", err)
+	}
+}
+
 func TestAcquireBranchFailureOnRecycledSlotLeavesItDetachedAndReusable(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
@@ -356,7 +409,7 @@ func TestAcquireBranchCollisionAfterAddPreservesHookOutput(t *testing.T) {
 				}
 			}
 			hook := filepath.Join(hookDir, "post-checkout")
-			if err := os.WriteFile(hook, []byte("#!/bin/sh\nprintf 'worktree add output\\n' > "+tc.output+"\n"), 0o755); err != nil {
+			if err := os.WriteFile(hook, []byte("#!/bin/sh\ngit branch feature || exit 1\nprintf 'worktree add output\\n' > "+tc.output+"\n"), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			if tc.ignored {
@@ -364,7 +417,7 @@ func TestAcquireBranchCollisionAfterAddPreservesHookOutput(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			_, err := AcquireWithOptions(repoDir, poolDir, 1, nil, AcquireOptions{Branch: "main"})
+			_, err := AcquireWithOptions(repoDir, poolDir, 1, nil, AcquireOptions{Branch: "feature"})
 			if err == nil || !strings.Contains(err.Error(), "quarantined") {
 				t.Fatalf("branch collision error = %v, want quarantine", err)
 			}
@@ -396,8 +449,11 @@ func TestAcquireBranchCleanupFailureQuarantinesNewSlot(t *testing.T) {
 	oldRemoveWorktree := removeWorktree
 	removeWorktree = func(string, string) error { return errors.New("cleanup failed") }
 	t.Cleanup(func() { removeWorktree = oldRemoveWorktree })
+	oldCreateBranch := createBranch
+	createBranch = func(string, string) error { return errors.New("branch failed") }
+	t.Cleanup(func() { createBranch = oldCreateBranch })
 
-	_, err := AcquireWithOptions(repoDir, poolDir, 1, nil, AcquireOptions{Branch: "invalid branch"})
+	_, err := AcquireWithOptions(repoDir, poolDir, 1, nil, AcquireOptions{Branch: "feature"})
 	if err == nil || !strings.Contains(err.Error(), "cleanup failed") {
 		t.Fatalf("AcquireWithOptions error = %v, want cleanup failure", err)
 	}

@@ -340,6 +340,31 @@ func VerifyBaseBranch(repoRoot, branch string) error {
 	return nil
 }
 
+func ValidateBranchName(repoRoot, branch string) error {
+	if backendFor(repoRoot).Name() != "git" {
+		return fmt.Errorf("branch validation requires the git backend")
+	}
+	return gitvcs.ValidateBranchName(repoRoot, branch)
+}
+
+func BranchCommit(repoRoot, branch string) (string, error) {
+	if backendFor(repoRoot).Name() != "git" {
+		return "", fmt.Errorf("branch commit resolution requires the git backend")
+	}
+	return gitvcs.BranchCommit(repoRoot, branch)
+}
+
+func WorktreeAtCommit(worktreePath, commit string) (bool, error) {
+	name, err := WorktreeBackendNameChecked(worktreePath)
+	if err != nil {
+		return false, err
+	}
+	if name != "git" {
+		return false, fmt.Errorf("commit verification requires a git worktree")
+	}
+	return gitvcs.WorktreeAtCommit(worktreePath, commit)
+}
+
 func LocalBranchExists(repoRoot, branch string) (bool, error) {
 	if backendFor(repoRoot).Name() != "git" {
 		return false, fmt.Errorf("local branch lookup requires the git backend")

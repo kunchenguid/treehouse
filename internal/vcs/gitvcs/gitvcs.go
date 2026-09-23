@@ -237,6 +237,30 @@ func AddWorktree(repoRoot, path, branch string) error {
 	return err
 }
 
+func BranchCommit(repoRoot, branch string) (string, error) {
+	return runGit(repoRoot, "rev-parse", "--verify", branchRef(repoRoot, branch)+"^{commit}")
+}
+
+func WorktreeAtCommit(worktreePath, commit string) (bool, error) {
+	head, err := worktreeHead(worktreePath)
+	if err != nil {
+		return false, err
+	}
+	branch, err := CheckedOutBranch(worktreePath)
+	return err == nil && branch == "" && head == commit, err
+}
+
+func ValidateBranchName(repoRoot, branch string) error {
+	name, err := runGit(repoRoot, "check-ref-format", "--branch", branch)
+	if err != nil {
+		return err
+	}
+	if name != branch {
+		return fmt.Errorf("branch name %q expands to %q", branch, name)
+	}
+	return nil
+}
+
 func LocalBranchExists(repoRoot, branch string) (bool, error) {
 	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 	cmd.Dir = repoRoot
@@ -277,7 +301,7 @@ func createBranch(worktreePath, branch string, run func(string, ...string) (stri
 	if _, err := run(worktreePath, "branch", "--", branch, expectedHead); err != nil {
 		return err
 	}
-	_, checkoutErr := run(worktreePath, "checkout", branch)
+	checkoutOutput, checkoutErr := run(worktreePath, "checkout", branch)
 	// Exit status alone is not authoritative: a post-checkout hook can fail
 	// after checkout or succeed after switching HEAD to another branch.
 	// Both the symbolic branch and commit must still match the acquisition.
@@ -289,6 +313,9 @@ func createBranch(worktreePath, branch string, run func(string, ...string) (stri
 	}
 	if checkoutErr == nil {
 		checkoutErr = fmt.Errorf("checkout of branch %q did not leave HEAD on that branch at commit %s", branch, expectedHead)
+		if checkoutOutput != "" {
+			checkoutErr = fmt.Errorf("%w\n%s", checkoutErr, checkoutOutput)
+		}
 	}
 	return fmt.Errorf("%w: %w (branch %q was created and left in place for manual inspection/removal)", ErrBranchCreated, checkoutErr, branch)
 }
