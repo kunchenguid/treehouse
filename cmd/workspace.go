@@ -138,18 +138,33 @@ func workspaceGetRunE(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "🌳 Entered workspace at %s. Type 'exit' to return.\n", ui.PrettyPath(path))
 	_, shellErr := shell.Spawn(path, []string{"TREEHOUSE_WORKSPACE=" + path, "TREEHOUSE_WORKSPACE_ID=" + id})
-	returnErr := finishWorkspaceShell(path)
+	returnErr := finishWorkspaceShell(path, state)
 	if shellErr != nil {
 		return shellErr
 	}
 	return returnErr
 }
 
-func finishWorkspaceShell(path string) error {
+func finishWorkspaceShell(path string, original workspaceState) error {
 	// Modify can add children while the subshell is open; its initial snapshot is stale.
 	state, err := readWorkspaceState(path)
 	if err != nil {
-		return err
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if _, dirErr := os.Lstat(path); !errors.Is(dirErr, os.ErrNotExist) {
+			return err
+		}
+		for _, child := range original.Repositories {
+			entry, lookupErr := pool.FindByPath(child.PoolDir, child.Path)
+			if lookupErr != nil {
+				return fmt.Errorf("verify returned workspace %s: %w", path, lookupErr)
+			}
+			if entry != nil && entry.Leased && entry.LeaseID == child.LeaseID {
+				return fmt.Errorf("workspace %s disappeared while %s is still leased", path, child.Name)
+			}
+		}
+		return nil
 	}
 	if err := returnWorkspaceState(&state, false); err != nil {
 		return err
@@ -358,9 +373,16 @@ func addWorkspaceRepository(state *workspaceState, repo workspaceRepoConfig, noF
 		return fmt.Errorf("record allocation: %w", err)
 	}
 	if err := os.Symlink(child.Path, filepath.Join(state.Path, child.Name)); err != nil {
-		if removeErr := removeWorkspaceRepository(state, len(state.Repositories)-1, true); removeErr != nil {
-			return fmt.Errorf("link repository: %w; rollback lease: %v", err, removeErr)
+		// A failed link may be occupied by someone else's file; release only our lease.
+		if releaseErr := returnWorkspaceChild(child, true); releaseErr != nil {
+			return fmt.Errorf("link repository: %w; rollback lease: %v", err, releaseErr)
 		}
+		next := *state
+		next.Repositories = state.Repositories[:len(state.Repositories)-1]
+		if writeErr := writeWorkspaceState(next); writeErr != nil {
+			return fmt.Errorf("link repository: %w; record returned lease: %v", err, writeErr)
+		}
+		*state = next
 		return fmt.Errorf("link repository: %w", err)
 	}
 	return nil
@@ -486,7 +508,13 @@ func returnWorkspaceState(state *workspaceState, force bool) error {
 
 func removeWorkspaceRepository(state *workspaceState, index int, force bool) error {
 	child := state.Repositories[index]
+	if err := checkWorkspaceFacade(state.Path, child); err != nil {
+		return err
+	}
 	if err := returnWorkspaceChild(child, force); err != nil {
+		return err
+	}
+	if err := checkWorkspaceFacade(state.Path, child); err != nil {
 		return err
 	}
 	if err := os.Remove(filepath.Join(state.Path, child.Name)); err != nil && !os.IsNotExist(err) {
@@ -501,6 +529,28 @@ func removeWorkspaceRepository(state *workspaceState, index int, force bool) err
 		return fmt.Errorf("record returned repository: %w", err)
 	}
 	state.Repositories = repositories
+	return nil
+}
+
+func checkWorkspaceFacade(path string, child workspaceRepository) error {
+	link := filepath.Join(path, child.Name)
+	info, err := os.Lstat(link)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect facade %s: %w", link, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("facade %s is not the managed symlink; leaving it in place", link)
+	}
+	target, err := os.Readlink(link)
+	if err != nil {
+		return fmt.Errorf("read facade %s: %w", link, err)
+	}
+	if target != child.Path {
+		return fmt.Errorf("facade %s points to %s instead of %s; leaving it in place", link, target, child.Path)
+	}
 	return nil
 }
 

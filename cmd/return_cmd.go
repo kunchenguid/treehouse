@@ -84,6 +84,9 @@ other in-use slot. --all takes no path or name, and cannot be combined with the
 		// A workspace shell has no single TREEHOUSE_DIR because it contains
 		// several child worktrees. A bare return releases the aggregate.
 		if len(args) == 0 && os.Getenv("TREEHOUSE_WORKSPACE") != "" {
+			if returnAll || cmd.Flags().Changed("if-lease-id") || cmd.Flags().Changed("if-lease-holder") {
+				return fmt.Errorf("return from a workspace shell cannot use --all or --if-lease-*; use 'treehouse workspace return' to release the workspace")
+			}
 			return returnWorkspace(os.Getenv("TREEHOUSE_WORKSPACE"), returnForce)
 		}
 		if cmd.Flags().Changed("if-lease-id") && returnIfLeaseID == "" {

@@ -6,8 +6,13 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/kunchenguid/treehouse/internal/config"
 	"github.com/kunchenguid/treehouse/internal/pool"
 )
+
+// INV-1 (return_cmd.go): workspace return must not discard unsupported flags.
+// INV-2 (workspace.go): shell exit must recognize a previously returned workspace.
+// INV-3 (workspace.go): facade cleanup must never remove an unrelated entry.
 
 func TestWorkspaceProfileLeaseAndReturn(t *testing.T) {
 	repoOne, homeDir := setupTestRepo(t)
@@ -84,7 +89,7 @@ func TestWorkspaceShellExitReturnsRepositoriesAddedDuringSession(t *testing.T) {
 		t.Fatalf("session state was not modified as expected: original=%+v current=%+v", original.Repositories, current.Repositories)
 	}
 
-	if err := finishWorkspaceShell(original.Path); err != nil {
+	if err := finishWorkspaceShell(original.Path, original); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(original.Path); !os.IsNotExist(err) {
@@ -123,6 +128,137 @@ func TestWorkspaceReturnPreservesFilesOutsideManagedLinks(t *testing.T) {
 	if content, err := os.ReadFile(note); err != nil || string(content) != "keep this" {
 		t.Fatalf("workspace file was removed: %q, %v; stderr=%s", content, err, stderr)
 	}
+}
+
+func TestWorkspaceBareReturnRejectsIncompatibleFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		flag []string
+	}{
+		{name: "all", flag: []string{"--all"}},
+		{name: "lease ID", flag: []string{"--if-lease-id", "wrong-lease"}},
+		{name: "lease holder", flag: []string{"--if-lease-holder", "other-holder"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, homeDir := setupTestRepo(t)
+			workspace := createLeasedWorkspace(t, repo, homeDir)
+			args := append([]string{"return"}, tc.flag...)
+			_, stderr, code := runTreehouse(t, repo, homeDir, []string{"TREEHOUSE_WORKSPACE=" + workspace.Path}, args...)
+			if code == 0 {
+				t.Fatalf("return silently ignored %v: %s", tc.flag, stderr)
+			}
+			if _, err := readWorkspaceState(workspace.Path); err != nil {
+				t.Fatalf("refused return destroyed workspace: %v", err)
+			}
+			state, err := pool.ReadState(workspace.Repositories[0].PoolDir)
+			if err != nil || len(state.Worktrees) != 1 || !state.Worktrees[0].Leased {
+				t.Fatalf("refused return released child: %+v, %v", state.Worktrees, err)
+			}
+		})
+	}
+}
+
+func TestWorkspaceShellExitAfterExplicitReturn(t *testing.T) {
+	repo, homeDir := setupTestRepo(t)
+	workspace := createLeasedWorkspace(t, repo, homeDir)
+	if err := returnWorkspace(workspace.Path, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishWorkspaceShell(workspace.Path, workspace); err != nil {
+		t.Fatalf("shell exit failed after an explicit return: %v", err)
+	}
+}
+
+func TestWorkspaceShellExitRejectsMissingStateInExistingDirectory(t *testing.T) {
+	repo, homeDir := setupTestRepo(t)
+	workspace := createLeasedWorkspace(t, repo, homeDir)
+	if err := os.Remove(workspaceStatePath(workspace.Path)); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishWorkspaceShell(workspace.Path, workspace); err == nil {
+		t.Fatal("shell exit silently accepted missing state while children are leased")
+	}
+}
+
+func TestWorkspaceShellExitRejectsMissingDirectoryWithLiveLease(t *testing.T) {
+	repo, homeDir := setupTestRepo(t)
+	workspace := createLeasedWorkspace(t, repo, homeDir)
+	if err := os.Remove(filepath.Join(workspace.Path, workspace.Repositories[0].Name)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(workspaceStatePath(workspace.Path)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(workspace.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishWorkspaceShell(workspace.Path, workspace); err == nil {
+		t.Fatal("shell exit silently accepted a lost workspace with a live lease")
+	}
+}
+
+func TestWorkspaceModifyDoesNotRemoveExistingFileOnAddFailure(t *testing.T) {
+	repo, homeDir := setupTestRepo(t)
+	other := setupTestRepoWithHome(t, homeDir, "second-repo")
+	workspace := createLeasedWorkspace(t, repo, homeDir)
+	obstruction := filepath.Join(workspace.Path, filepath.Base(other))
+	if err := os.WriteFile(obstruction, []byte("unrelated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, code := runTreehouse(t, repo, homeDir, nil, "workspace", "modify", "--add", other, "--no-fetch", workspace.Path)
+	if code == 0 {
+		t.Fatal("modify adopted an unrelated file")
+	}
+	if data, err := os.ReadFile(obstruction); err != nil || string(data) != "unrelated" {
+		t.Fatalf("modify deleted unrelated file: %q, %v", data, err)
+	}
+	persisted, err := readWorkspaceState(workspace.Path)
+	if err != nil || len(persisted.Repositories) != 1 {
+		t.Fatalf("failed addition remained in workspace state: %+v, %v", persisted.Repositories, err)
+	}
+	poolDir, err := config.ResolvePoolDir(other, homeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := pool.ReadState(poolDir)
+	if err != nil || len(state.Worktrees) != 1 || state.Worktrees[0].Leased {
+		t.Fatalf("failed addition leaked child lease: %+v, %v", state.Worktrees, err)
+	}
+}
+
+func TestWorkspaceReturnDoesNotRemoveReplacedFacade(t *testing.T) {
+	repo, homeDir := setupTestRepo(t)
+	workspace := createLeasedWorkspace(t, repo, homeDir)
+	facade := filepath.Join(workspace.Path, workspace.Repositories[0].Name)
+	if err := os.Remove(facade); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(facade, []byte("unrelated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := returnWorkspace(workspace.Path, true); err == nil {
+		t.Fatal("return accepted a replaced facade")
+	}
+	if data, err := os.ReadFile(facade); err != nil || string(data) != "unrelated" {
+		t.Fatalf("return deleted unrelated file: %q, %v", data, err)
+	}
+	state, err := pool.ReadState(workspace.Repositories[0].PoolDir)
+	if err != nil || len(state.Worktrees) != 1 || !state.Worktrees[0].Leased {
+		t.Fatalf("refused return released child: %+v, %v", state.Worktrees, err)
+	}
+}
+
+func createLeasedWorkspace(t *testing.T, repo, homeDir string) workspaceState {
+	t.Helper()
+	stdout, stderr, code := runTreehouse(t, repo, homeDir, nil, "workspace", "get", "--lease", "--json", "--no-fetch", "--workspace-root", filepath.Join(t.TempDir(), "workspaces"), repo)
+	if code != 0 {
+		t.Fatalf("workspace get: %s", stderr)
+	}
+	var workspace workspaceState
+	if err := json.Unmarshal([]byte(stdout), &workspace); err != nil {
+		t.Fatal(err)
+	}
+	return workspace
 }
 
 func TestWorkspaceModifyAddsAndRemovesRepositories(t *testing.T) {
