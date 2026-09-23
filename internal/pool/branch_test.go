@@ -5,11 +5,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/treehouse/internal/vcs"
 )
 
 func TestAcquireBranchCreatesAtAcquiredCommitBeforeHook(t *testing.T) {
+	requireUnixShellHooks(t)
 	repoDir, poolDir := setupRepo(t)
 	developTip := addBranch(t, repoDir, "develop", "develop-only.txt")
 	observed := filepath.Join(t.TempDir(), "hook-ran")
@@ -35,6 +39,7 @@ func TestAcquireBranchCreatesAtAcquiredCommitBeforeHook(t *testing.T) {
 }
 
 func TestAcquireBranchRejectsWorktreeAddHookChangingBase(t *testing.T) {
+	requireUnixShellHooks(t)
 	repoDir, poolDir := setupRepo(t)
 	developTip := addBranch(t, repoDir, "develop", "develop-only.txt")
 	hook := filepath.Join(repoDir, ".git", "hooks", "post-checkout")
@@ -74,6 +79,7 @@ func TestAcquireBranchRejectsWorktreeAddHookChangingBase(t *testing.T) {
 }
 
 func TestAcquireInvalidBranchWithReferenceHookLeavesCapacity(t *testing.T) {
+	requireUnixShellHooks(t)
 	repoDir, poolDir := setupRepo(t)
 	hook := filepath.Join(repoDir, ".git", "hooks", "reference-transaction")
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
@@ -113,6 +119,7 @@ func TestAcquireBranchFailureOnRecycledSlotLeavesItDetachedAndReusable(t *testin
 }
 
 func TestAcquireBranchCollisionWithReferenceHookKeepsRecycledSlotAvailable(t *testing.T) {
+	requireUnixShellHooks(t)
 	repoDir, poolDir := setupRepo(t)
 	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
 	if err != nil {
@@ -136,6 +143,7 @@ func TestAcquireBranchCollisionWithReferenceHookKeepsRecycledSlotAvailable(t *te
 }
 
 func TestAcquireBranchPostCheckoutHookFailureKeepsCompletedAcquisition(t *testing.T) {
+	requireUnixShellHooks(t)
 	repoDir, poolDir := setupRepo(t)
 	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
 	if err != nil {
@@ -164,6 +172,7 @@ func TestAcquireBranchPostCheckoutHookFailureKeepsCompletedAcquisition(t *testin
 }
 
 func TestAcquireBranchCollisionDoesNotRunRedundantDetachHook(t *testing.T) {
+	requireUnixShellHooks(t)
 	repoDir, poolDir := setupRepo(t)
 	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
 	if err != nil {
@@ -190,6 +199,7 @@ func TestAcquireBranchCollisionDoesNotRunRedundantDetachHook(t *testing.T) {
 }
 
 func TestAcquireBranchRejectedReferenceTransactionPreservesIgnoredOutput(t *testing.T) {
+	requireUnixShellHooks(t)
 	repoDir, poolDir := setupRepo(t)
 	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
 	if err != nil {
@@ -233,6 +243,7 @@ func TestAcquireBranchRejectedReferenceTransactionPreservesIgnoredOutput(t *test
 }
 
 func TestAcquireBranchRejectedReferenceTransactionPreservesChangedSeed(t *testing.T) {
+	requireUnixShellHooks(t)
 	repoDir, poolDir := setupRepo(t)
 	for name, contents := range map[string]string{
 		".gitignore":       "local.seed\n",
@@ -326,6 +337,7 @@ func TestAcquireInvalidBranchOnNewSlotRemovesWorktreeAndState(t *testing.T) {
 }
 
 func TestAcquireBranchFailedCheckoutPreservesIgnoredHookOutput(t *testing.T) {
+	requireUnixShellHooks(t)
 	for _, recycled := range []bool{false, true} {
 		name := "new"
 		if recycled {
@@ -386,6 +398,7 @@ func TestAcquireBranchFailedCheckoutPreservesIgnoredHookOutput(t *testing.T) {
 }
 
 func TestAcquireBranchCollisionAfterAddPreservesHookOutput(t *testing.T) {
+	requireUnixShellHooks(t)
 	for _, tc := range []struct {
 		name, output    string
 		custom, ignored bool
@@ -444,6 +457,55 @@ func TestAcquireBranchCollisionAfterAddPreservesHookOutput(t *testing.T) {
 	}
 }
 
+func TestAcquireBranchCollisionAfterPrecheckWithPostCheckoutHookLeavesNewSlotReusable(t *testing.T) {
+	requireUnixShellHooks(t)
+	repoDir, poolDir := setupRepo(t)
+	hook := filepath.Join(repoDir, ".git", "hooks", "post-checkout")
+	script := "#!/bin/sh\n" +
+		"[ \"$(git symbolic-ref -q --short HEAD)\" = feature ] || exit 0\n" +
+		"printf 'unexpected checkout\\n' > hook-output.tmp\n"
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".git", "info", "exclude"), []byte("hook-output.tmp\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldCreateBranch := createBranch
+	createBranch = func(path, branch string) error {
+		// Deterministically introduce the collision after acquisition's precheck,
+		// without checking out the branch or running post-checkout.
+		cmd := exec.Command("git", "branch", branch, "HEAD")
+		cmd.Dir = path
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+		return vcs.CreateBranch(path, branch)
+	}
+	t.Cleanup(func() { createBranch = oldCreateBranch })
+
+	if _, err := AcquireWithOptions(repoDir, poolDir, 1, nil, AcquireOptions{Branch: "feature"}); err == nil {
+		t.Fatal("collision unexpectedly accepted")
+	} else if strings.Contains(err.Error(), "quarantined") {
+		t.Fatalf("collision without checkout quarantined new slot: %v", err)
+	}
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Worktrees) != 0 {
+		t.Fatalf("collision left a slot registered: %#v", state.Worktrees)
+	}
+	if _, err := os.Stat(filepath.Join(poolDir, "1", filepath.Base(repoDir), "hook-output.tmp")); !os.IsNotExist(err) {
+		t.Fatalf("collision ran post-checkout hook: %v", err)
+	}
+	if got := gitOut(t, repoDir, "branch", "--list", "feature"); got == "" {
+		t.Fatal("racing branch was removed")
+	}
+	if _, err := Acquire(repoDir, poolDir, 1, nil); err != nil {
+		t.Fatalf("collision stranded max_trees=1 capacity: %v", err)
+	}
+}
+
 func TestAcquireBranchCleanupFailureQuarantinesNewSlot(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 	oldRemoveWorktree := removeWorktree
@@ -467,6 +529,7 @@ func TestAcquireBranchCleanupFailureQuarantinesNewSlot(t *testing.T) {
 }
 
 func TestAcquireBranchHookSwitchesHeadAndRetainsRef(t *testing.T) {
+	requireUnixShellHooks(t)
 	for _, recycled := range []bool{false, true} {
 		for _, exitCode := range []string{"0", "1"} {
 			name := "new"
@@ -518,6 +581,7 @@ func TestAcquireBranchHookSwitchesHeadAndRetainsRef(t *testing.T) {
 }
 
 func TestAcquireBranchHookAdvancedRefIsPreserved(t *testing.T) {
+	requireUnixShellHooks(t)
 	for _, recycled := range []bool{false, true} {
 		name := "new"
 		if recycled {
@@ -591,9 +655,17 @@ func TestAcquireBranchDoesNotDeletePreexistingSameCommit(t *testing.T) {
 }
 
 func installFailingPostCheckoutHook(t *testing.T, repoDir string) {
+	requireUnixShellHooks(t)
 	t.Helper()
 	hook := filepath.Join(repoDir, ".git", "hooks", "post-checkout")
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func requireUnixShellHooks(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix shell hook fixture requires a shell executable")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -153,6 +154,10 @@ func TestCreateBranchRejectsOptionLikeNameWithoutChangingBranch(t *testing.T) {
 }
 
 func TestCreateBranchReconcilesRealPostCheckoutHookFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("post-checkout fixture requires /bin/sh")
+	}
+
 	dir := initRepo(t)
 	gitRun(t, dir, "checkout", "--detach")
 	installFailingPostCheckoutHook(t, dir)
@@ -186,6 +191,10 @@ func TestRunGitDoesNotIncludeFailedDiffStdout(t *testing.T) {
 }
 
 func TestDetachWorktreeReportsPostCheckoutHookFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("post-checkout fixture requires /bin/sh")
+	}
+
 	dir := initRepo(t)
 	installFailingPostCheckoutHook(t, dir)
 

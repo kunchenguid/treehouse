@@ -730,7 +730,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 				}
 				// Git removes untracked and ignored files even without --force.
 				// Only the authenticated seed inventory may be discarded here.
-				unknown, inspectErr := vcs.HasUnseededWorktreeOutput(wtPath, seededPaths)
+				unknown, inspectErr := vcs.HasUnseededBranchCreationOutput(wtPath, seededPaths)
 				if inspectErr != nil || unknown {
 					entry := &state.Worktrees[len(state.Worktrees)-1]
 					entry.Leased = true

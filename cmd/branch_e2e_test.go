@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -96,6 +97,10 @@ func TestGetBranchFailureHasNoStdoutAndDoesNotConsumeCapacity(t *testing.T) {
 }
 
 func TestGetLeaseBranchCheckoutFailureReportsHookStdoutOnStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("post-checkout fixture requires /bin/sh")
+	}
+
 	repoDir, homeDir := setupTestRepo(t)
 	hook := filepath.Join(repoDir, ".git", "hooks", "post-checkout")
 	script := "#!/bin/sh\n" +
@@ -116,6 +121,10 @@ func TestGetLeaseBranchCheckoutFailureReportsHookStdoutOnStderr(t *testing.T) {
 }
 
 func TestGetLeaseReportsFailedHookOnCompletedCheckout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("post-checkout fixture requires /bin/sh")
+	}
+
 	repoDir, homeDir := setupTestRepo(t)
 	hook := filepath.Join(repoDir, ".git", "hooks", "post-checkout")
 	script := "#!/bin/sh\n" +
