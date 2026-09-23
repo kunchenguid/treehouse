@@ -148,6 +148,22 @@ func TestCreateBranchReconcilesRealPostCheckoutHookFailure(t *testing.T) {
 	}
 }
 
+func TestRunGitDoesNotIncludeFailedDiffStdout(t *testing.T) {
+	dir := initRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("different content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "add", "README.md")
+	gitRun(t, dir, "commit", "-m", "track README")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("updated content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runGit(dir, "diff", "--exit-code")
+	if err == nil || strings.Contains(err.Error(), "updated content") {
+		t.Fatalf("failed diff error = %v, want failure without diff stdout", err)
+	}
+}
+
 func TestDetachWorktreeReconcilesRealPostCheckoutHookFailure(t *testing.T) {
 	dir := initRepo(t)
 	installFailingPostCheckoutHook(t, dir)

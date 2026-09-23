@@ -59,6 +59,29 @@ func TestAcquireBranchFailureOnRecycledSlotLeavesItDetachedAndReusable(t *testin
 	}
 }
 
+func TestAcquireBranchCollisionWithReferenceHookKeepsRecycledSlotAvailable(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clearOwnerReservation(t, poolDir, wtPath)
+	hook := filepath.Join(repoDir, ".git", "hooks", "reference-transaction")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nprintf 'ran\\n' > collision-hook.tmp\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcquireWithOptions(repoDir, poolDir, 1, nil, AcquireOptions{Branch: "main"}); err == nil {
+		t.Fatal("existing branch unexpectedly accepted")
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, "collision-hook.tmp")); !os.IsNotExist(err) {
+		t.Fatalf("collision invoked reference-transaction hook: %v", err)
+	}
+	reused, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil || reused != wtPath {
+		t.Fatalf("collision stranded recycled slot: path %q, error %v", reused, err)
+	}
+}
+
 func TestAcquireBranchPostCheckoutHookFailureKeepsCompletedAcquisition(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 	wtPath, err := Acquire(repoDir, poolDir, 1, nil)

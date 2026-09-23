@@ -340,6 +340,13 @@ func VerifyBaseBranch(repoRoot, branch string) error {
 	return nil
 }
 
+func LocalBranchExists(repoRoot, branch string) (bool, error) {
+	if backendFor(repoRoot).Name() != "git" {
+		return false, fmt.Errorf("local branch lookup requires the git backend")
+	}
+	return gitvcs.LocalBranchExists(repoRoot, branch)
+}
+
 // ErrBranchCreated identifies a failed checkout after Git created the branch.
 // Callers must preserve the worktree for possible post-checkout hook output.
 var ErrBranchCreated = gitvcs.ErrBranchCreated

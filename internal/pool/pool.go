@@ -392,6 +392,16 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 	// An unverifiable requester identity disables reuse, not allocation.
 	commonDir, identityErr := acquisitionCommonGitDir(repoRoot)
 
+	if opts.branch != "" {
+		exists, err := vcs.LocalBranchExists(repoRoot, opts.branch)
+		if err != nil {
+			return LeaseInfo{}, fmt.Errorf("failed to check branch %q: %w", opts.branch, err)
+		}
+		if exists {
+			return LeaseInfo{}, fmt.Errorf("branch %q already exists", opts.branch)
+		}
+	}
+
 	var acquired LeaseInfo
 	var runPostCreate bool
 

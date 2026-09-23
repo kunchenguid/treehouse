@@ -237,13 +237,34 @@ func AddWorktree(repoRoot, path, branch string) error {
 	return err
 }
 
+func LocalBranchExists(repoRoot, branch string) (bool, error) {
+	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	cmd.Dir = repoRoot
+	if err := cmd.Run(); err != nil {
+		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // ErrBranchCreated marks checkout failures after this invocation created the
 // branch. The worktree may contain hook output and must not be force-removed.
 var ErrBranchCreated = errors.New("branch created before checkout failed")
 
 // CreateBranch creates and checks out branch at the worktree's current HEAD.
 func CreateBranch(worktreePath, branch string) error {
-	return createBranch(worktreePath, branch, runGit)
+	return createBranch(worktreePath, branch, func(dir string, args ...string) (string, error) {
+		if args[0] == "checkout" {
+			out, err := runGitRaw(dir, args...)
+			if err != nil && len(out) != 0 {
+				return "", fmt.Errorf("%w\n%s", err, strings.TrimSpace(string(out)))
+			}
+			return strings.TrimSpace(string(out)), err
+		}
+		return runGit(dir, args...)
+	})
 }
 
 func createBranch(worktreePath, branch string, run func(string, ...string) (string, error)) error {
@@ -1407,11 +1428,7 @@ func runGitRaw(dir string, args ...string) ([]byte, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			detail := strings.TrimSpace(string(exitErr.Stderr))
-			if stdout := strings.TrimSpace(string(out)); stdout != "" {
-				detail = strings.TrimSpace(detail + "\n" + stdout)
-			}
-			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), detail)
+			return out, fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(exitErr.Stderr)))
 		}
 		return nil, err
 	}
