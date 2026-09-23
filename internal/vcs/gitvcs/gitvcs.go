@@ -282,8 +282,13 @@ var ErrBranchCreated = errors.New("branch created before checkout failed")
 func CreateBranch(worktreePath, branch string) error {
 	return createBranch(worktreePath, branch, func(dir string, args ...string) (string, error) {
 		if args[0] == "checkout" {
-			out, err := runGitRaw(dir, args...)
-			return strings.TrimSpace(string(out)), err
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				return strings.TrimSpace(string(out)), fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+			}
+			return strings.TrimSpace(string(out)), nil
 		}
 		return runGit(dir, args...)
 	})

@@ -120,6 +120,29 @@ func TestGetLeaseBranchCheckoutFailureReportsHookStdoutOnStderr(t *testing.T) {
 	}
 }
 
+func TestGetLeaseBranchCheckoutReportsSuccessfulHookStderrOnFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("post-checkout fixture requires /bin/sh")
+	}
+
+	repoDir, homeDir := setupTestRepo(t)
+	hook := filepath.Join(repoDir, ".git", "hooks", "post-checkout")
+	script := "#!/bin/sh\n" +
+		"[ \"$(git symbolic-ref -q --short HEAD)\" = feature ] || exit 0\n" +
+		"printf 'checkout hook stderr diagnostic\\n' >&2\n" +
+		"git symbolic-ref HEAD refs/heads/main\n"
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease", "--branch", "feature")
+	if code == 0 || strings.TrimSpace(stdout) != "" {
+		t.Fatalf("failed lease = code %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "checkout hook stderr diagnostic") {
+		t.Fatalf("hook diagnostic missing from stderr: %q", stderr)
+	}
+}
+
 func TestGetLeaseReportsFailedHookOnCompletedCheckout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("post-checkout fixture requires /bin/sh")
