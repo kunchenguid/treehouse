@@ -665,29 +665,31 @@ func hasUnseededWorktreeOutput(worktreePath string, seededPaths []string, checko
 	if checkoutPossible && configuredHooksPath != "" {
 		return true, nil
 	}
-	hookName := "reference-transaction"
+	hookNames := []string{"reference-transaction"}
 	if checkoutPossible {
-		hookName = "post-checkout"
+		hookNames = append(hookNames, "post-checkout")
 	}
-	var hook string
-	if configuredHooksPath != "" {
-		hook = filepath.Join(configuredHooksPath, hookName)
-	} else {
-		var err error
-		hook, err = runGit(worktreePath, "rev-parse", "--git-path", "hooks/"+hookName)
-		if err != nil {
+	for _, hookName := range hookNames {
+		var hook string
+		if configuredHooksPath != "" {
+			hook = filepath.Join(configuredHooksPath, hookName)
+		} else {
+			var err error
+			hook, err = runGit(worktreePath, "rev-parse", "--git-path", "hooks/"+hookName)
+			if err != nil {
+				return true, err
+			}
+		}
+		if !filepath.IsAbs(hook) {
+			hook = filepath.Join(worktreePath, hook)
+		}
+		if info, err := os.Stat(hook); err == nil {
+			if info.Mode().IsRegular() && info.Mode().Perm()&0111 != 0 {
+				return true, nil
+			}
+		} else if !os.IsNotExist(err) {
 			return true, err
 		}
-	}
-	if !filepath.IsAbs(hook) {
-		hook = filepath.Join(worktreePath, hook)
-	}
-	if info, err := os.Stat(hook); err == nil {
-		if info.Mode().IsRegular() && info.Mode().Perm()&0111 != 0 {
-			return true, nil
-		}
-	} else if !os.IsNotExist(err) {
-		return true, err
 	}
 
 	known := make(map[string]struct{}, len(seededPaths))
@@ -1405,7 +1407,11 @@ func runGitRaw(dir string, args ...string) ([]byte, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(exitErr.Stderr)))
+			detail := strings.TrimSpace(string(exitErr.Stderr))
+			if stdout := strings.TrimSpace(string(out)); stdout != "" {
+				detail = strings.TrimSpace(detail + "\n" + stdout)
+			}
+			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), detail)
 		}
 		return nil, err
 	}

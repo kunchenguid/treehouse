@@ -156,6 +156,46 @@ func TestAcquireBranchRejectedReferenceTransactionPreservesIgnoredOutput(t *test
 	}
 }
 
+func TestAcquireBranchRejectedReferenceTransactionPreservesChangedSeed(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	for name, contents := range map[string]string{
+		".gitignore":       "local.seed\n",
+		".worktreeinclude": "local.seed\n",
+		"local.seed":       "original\n",
+	} {
+		if err := os.WriteFile(filepath.Join(repoDir, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGit(t, repoDir, "add", ".gitignore", ".worktreeinclude")
+	runGit(t, repoDir, "commit", "-m", "configure seed")
+	hook := filepath.Join(repoDir, ".git", "hooks", "reference-transaction")
+	script := "#!/bin/sh\n" +
+		"[ \"$1\" = prepared ] || exit 0\n" +
+		"input=$(cat)\n" +
+		"case \"$input\" in *' refs/heads/feature'*) ;; *) exit 0 ;; esac\n" +
+		"printf 'hook changes\\n' > local.seed\n" +
+		"exit 1\n"
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := AcquireWithOptions(repoDir, poolDir, 1, nil, AcquireOptions{Branch: "feature"})
+	if err == nil || !strings.Contains(err.Error(), "quarantined") {
+		t.Fatalf("rejected branch creation = %v, want quarantine", err)
+	}
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Worktrees) != 1 || !state.Worktrees[0].Leased {
+		t.Fatalf("changed seed slot was not quarantined: %#v", state.Worktrees)
+	}
+	content, err := os.ReadFile(filepath.Join(state.Worktrees[0].Path, "local.seed"))
+	if err != nil || string(content) != "hook changes\n" {
+		t.Fatalf("hook-changed seed = %q, error %v", content, err)
+	}
+}
+
 func TestAcquireBranchCleanupFailureQuarantinesRecycledSlot(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 	wtPath, err := Acquire(repoDir, poolDir, 1, nil)

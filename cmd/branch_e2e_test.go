@@ -95,6 +95,26 @@ func TestGetBranchFailureHasNoStdoutAndDoesNotConsumeCapacity(t *testing.T) {
 	}
 }
 
+func TestGetLeaseBranchCheckoutFailureReportsHookStdoutOnStderr(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	hook := filepath.Join(repoDir, ".git", "hooks", "post-checkout")
+	script := "#!/bin/sh\n" +
+		"[ \"$(git symbolic-ref -q --short HEAD)\" = feature ] || exit 0\n" +
+		"printf 'checkout hook diagnostic\\n'\n" +
+		"git symbolic-ref HEAD refs/heads/main\n" +
+		"exit 1\n"
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease", "--branch", "feature")
+	if code == 0 || strings.TrimSpace(stdout) != "" {
+		t.Fatalf("failed lease = code %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "checkout hook diagnostic") {
+		t.Fatalf("hook diagnostic missing from stderr: %q", stderr)
+	}
+}
+
 func TestGetBranchInteractiveHookObservesBranchAndReturnKeepsIt(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	tipFile := filepath.Join(homeDir, "feature-tip")
