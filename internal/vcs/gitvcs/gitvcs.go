@@ -282,9 +282,6 @@ func CreateBranch(worktreePath, branch string) error {
 	return createBranch(worktreePath, branch, func(dir string, args ...string) (string, error) {
 		if args[0] == "checkout" {
 			out, err := runGitRaw(dir, args...)
-			if err != nil && len(out) != 0 {
-				return "", fmt.Errorf("%w\n%s", err, strings.TrimSpace(string(out)))
-			}
 			return strings.TrimSpace(string(out)), err
 		}
 		return runGit(dir, args...)
@@ -302,6 +299,9 @@ func createBranch(worktreePath, branch string, run func(string, ...string) (stri
 		return err
 	}
 	checkoutOutput, checkoutErr := run(worktreePath, "checkout", branch)
+	if checkoutErr != nil && checkoutOutput != "" {
+		checkoutErr = fmt.Errorf("%w\n%s", checkoutErr, checkoutOutput)
+	}
 	// Exit status alone is not authoritative: a post-checkout hook can fail
 	// after checkout or succeed after switching HEAD to another branch.
 	// Both the symbolic branch and commit must still match the acquisition.
@@ -309,6 +309,9 @@ func createBranch(worktreePath, branch string, run func(string, ...string) (stri
 	checkedOut, checkedOutErr := run(worktreePath, "symbolic-ref", "-q", "--short", "HEAD")
 	head, headErr := run(worktreePath, "rev-parse", "--verify", "HEAD^{commit}")
 	if checkedOutErr == nil && checkedOut == branch && headErr == nil && head == expectedHead {
+		if checkoutErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: checkout of branch %q completed despite an error: %v\n", branch, checkoutErr)
+		}
 		return nil
 	}
 	if checkoutErr == nil {
