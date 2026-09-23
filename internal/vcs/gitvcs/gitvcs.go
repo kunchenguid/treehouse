@@ -1241,8 +1241,27 @@ func authenticateLinkedWorktree(root *os.Root, worktreePath string) error {
 }
 
 func DetachWorktree(worktreePath string) error {
-	_, err := runGit(worktreePath, "checkout", "--detach")
-	return err
+	_, detachErr := runGit(worktreePath, "checkout", "--detach")
+	// Like branch creation, the hook may change HEAD after checkout, regardless
+	// of its exit status. Reconcile against the actual postcondition.
+	branch, branchErr := CheckedOutBranch(worktreePath)
+	if branchErr == nil && branch == "" {
+		return nil
+	}
+	// A hook that switches HEAD makes the normal detach ineffective. Retry
+	// without hooks so cleanup can release the branch rather than strand it.
+	_, retryErr := runGit(worktreePath, "-c", "core.hooksPath="+os.DevNull, "checkout", "--detach")
+	branch, branchErr = CheckedOutBranch(worktreePath)
+	if branchErr == nil && branch == "" {
+		return nil
+	}
+	if retryErr != nil {
+		return retryErr
+	}
+	if branchErr != nil {
+		return branchErr
+	}
+	return fmt.Errorf("detach in %s left HEAD on branch %q (initial checkout: %v)", worktreePath, branch, detachErr)
 }
 
 // DefaultBranchMergeRef returns the fully qualified ref used for merge safety checks.

@@ -149,7 +149,6 @@ func TestGetLeaseReportsFailedHookOnCompletedCheckout(t *testing.T) {
 		t.Fatalf("hook diagnostic missing from stderr: %q", stderr)
 	}
 }
-
 func TestGetBranchInteractiveHookObservesBranchAndReturnKeepsIt(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	tipFile := filepath.Join(homeDir, "feature-tip")

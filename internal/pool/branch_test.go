@@ -92,7 +92,6 @@ func TestAcquireInvalidBranchWithReferenceHookLeavesCapacity(t *testing.T) {
 		t.Fatalf("invalid branch stranded capacity: %v", err)
 	}
 }
-
 func TestAcquireBranchFailureOnRecycledSlotLeavesItDetachedAndReusable(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
@@ -282,7 +281,6 @@ func TestAcquireBranchRejectedReferenceTransactionPreservesChangedSeed(t *testin
 		t.Fatalf("hook-changed seed = %q, error %v", content, err)
 	}
 }
-
 func TestAcquireBranchCleanupFailureQuarantinesRecycledSlot(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
@@ -505,7 +503,6 @@ func TestAcquireBranchCollisionAfterPrecheckWithPostCheckoutHookLeavesNewSlotReu
 		t.Fatalf("collision stranded max_trees=1 capacity: %v", err)
 	}
 }
-
 func TestAcquireBranchCleanupFailureQuarantinesNewSlot(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 	oldRemoveWorktree := removeWorktree

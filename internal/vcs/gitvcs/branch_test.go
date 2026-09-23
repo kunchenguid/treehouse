@@ -84,7 +84,6 @@ func TestCreateBranchReportsCheckoutOutputWhenPostconditionFails(t *testing.T) {
 		t.Fatalf("postcondition failure = %v, want checkout output and retained branch", err)
 	}
 }
-
 func TestCreateBranchReturnsFailureWhenCheckoutDidNotSelectBranch(t *testing.T) {
 	checkoutErr := errors.New("checkout failed")
 	err := createBranch("worktree", "feature", func(_ string, args ...string) (string, error) {
@@ -157,7 +156,6 @@ func TestCreateBranchReconcilesRealPostCheckoutHookFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("post-checkout fixture requires /bin/sh")
 	}
-
 	dir := initRepo(t)
 	gitRun(t, dir, "checkout", "--detach")
 	installFailingPostCheckoutHook(t, dir)
@@ -190,16 +188,15 @@ func TestRunGitDoesNotIncludeFailedDiffStdout(t *testing.T) {
 	}
 }
 
-func TestDetachWorktreeReportsPostCheckoutHookFailure(t *testing.T) {
+func TestDetachWorktreeReconcilesRealPostCheckoutHookFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("post-checkout fixture requires /bin/sh")
 	}
-
 	dir := initRepo(t)
 	installFailingPostCheckoutHook(t, dir)
 
-	if err := DetachWorktree(dir); err == nil {
-		t.Fatal("DetachWorktree hid the post-checkout hook failure")
+	if err := DetachWorktree(dir); err != nil {
+		t.Fatalf("DetachWorktree rejected a detach Git completed before its hook failed: %v", err)
 	}
 	branch, err := CheckedOutBranch(dir)
 	if err != nil {
