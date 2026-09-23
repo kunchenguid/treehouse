@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -735,7 +736,9 @@ func hasUnseededWorktreeOutput(worktreePath string, seededPaths []string, checko
 			hook = filepath.Join(worktreePath, hook)
 		}
 		if info, err := os.Stat(hook); err == nil {
-			if info.Mode().IsRegular() && info.Mode().Perm()&0111 != 0 {
+			// Windows does not expose executable permission bits, but Git for
+			// Windows still runs hook scripts found at this path.
+			if info.Mode().IsRegular() && (runtime.GOOS == "windows" || info.Mode().Perm()&0111 != 0) {
 				return true, nil
 			}
 		} else if !os.IsNotExist(err) {
