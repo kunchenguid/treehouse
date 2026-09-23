@@ -256,7 +256,13 @@ func SeedWorktree(repoRoot, worktreePath string, manifest []byte) error {
 // SeedWorktreeWithInventory returns the paths it copied so the pool can remove
 // them later without trusting mutable content in the acquired worktree.
 func SeedWorktreeWithInventory(repoRoot, worktreePath string, manifest []byte) ([]string, error) {
-	return seedWorktreeWithInventory(repoRoot, worktreePath, nil, nil, "", manifest)
+	return seedWorktreeWithInventory(repoRoot, worktreePath, nil, nil, "", manifest, false)
+}
+
+// SeedWorktreeCOW seeds only explicitly selected cache files when the filesystem
+// supports a copy-on-write clone. It never falls back to a byte copy.
+func SeedWorktreeCOW(repoRoot, worktreePath string, manifest []byte) ([]string, error) {
+	return seedWorktreeWithInventory(repoRoot, worktreePath, nil, nil, "", manifest, true)
 }
 
 func SeedWorktreeWithInventoryFromGitStore(repoRoot, worktreePath, gitDir, ref string, manifest []byte) ([]string, error) {
@@ -268,10 +274,22 @@ func SeedWorktreeWithInventoryFromGitStore(repoRoot, worktreePath, gitDir, ref s
 	if trackedOutput == nil {
 		trackedOutput = []byte{}
 	}
-	return seedWorktreeWithInventory(repoRoot, worktreePath, env, trackedOutput, ref, manifest)
+	return seedWorktreeWithInventory(repoRoot, worktreePath, env, trackedOutput, ref, manifest, false)
 }
 
-func seedWorktreeWithInventory(repoRoot, worktreePath string, gitEnv []string, trackedOutput []byte, manifestRef string, manifest []byte) ([]string, error) {
+func SeedWorktreeCOWFromGitStore(repoRoot, worktreePath, gitDir, ref string, manifest []byte) ([]string, error) {
+	env := append(os.Environ(), "GIT_DIR="+gitDir, "GIT_WORK_TREE="+repoRoot)
+	tracked, err := gitOutputEnv(repoRoot, env, nil, "ls-tree", "-rz", "--name-only", ref)
+	if err != nil {
+		return nil, err
+	}
+	if tracked == nil {
+		tracked = []byte{}
+	}
+	return seedWorktreeWithInventory(repoRoot, worktreePath, env, tracked, ref, manifest, true)
+}
+
+func seedWorktreeWithInventory(repoRoot, worktreePath string, gitEnv []string, trackedOutput []byte, manifestRef string, manifest []byte, cow bool) ([]string, error) {
 	selected, err := selectedSeedPathsEnv(repoRoot, worktreePath, gitEnv, manifestRef, manifest)
 	if err != nil || len(selected) == 0 {
 		return nil, err
@@ -356,12 +374,45 @@ func seedWorktreeWithInventory(repoRoot, worktreePath string, gitEnv []string, t
 	}
 	defer destinationRoot.Close()
 	var copied []string
+	warnedUnsupported := false
 	failed := func(err error) ([]string, error) { return copied, err }
 	for _, name := range bytes.Split(bytes.TrimSuffix(selected, []byte{0}), []byte{0}) {
 		rel := filepath.FromSlash(string(name))
+		if cow && !safeCachePath(string(name)) {
+			continue
+		}
 		info, err := sourceRoot.Lstat(rel)
 		if err != nil {
+			if cow && os.IsNotExist(err) {
+				continue // cache entries may be evicted after Git enumerates them
+			}
 			return failed(err)
+		}
+
+		if cow {
+			if !info.Mode().IsRegular() || !safeCacheAncestors(sourceRoot, rel) {
+				continue
+			}
+			if err := ensureRootedDir(destinationRoot, filepath.Dir(rel)); err != nil {
+				return failed(err)
+			}
+			if _, err := destinationRoot.Lstat(rel); err == nil {
+				return failed(fmt.Errorf("refusing to overwrite existing cache file %s", rel))
+			} else if !os.IsNotExist(err) {
+				return failed(err)
+			}
+			cloned, err := cloneSeedFile(sourceRoot, destinationRoot, rel, info)
+			if cloned {
+				copied = append(copied, filepath.ToSlash(rel))
+			}
+			if err != nil {
+				return failed(err)
+			}
+			if !cloned && !warnedUnsupported {
+				fmt.Fprintln(os.Stderr, "treehouse: cache reflink unsupported or cross-device; leaving selected caches cold")
+				warnedUnsupported = true
+			}
+			continue
 		}
 
 		var data []byte
@@ -405,6 +456,63 @@ func seedWorktreeWithInventory(repoRoot, worktreePath string, gitEnv []string, t
 		}
 	}
 	return copied, nil
+}
+
+// Only reproducible cache roots are eligible; an explicit manifest is still
+// required. Refuse private paths even inside an allowed cache subtree.
+func safeCachePath(name string) bool {
+	parts := strings.Split(name, "/")
+	if len(parts) < 2 {
+		return false
+	}
+	switch parts[0] {
+	case ".cache":
+		if parts[1] != "go-build" && parts[1] != "uv" {
+			return false
+		}
+	case "node_modules":
+		if parts[1] != ".cache" {
+			return false
+		}
+	case "target":
+		if len(parts) < 4 || (parts[1] != "debug" && parts[1] != "release") || parts[2] != "incremental" {
+			return false
+		}
+	case ".gradle":
+		if parts[1] != "caches" {
+			return false
+		}
+	case ".next":
+		if parts[1] != "cache" {
+			return false
+		}
+	default:
+		return false
+	}
+	for _, part := range parts {
+		lower := strings.ToLower(part)
+		if strings.Contains(lower, ".env") || strings.Contains(lower, "credential") || strings.Contains(lower, "secret") || lower == ".git" || lower == ".jj" || lower == "firstmate" || lower == "state" || lower == "config" || lower == "data" {
+			return false
+		}
+	}
+	return true
+}
+
+// Never enter a symlinked cache directory or another checkout's nested marker.
+func safeCacheAncestors(root *os.Root, rel string) bool {
+	for dir := filepath.Dir(rel); dir != "."; dir = filepath.Dir(dir) {
+		info, err := root.Lstat(dir)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+		for _, marker := range []string{".git", ".jj"} {
+			_, err := root.Lstat(filepath.Join(dir, marker))
+			if err == nil || !os.IsNotExist(err) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func worktreeCaseInsensitive(worktreePath string) (bool, error) {
@@ -1306,6 +1414,9 @@ func (*Backend) AddWorktree(repoRoot, path, branch string) error {
 }
 func (*Backend) SeedWorktree(repoRoot, worktreePath string, manifest []byte) ([]string, error) {
 	return SeedWorktreeWithInventory(repoRoot, worktreePath, manifest)
+}
+func (*Backend) SeedWorktreeCOW(repoRoot, worktreePath string, manifest []byte) ([]string, error) {
+	return SeedWorktreeCOW(repoRoot, worktreePath, manifest)
 }
 func (*Backend) PruneWorktrees(repoRoot string) error { return PruneWorktrees(repoRoot) }
 func (*Backend) RemoveWorktree(repoRoot, path string) error {

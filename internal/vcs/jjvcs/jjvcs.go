@@ -210,6 +210,25 @@ func (*Backend) SeedWorktree(repoRoot, worktreePath string, manifest []byte) ([]
 	return seeded, nil
 }
 
+func (b *Backend) SeedWorktreeCOW(repoRoot, worktreePath string, manifest []byte) ([]string, error) {
+	head, err := worktreeHead(worktreePath)
+	if err != nil {
+		return nil, err
+	}
+	gitDir, err := runJJ(repoRoot, "git", "root", "--ignore-working-copy")
+	if err != nil {
+		return nil, err
+	}
+	seeded, err := gitvcs.SeedWorktreeCOWFromGitStore(repoRoot, worktreePath, gitDir, head, manifest)
+	if err != nil || len(seeded) == 0 {
+		return seeded, err
+	}
+	if err := prepareJJSeededCleanup(worktreePath); err != nil {
+		return seeded, err
+	}
+	return seeded, nil
+}
+
 // makeRepoPointerAbsolute rewrites the workspace's .jj/repo store pointer to
 // an absolute, symlink-canonicalized path. jj writes a relative pointer,
 // which breaks when the pool directory and the repository do not move

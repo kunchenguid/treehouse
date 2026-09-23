@@ -64,6 +64,8 @@ type Backend interface {
 	// metadata. A nil manifest uses committed .worktreeinclude at the destination
 	// HEAD; a non-nil manifest replaces it, with an empty slice selecting nothing.
 	SeedWorktree(repoRoot, worktreePath string, manifest []byte) ([]string, error)
+	// SeedWorktreeCOW seeds manifest-selected cache files without a byte-copy fallback.
+	SeedWorktreeCOW(repoRoot, worktreePath string, manifest []byte) ([]string, error)
 	// PruneWorktrees clears bookkeeping for worktrees whose directories no
 	// longer exist. It never touches live worktrees or their data.
 	PruneWorktrees(repoRoot string) error
@@ -471,6 +473,10 @@ func ResetWorktreeWithSeededPaths(worktreePath, branch string, seededPaths []str
 // SeedWorktree delegates to Backend.SeedWorktree with the supplied manifest.
 func SeedWorktree(repoRoot, worktreePath string, manifest []byte) ([]string, error) {
 	return backendFor(repoRoot).SeedWorktree(repoRoot, worktreePath, manifest)
+}
+
+func SeedWorktreeCOW(repoRoot, worktreePath string, manifest []byte) ([]string, error) {
+	return backendFor(repoRoot).SeedWorktreeCOW(repoRoot, worktreePath, manifest)
 }
 
 func JJSeedAuthenticationIdentity(worktreePath string) (string, error) {

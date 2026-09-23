@@ -26,6 +26,7 @@ var (
 	getNoFetch      bool
 	getBase         string
 	getIncludeFile  string
+	getCOWCache     bool
 	getUniqueLeaf   bool
 	getWorktreePath string
 )
@@ -61,6 +62,10 @@ select ignored, untracked files from the main checkout root. A missing or
 unreadable file fails before a worktree is created or reset. An empty file
 seeds nothing. Without the flag, only the committed manifest is used.
 
+Pass --cow-cache to seed only selected, allowlisted ignored cache files using
+copy-on-write clones. Unsupported filesystems leave caches cold; this mode
+never byte-copies them. It is off by default and excludes private data.
+
 Every pool slot normally lives in a directory named after the repository, so
 tooling that derives per-checkout identity from the working directory's last
 path segment sees every slot as the same checkout. Pass --unique-leaf, set
@@ -89,6 +94,7 @@ func init() {
 	// No -b shorthand: git spells branch creation -b, and this creates nothing.
 	getCmd.Flags().StringVar(&getBase, "base", "", "Branch to cut this worktree from, overriding base_branch in config (default: inferred from the repository)")
 	getCmd.Flags().StringVar(&getIncludeFile, "include-file", "", "Replace committed .worktreeinclude with this file (relative to the current directory)")
+	getCmd.Flags().BoolVar(&getCOWCache, "cow-cache", false, "Reflink only selected ignored cache files; skip on unsupported filesystems (default off)")
 	getCmd.Flags().BoolVar(&getUniqueLeaf, "unique-leaf", false, "Name a newly created worktree directory <repo>-<slot> instead of <repo>, overriding unique_leaf in config")
 	getCmd.Flags().StringVar(&getWorktreePath, "worktree-path", "", "Template for a newly created worktree's directory, overriding worktree_path in config (default: {pool}/{slot}/{repo})")
 	rootCmd.AddCommand(getCmd)
@@ -137,6 +143,7 @@ func getRunE(cmd *cobra.Command, args []string) error {
 		BaseBranch:      resolveRequestedBase(cfg),
 		WorktreePath:    config.ResolveWorktreePath(getWorktreePath, cfg),
 		IncludeManifest: manifest,
+		COWCache:        getCOWCache,
 		UniqueLeaf:      resolveUniqueLeaf(cmd, cfg),
 	}
 

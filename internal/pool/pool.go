@@ -110,6 +110,9 @@ type AcquireOptions struct {
 	// IncludeManifest replaces the committed manifest; nil keeps the default,
 	// while a non-nil empty slice explicitly disables seeding.
 	IncludeManifest []byte
+	// COWCache seeds only manifest-selected, allowlisted cache files by reflink.
+	// Unsupported filesystems leave caches cold; ordinary seeding remains unchanged.
+	COWCache bool
 }
 
 // acquireOptions controls how Acquire reserves the worktree it hands out.
@@ -122,6 +125,7 @@ type acquireOptions struct {
 	// the built-in layout.
 	worktreePath    string
 	includeManifest []byte
+	cowCache        bool
 	// uniqueLeaf makes a newly created worktree's own directory name unique
 	// within the pool instead of the repository name every slot shares.
 	uniqueLeaf bool
@@ -150,6 +154,7 @@ func AcquireWithOptions(repoRoot, poolDir string, poolSize int, postCreate []str
 		baseBranch:      options.BaseBranch,
 		worktreePath:    options.WorktreePath,
 		includeManifest: options.IncludeManifest,
+		cowCache:        options.COWCache,
 		uniqueLeaf:      options.UniqueLeaf,
 		hookStdout:      os.Stdout,
 		hookStderr:      os.Stderr,
@@ -180,6 +185,7 @@ func AcquireLeaseInfoWithOptions(repoRoot, poolDir string, poolSize int, postCre
 		baseBranch:      options.BaseBranch,
 		worktreePath:    options.WorktreePath,
 		includeManifest: options.IncludeManifest,
+		cowCache:        options.COWCache,
 		uniqueLeaf:      options.UniqueLeaf,
 		lease:           true,
 		leaseHolder:     holder,
@@ -195,6 +201,13 @@ var (
 )
 
 const acquisitionIncompleteLeaseHolder = "quarantined: acquisition state incomplete"
+
+func seedSelectedWorktree(repoRoot, path string, opts acquireOptions) ([]string, error) {
+	if opts.cowCache {
+		return vcs.SeedWorktreeCOW(repoRoot, path, opts.includeManifest)
+	}
+	return seedWorktree(repoRoot, path, opts.includeManifest)
+}
 
 func persistState(poolDir string, state State) error {
 	err := writeState(poolDir, state)
@@ -467,7 +480,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			}
 			// Keep partial ignored files away from later acquisitions until a
 			// human verifies and explicitly returns the worktree.
-			seededPaths, err = seedWorktree(repoRoot, wt.Path, opts.includeManifest)
+			seededPaths, err = seedSelectedWorktree(repoRoot, wt.Path, opts)
 			if err != nil {
 				// Remove every path the failed seed operation reports before relying
 				// on another state write to preserve that partial inventory.
@@ -556,7 +569,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		if err := vcs.AddWorktree(repoRoot, wtPath, branch); err != nil {
 			return fmt.Errorf("failed to create worktree: %w", err)
 		}
-		seededPaths, err := seedWorktree(repoRoot, wtPath, opts.includeManifest)
+		seededPaths, err := seedSelectedWorktree(repoRoot, wtPath, opts)
 		if err != nil {
 			// A failed removal leaves a real Git worktree behind. Keep it in
 			// state as quarantined so later acquisitions cannot reuse its slot.
