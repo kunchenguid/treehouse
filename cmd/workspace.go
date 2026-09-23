@@ -138,33 +138,18 @@ func workspaceGetRunE(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "🌳 Entered workspace at %s. Type 'exit' to return.\n", ui.PrettyPath(path))
 	_, shellErr := shell.Spawn(path, []string{"TREEHOUSE_WORKSPACE=" + path, "TREEHOUSE_WORKSPACE_ID=" + id})
-	returnErr := finishWorkspaceShell(path, state)
+	returnErr := finishWorkspaceShell(path)
 	if shellErr != nil {
 		return shellErr
 	}
 	return returnErr
 }
 
-func finishWorkspaceShell(path string, original workspaceState) error {
+func finishWorkspaceShell(path string) error {
 	// Modify can add children while the subshell is open; its initial snapshot is stale.
 	state, err := readWorkspaceState(path)
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if _, dirErr := os.Lstat(path); !errors.Is(dirErr, os.ErrNotExist) {
-			return err
-		}
-		for _, child := range original.Repositories {
-			entry, lookupErr := pool.FindByPath(child.PoolDir, child.Path)
-			if lookupErr != nil {
-				return fmt.Errorf("verify returned workspace %s: %w", path, lookupErr)
-			}
-			if entry != nil && entry.Leased && entry.LeaseID == child.LeaseID {
-				return fmt.Errorf("workspace %s disappeared while %s is still leased", path, child.Name)
-			}
-		}
-		return nil
+		return err
 	}
 	if err := returnWorkspaceState(&state, false); err != nil {
 		return err
@@ -264,8 +249,11 @@ func returnWorkspace(path string, force bool) error {
 	if err := returnWorkspaceState(&state, force); err != nil {
 		return err
 	}
-	if err := removeWorkspaceDirectory(path); err != nil {
-		return fmt.Errorf("remove returned workspace: %w", err)
+	// The parent removes the empty directory on shell exit, so its state stays readable.
+	if os.Getenv("TREEHOUSE_WORKSPACE") != path || os.Getenv("TREEHOUSE_WORKSPACE_ID") != state.ID {
+		if err := removeWorkspaceDirectory(path); err != nil {
+			return fmt.Errorf("remove returned workspace: %w", err)
+		}
 	}
 	fmt.Fprintln(os.Stderr, "🌳 Workspace returned to pool.")
 	return nil

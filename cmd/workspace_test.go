@@ -11,7 +11,7 @@ import (
 )
 
 // INV-1 (return_cmd.go): workspace return must not discard unsupported flags.
-// INV-2 (workspace.go): shell exit must recognize a previously returned workspace.
+// INV-2 (workspace.go): shell return defers directory removal; lost state fails closed.
 // INV-3 (workspace.go): facade cleanup must never remove an unrelated entry.
 
 func TestWorkspaceProfileLeaseAndReturn(t *testing.T) {
@@ -89,7 +89,7 @@ func TestWorkspaceShellExitReturnsRepositoriesAddedDuringSession(t *testing.T) {
 		t.Fatalf("session state was not modified as expected: original=%+v current=%+v", original.Repositories, current.Repositories)
 	}
 
-	if err := finishWorkspaceShell(original.Path, original); err != nil {
+	if err := finishWorkspaceShell(original.Path); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(original.Path); !os.IsNotExist(err) {
@@ -161,11 +161,51 @@ func TestWorkspaceBareReturnRejectsIncompatibleFlags(t *testing.T) {
 func TestWorkspaceShellExitAfterExplicitReturn(t *testing.T) {
 	repo, homeDir := setupTestRepo(t)
 	workspace := createLeasedWorkspace(t, repo, homeDir)
+	t.Setenv("TREEHOUSE_WORKSPACE", workspace.Path)
+	t.Setenv("TREEHOUSE_WORKSPACE_ID", workspace.ID)
 	if err := returnWorkspace(workspace.Path, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := finishWorkspaceShell(workspace.Path, workspace); err != nil {
+	returned, err := readWorkspaceState(workspace.Path)
+	if err != nil || len(returned.Repositories) != 0 {
+		t.Fatalf("shell return removed its state before exit: %+v, %v", returned.Repositories, err)
+	}
+	if err := finishWorkspaceShell(workspace.Path); err != nil {
 		t.Fatalf("shell exit failed after an explicit return: %v", err)
+	}
+	if _, err := os.Lstat(workspace.Path); !os.IsNotExist(err) {
+		t.Fatalf("workspace remains after shell exit: %v", err)
+	}
+}
+
+func TestWorkspaceShellExitAfterExplicitReturnWithAddedChild(t *testing.T) {
+	repo, homeDir := setupTestRepo(t)
+	other := setupTestRepoWithHome(t, homeDir, "second-repo")
+	workspace := createLeasedWorkspace(t, repo, homeDir)
+	_, stderr, code := runTreehouse(t, repo, homeDir, nil, "workspace", "modify", "--add", other, "--no-fetch", workspace.Path)
+	if code != 0 {
+		t.Fatalf("workspace modify: %s", stderr)
+	}
+	current, err := readWorkspaceState(workspace.Path)
+	if err != nil || len(current.Repositories) != 2 {
+		t.Fatalf("modified workspace: %+v, %v", current.Repositories, err)
+	}
+	t.Setenv("TREEHOUSE_WORKSPACE", workspace.Path)
+	t.Setenv("TREEHOUSE_WORKSPACE_ID", workspace.ID)
+	if err := returnWorkspace(workspace.Path, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishWorkspaceShell(workspace.Path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(workspace.Path); !os.IsNotExist(err) {
+		t.Fatalf("workspace remains after shell exit: %v", err)
+	}
+	for _, child := range current.Repositories {
+		state, err := pool.ReadState(child.PoolDir)
+		if err != nil || len(state.Worktrees) != 1 || state.Worktrees[0].Leased {
+			t.Fatalf("child %s still leased: %+v, %v", child.Name, state.Worktrees, err)
+		}
 	}
 }
 
@@ -175,7 +215,7 @@ func TestWorkspaceShellExitRejectsMissingStateInExistingDirectory(t *testing.T) 
 	if err := os.Remove(workspaceStatePath(workspace.Path)); err != nil {
 		t.Fatal(err)
 	}
-	if err := finishWorkspaceShell(workspace.Path, workspace); err == nil {
+	if err := finishWorkspaceShell(workspace.Path); err == nil {
 		t.Fatal("shell exit silently accepted missing state while children are leased")
 	}
 }
@@ -192,8 +232,45 @@ func TestWorkspaceShellExitRejectsMissingDirectoryWithLiveLease(t *testing.T) {
 	if err := os.Remove(workspace.Path); err != nil {
 		t.Fatal(err)
 	}
-	if err := finishWorkspaceShell(workspace.Path, workspace); err == nil {
+	if err := finishWorkspaceShell(workspace.Path); err == nil {
 		t.Fatal("shell exit silently accepted a lost workspace with a live lease")
+	}
+}
+
+func TestWorkspaceShellExitRejectsLostAddedLease(t *testing.T) {
+	repo, homeDir := setupTestRepo(t)
+	other := setupTestRepoWithHome(t, homeDir, "second-repo")
+	workspace := createLeasedWorkspace(t, repo, homeDir)
+	_, stderr, code := runTreehouse(t, repo, homeDir, nil, "workspace", "modify", "--add", other, "--no-fetch", workspace.Path)
+	if code != 0 {
+		t.Fatalf("workspace modify: %s", stderr)
+	}
+	current, err := readWorkspaceState(workspace.Path)
+	if err != nil || len(current.Repositories) != 2 {
+		t.Fatalf("modified workspace: %+v, %v", current.Repositories, err)
+	}
+	initial := workspace.Repositories[0]
+	_, stderr, code = runTreehouse(t, repo, homeDir, nil, "return", "--force", initial.Path)
+	if code != 0 {
+		t.Fatalf("return original child: %s", stderr)
+	}
+	for _, child := range current.Repositories {
+		if err := os.Remove(filepath.Join(workspace.Path, child.Name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(workspaceStatePath(workspace.Path)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(workspace.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishWorkspaceShell(workspace.Path); err == nil {
+		t.Fatal("shell exit accepted a lost added lease")
+	}
+	state, err := pool.ReadState(current.Repositories[1].PoolDir)
+	if err != nil || len(state.Worktrees) != 1 || !state.Worktrees[0].Leased {
+		t.Fatalf("added child unexpectedly released: %+v, %v", state.Worktrees, err)
 	}
 }
 
