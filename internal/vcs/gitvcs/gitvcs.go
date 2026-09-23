@@ -1245,20 +1245,13 @@ func DetachWorktree(worktreePath string) error {
 	if branchErr == nil && branch == "" {
 		return nil
 	}
-	// A hook that switches HEAD makes the normal detach ineffective. Retry
-	// without hooks so cleanup can release the branch rather than strand it.
-	_, retryErr := runGit(worktreePath, "-c", "core.hooksPath="+os.DevNull, "checkout", "--detach")
-	branch, branchErr = CheckedOutBranch(worktreePath)
-	if branchErr == nil && branch == "" {
-		return nil
-	}
-	if retryErr != nil {
-		return retryErr
-	}
 	if branchErr != nil {
 		return branchErr
 	}
-	return fmt.Errorf("detach in %s left HEAD on branch %q (initial checkout: %v)", worktreePath, branch, detachErr)
+	if detachErr != nil {
+		return detachErr
+	}
+	return fmt.Errorf("detach in %s left HEAD on branch %q", worktreePath, branch)
 }
 
 // DefaultBranchMergeRef returns the fully qualified ref used for merge safety checks.

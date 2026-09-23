@@ -201,6 +201,20 @@ func TestDetachWorktreeReconcilesRealPostCheckoutHookFailure(t *testing.T) {
 	}
 }
 
+func TestDetachWorktreeDoesNotBypassHookThatRestoresBranch(t *testing.T) {
+	dir := initRepo(t)
+	hook := filepath.Join(dir, ".git", "hooks", "post-checkout")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\ngit symbolic-ref HEAD refs/heads/main\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := DetachWorktree(dir); err == nil {
+		t.Fatal("detach succeeded despite the hook restoring the branch")
+	}
+	if branch, err := CheckedOutBranch(dir); err != nil || branch != "main" {
+		t.Fatalf("HEAD after hook = %q, error %v; want main", branch, err)
+	}
+}
+
 func installFailingPostCheckoutHook(t *testing.T, repoDir string) {
 	t.Helper()
 	hook := filepath.Join(repoDir, ".git", "hooks", "post-checkout")
