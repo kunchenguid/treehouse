@@ -237,6 +237,41 @@ func AddWorktree(repoRoot, path, branch string) error {
 	return err
 }
 
+// ErrBranchCreated marks checkout failures after this invocation created the
+// branch. The worktree may contain hook output and must not be force-removed.
+var ErrBranchCreated = errors.New("branch created before checkout failed")
+
+// CreateBranch creates and checks out branch at the worktree's current HEAD.
+func CreateBranch(worktreePath, branch string) error {
+	return createBranch(worktreePath, branch, runGit)
+}
+
+func createBranch(worktreePath, branch string, run func(string, ...string) (string, error)) error {
+	// A successful `git branch` proves this invocation created the ref: Git
+	// refuses an existing name, including one created concurrently.
+	expectedHead, err := run(worktreePath, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return err
+	}
+	if _, err := run(worktreePath, "branch", "--", branch, expectedHead); err != nil {
+		return err
+	}
+	_, checkoutErr := run(worktreePath, "checkout", branch)
+	// Exit status alone is not authoritative: a post-checkout hook can fail
+	// after checkout or succeed after switching HEAD to another branch.
+	// Both the symbolic branch and commit must still match the acquisition.
+	// A hook can advance the branch without changing its name.
+	checkedOut, checkedOutErr := run(worktreePath, "symbolic-ref", "-q", "--short", "HEAD")
+	head, headErr := run(worktreePath, "rev-parse", "--verify", "HEAD^{commit}")
+	if checkedOutErr == nil && checkedOut == branch && headErr == nil && head == expectedHead {
+		return nil
+	}
+	if checkoutErr == nil {
+		checkoutErr = fmt.Errorf("checkout of branch %q did not leave HEAD on that branch at commit %s", branch, expectedHead)
+	}
+	return fmt.Errorf("%w: %w (branch %q was created and left in place for manual inspection/removal)", ErrBranchCreated, checkoutErr, branch)
+}
+
 // PruneWorktrees removes git worktree bookkeeping for worktrees whose
 // directories no longer exist. It is safe by design: git only deletes
 // registrations for already-missing directories and never touches live
@@ -602,6 +637,60 @@ func RemoveWorktree(repoRoot, path string) error {
 func RemoveCleanWorktree(repoRoot, path string) error {
 	_, err := runGit(repoRoot, "worktree", "remove", path)
 	return err
+}
+
+// HasUnseededWorktreeOutput refuses removal when hooks may still write, or
+// when any untracked output is not a known copied seed.
+func HasUnseededWorktreeOutput(worktreePath string, seededPaths []string) (bool, error) {
+	// A custom hooks path can be relative to the invocation directory and
+	// may contain asynchronous post-checkout work. Treat any configured path
+	// as hook-capable rather than trying to prove its contents harmless.
+	hooksPath := exec.Command("git", "config", "--get", "core.hooksPath")
+	hooksPath.Dir = worktreePath
+	if out, err := hooksPath.Output(); err == nil {
+		if len(bytes.TrimSpace(out)) > 0 {
+			return true, nil
+		}
+	} else if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+		return true, err
+	}
+	hook, err := runGit(worktreePath, "rev-parse", "--git-path", "hooks/post-checkout")
+	if err != nil {
+		return true, err
+	}
+	if !filepath.IsAbs(hook) {
+		hook = filepath.Join(worktreePath, hook)
+	}
+	if info, err := os.Stat(hook); err == nil {
+		if info.Mode().IsRegular() && info.Mode().Perm()&0111 != 0 {
+			return true, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return true, err
+	}
+
+	known := make(map[string]struct{}, len(seededPaths))
+	for _, name := range seededPaths {
+		known[name] = struct{}{}
+	}
+	for _, args := range [][]string{
+		{"ls-files", "-z", "--others", "--exclude-standard"},
+		{"ls-files", "-z", "--others", "--ignored", "--exclude-standard"},
+	} {
+		out, err := gitOutputEnv(worktreePath, nil, nil, args...)
+		if err != nil {
+			return true, err
+		}
+		for _, name := range bytes.Split(bytes.TrimSuffix(out, []byte{0}), []byte{0}) {
+			if len(name) == 0 {
+				continue
+			}
+			if _, ok := known[string(name)]; !ok {
+				return true, nil
+			}
+		}
+	}
+	return IsDirty(worktreePath)
 }
 
 func Fetch(repoRoot string) error {
@@ -1075,8 +1164,27 @@ func authenticateLinkedWorktree(root *os.Root, worktreePath string) error {
 }
 
 func DetachWorktree(worktreePath string) error {
-	_, err := runGit(worktreePath, "checkout", "--detach")
-	return err
+	_, detachErr := runGit(worktreePath, "checkout", "--detach")
+	// Like branch creation, the hook may change HEAD after checkout, regardless
+	// of its exit status. Reconcile against the actual postcondition.
+	branch, branchErr := CheckedOutBranch(worktreePath)
+	if branchErr == nil && branch == "" {
+		return nil
+	}
+	// A hook that switches HEAD makes the normal detach ineffective. Retry
+	// without hooks so cleanup can release the branch rather than strand it.
+	_, retryErr := runGit(worktreePath, "-c", "core.hooksPath="+os.DevNull, "checkout", "--detach")
+	branch, branchErr = CheckedOutBranch(worktreePath)
+	if branchErr == nil && branch == "" {
+		return nil
+	}
+	if retryErr != nil {
+		return retryErr
+	}
+	if branchErr != nil {
+		return branchErr
+	}
+	return fmt.Errorf("detach in %s left HEAD on branch %q (initial checkout: %v)", worktreePath, branch, detachErr)
 }
 
 // DefaultBranchMergeRef returns the fully qualified ref used for merge safety checks.

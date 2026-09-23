@@ -22,6 +22,7 @@ import (
 var (
 	getLease        bool
 	getLeaseHolder  string
+	getBranch       string
 	getJSON         bool
 	getNoFetch      bool
 	getBase         string
@@ -50,10 +51,10 @@ it with 'treehouse return <path>'.
 
 Worktrees are cut from the branch treehouse infers from the repository. Pass
 --base to cut this one from a different branch, or set base_branch in
-treehouse.toml to change it for the whole pool. The worktree is still handed
-over in detached HEAD; --base chooses the commit it starts at, it does not
-create or check out a branch. A base that cannot be resolved is an error, never
-a silent fall back to the inferred default.
+treehouse.toml to change it for the whole pool. By default the worktree is
+handed over in detached HEAD. Pass -b/--branch to create and check out a new
+Git branch at the acquired commit. A base that cannot be resolved is an error,
+never a silent fall back to the inferred default.
 
 Pass --include-file <path> to replace committed .worktreeinclude for this
 acquisition. Relative paths use the current directory; patterns inside the file
@@ -86,7 +87,7 @@ func init() {
 	getCmd.Flags().StringVar(&getLeaseHolder, "lease-holder", "", "Optional label recorded as the lease holder (defaults to $TREEHOUSE_LEASE_HOLDER)")
 	getCmd.Flags().BoolVar(&getJSON, "json", false, "Print lease allocation as JSON (requires --lease)")
 	getCmd.Flags().BoolVar(&getNoFetch, "no-fetch", false, "Skip fetching origin before acquiring; use existing local refs")
-	// No -b shorthand: git spells branch creation -b, and this creates nothing.
+	getCmd.Flags().StringVarP(&getBranch, "branch", "b", "", "Create and check out a new Git branch at the acquired commit (fails if it already exists)")
 	getCmd.Flags().StringVar(&getBase, "base", "", "Branch to cut this worktree from, overriding base_branch in config (default: inferred from the repository)")
 	getCmd.Flags().StringVar(&getIncludeFile, "include-file", "", "Replace committed .worktreeinclude with this file (relative to the current directory)")
 	getCmd.Flags().BoolVar(&getUniqueLeaf, "unique-leaf", false, "Name a newly created worktree directory <repo>-<slot> instead of <repo>, overriding unique_leaf in config")
@@ -95,6 +96,9 @@ func init() {
 }
 
 func getRunE(cmd *cobra.Command, args []string) error {
+	if cmd.Flags().Changed("branch") && getBranch == "" {
+		return fmt.Errorf("--branch requires a non-empty branch name")
+	}
 	if getJSON && !getLease {
 		return fmt.Errorf("--json requires --lease")
 	}
@@ -123,6 +127,10 @@ func getRunE(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	if getBranch != "" && vcs.BackendNameFor(repoRoot) == "jj" {
+		return fmt.Errorf("--branch is only supported by the git backend")
+	}
+
 	poolDir, err := config.ResolvePoolDir(repoRoot, config.ResolveRoot(rootFlag, cfg))
 	if err != nil {
 		return fmt.Errorf("failed to resolve pool directory: %w", err)
@@ -134,6 +142,7 @@ func getRunE(cmd *cobra.Command, args []string) error {
 
 	acquireOpts := pool.AcquireOptions{
 		SkipFetch:       getNoFetch,
+		Branch:          getBranch,
 		BaseBranch:      resolveRequestedBase(cfg),
 		WorktreePath:    config.ResolveWorktreePath(getWorktreePath, cfg),
 		IncludeManifest: manifest,

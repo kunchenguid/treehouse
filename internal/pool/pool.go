@@ -96,6 +96,9 @@ type AcquireOptions struct {
 	// branch inferred from the repository. A non-empty value that cannot be
 	// resolved fails the acquisition rather than falling back.
 	BaseBranch string
+	// Branch creates and checks out a new Git branch at the acquired commit.
+	// Empty preserves the default detached-HEAD behavior.
+	Branch string
 	// UniqueLeaf gives a newly created worktree a directory name unique within
 	// the pool ("<repo>-<slot>") instead of the repository name every slot
 	// shares. It only affects creation: a recycled slot keeps the path already
@@ -118,6 +121,8 @@ type acquireOptions struct {
 	skipFetch bool
 	// baseBranch is the explicitly requested base branch, or empty to infer it.
 	baseBranch string
+	// branch is the opt-in Git branch to create at the acquired commit.
+	branch string
 	// worktreePath templates where a newly created slot is placed, or empty for
 	// the built-in layout.
 	worktreePath    string
@@ -148,6 +153,7 @@ func AcquireWithOptions(repoRoot, poolDir string, poolSize int, postCreate []str
 	acquired, err := acquire(repoRoot, poolDir, poolSize, postCreate, acquireOptions{
 		skipFetch:       options.SkipFetch,
 		baseBranch:      options.BaseBranch,
+		branch:          options.Branch,
 		worktreePath:    options.WorktreePath,
 		includeManifest: options.IncludeManifest,
 		uniqueLeaf:      options.UniqueLeaf,
@@ -178,6 +184,7 @@ func AcquireLeaseInfoWithOptions(repoRoot, poolDir string, poolSize int, postCre
 	return acquire(repoRoot, poolDir, poolSize, postCreate, acquireOptions{
 		skipFetch:       options.SkipFetch,
 		baseBranch:      options.BaseBranch,
+		branch:          options.Branch,
 		worktreePath:    options.WorktreePath,
 		includeManifest: options.IncludeManifest,
 		uniqueLeaf:      options.UniqueLeaf,
@@ -191,6 +198,7 @@ func AcquireLeaseInfoWithOptions(repoRoot, poolDir string, poolSize int, postCre
 var (
 	seedWorktree   = vcs.SeedWorktree
 	removeWorktree = vcs.RemoveWorktree
+	createBranch   = vcs.CreateBranch
 	writeState     = WriteState
 )
 
@@ -356,6 +364,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 	// and run under the state lock below.
 	if _, err := validateWorktreePathTemplate(opts.worktreePath); err != nil {
 		return LeaseInfo{}, err
+	}
+	if opts.branch != "" && vcs.BackendNameFor(repoRoot) != "git" {
+		return LeaseInfo{}, fmt.Errorf("cannot create branch %q: --branch is only supported by the git backend; remove --branch to acquire a jj workspace", opts.branch)
 	}
 
 	// Said out loud rather than resolved silently: a template names the leaf
@@ -526,6 +537,37 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 				return fmt.Errorf("failed to seed .worktreeinclude into %s: %w", wt.Path, err)
 			}
 			setSeedInventory(&state.Worktrees[i], seededPaths, true)
+			if opts.branch != "" {
+				if branchErr := createBranch(wt.Path, opts.branch); branchErr != nil {
+					created := errors.Is(branchErr, vcs.ErrBranchCreated)
+					// Branch creation failures normally leave HEAD detached. A
+					// redundant detach runs post-checkout hooks and may create
+					// ignored output in a slot about to be reused.
+					_, detached, headErr := vcs.CheckedOutBranch(wt.Path)
+					state.Worktrees[i].OwnerPID = 0
+					state.Worktrees[i].OwnerStartedAt = 0
+					if created || headErr != nil || !detached {
+						state.Worktrees[i].Leased = true
+						state.Worktrees[i].LeaseHolder = "quarantined: branch creation cleanup failed"
+						if created {
+							state.Worktrees[i].LeaseHolder = "quarantined: branch checkout failed"
+						}
+						state.Worktrees[i].LeasedAt = time.Now()
+					} else {
+						clearLease(&state.Worktrees[i])
+					}
+					if writeErr := WriteState(poolDir, state); writeErr != nil {
+						return fmt.Errorf("failed to create branch %q in %s: %w (state cleanup failed: %v)", opts.branch, wt.Path, branchErr, writeErr)
+					}
+					if headErr != nil {
+						return fmt.Errorf("failed to create branch %q in %s: %w (HEAD inspection failed: %v; worktree quarantined for inspection)", opts.branch, wt.Path, branchErr, headErr)
+					}
+					if created || !detached {
+						return fmt.Errorf("failed to create branch %q in %s: %w (worktree quarantined for inspection)", opts.branch, wt.Path, branchErr)
+					}
+					return fmt.Errorf("failed to create branch %q in %s: %w", opts.branch, wt.Path, branchErr)
+				}
+			}
 			clearLease(&state.Worktrees[i])
 			if err := markAcquired(&state.Worktrees[i], opts); err != nil {
 				return err
@@ -634,6 +676,52 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		state.Worktrees = append(state.Worktrees, entry)
 		if err := persistState(poolDir, state); err != nil {
 			return err
+		}
+		if opts.branch != "" {
+			if branchErr := createBranch(wtPath, opts.branch); branchErr != nil {
+				if errors.Is(branchErr, vcs.ErrBranchCreated) {
+					entry := &state.Worktrees[len(state.Worktrees)-1]
+					entry.Leased = true
+					entry.LeaseHolder = "quarantined: branch checkout failed"
+					entry.LeasedAt = time.Now()
+					if writeErr := WriteState(poolDir, state); writeErr != nil {
+						return fmt.Errorf("failed to create branch %q in %s: %w (quarantine failed: %v)", opts.branch, wtPath, branchErr, writeErr)
+					}
+					return fmt.Errorf("failed to create branch %q in %s: %w (worktree quarantined for inspection)", opts.branch, wtPath, branchErr)
+				}
+				// Git removes untracked and ignored files even without --force.
+				// Only the authenticated seed inventory may be discarded here.
+				unknown, inspectErr := vcs.HasUnseededWorktreeOutput(wtPath, seededPaths)
+				if inspectErr != nil || unknown {
+					entry := &state.Worktrees[len(state.Worktrees)-1]
+					entry.Leased = true
+					entry.LeaseHolder = "quarantined: branch creation cleanup failed"
+					entry.LeasedAt = time.Now()
+					if writeErr := WriteState(poolDir, state); writeErr != nil {
+						return fmt.Errorf("failed to create branch %q in %s: %w (quarantine failed: %v)", opts.branch, wtPath, branchErr, writeErr)
+					}
+					if inspectErr != nil {
+						return fmt.Errorf("failed to create branch %q in %s: %w (worktree inspection failed: %v; worktree quarantined for inspection)", opts.branch, wtPath, branchErr, inspectErr)
+					}
+					return fmt.Errorf("failed to create branch %q in %s: %w (worktree quarantined for inspection)", opts.branch, wtPath, branchErr)
+				}
+				if cleanupErr := removeWorktree(repoRoot, wtPath); cleanupErr != nil {
+					entry := &state.Worktrees[len(state.Worktrees)-1]
+					clearLease(entry)
+					entry.Leased = true
+					entry.LeaseHolder = "quarantined: branch creation cleanup failed"
+					entry.LeasedAt = time.Now()
+					if writeErr := WriteState(poolDir, state); writeErr != nil {
+						return fmt.Errorf("failed to create branch %q in %s: %w (cleanup failed: %v; quarantine failed: %v)", opts.branch, wtPath, branchErr, cleanupErr, writeErr)
+					}
+					return fmt.Errorf("failed to create branch %q in %s: %w (cleanup failed: %v)", opts.branch, wtPath, branchErr, cleanupErr)
+				}
+				state.Worktrees = state.Worktrees[:len(state.Worktrees)-1]
+				if writeErr := WriteState(poolDir, state); writeErr != nil {
+					return fmt.Errorf("failed to create branch %q in %s: %w (worktree removed but state cleanup failed: %v)", opts.branch, wtPath, branchErr, writeErr)
+				}
+				return fmt.Errorf("failed to create branch %q in %s: %w", opts.branch, wtPath, branchErr)
+			}
 		}
 
 		entry = state.Worktrees[len(state.Worktrees)-1]

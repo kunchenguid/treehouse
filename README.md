@@ -144,8 +144,8 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
   (ready for next agent)
 ```
 
-- **Detached HEAD** — worktrees use detached HEAD mode, reset to whichever of the local or remote default branch is further ahead, avoiding branch name conflicts entirely.
-- **Choosable base branch** — set `base_branch` in `treehouse.toml`, or pass `treehouse get --base <branch>`, to cut worktrees from a branch other than the repository default. Opt-in; unset keeps today's inference. Worktrees stay in detached HEAD — this selects the commit they start at, it does not create or check out a branch.
+- **Detached HEAD by default** — without a branch flag, worktrees use detached HEAD mode and reset to whichever of the local or remote default branch is further ahead. Pass `treehouse get -b <name>` to create and check out a new local Git branch at the acquired commit.
+- **Choosable base branch** — set `base_branch` in `treehouse.toml`, or pass `treehouse get --base <branch>`, to cut worktrees from a branch other than the repository default. Opt-in; unset keeps today's inference. This composes with `--branch`: the new branch starts at the selected base.
 - **Unique worktree directory names** — pass `treehouse get --unique-leaf` (or set `unique_leaf` in `treehouse.toml`) to name new slots `<repo>-<slot>` instead of `<repo>`, so tooling that derives per-checkout identity from the directory name tells the slots apart. Opt-in; off keeps today's layout, and existing worktrees are never moved.
 - **Choosable worktree path** — set `worktree_path` in `treehouse.toml`, or pass `treehouse get --worktree-path '<template>'`, to place new worktrees somewhere a tool requires instead of `{pool}/{slot}/{repo}`. Opt-in, and creation-only: worktrees already in the pool keep their recorded paths. See [Worktree path](#worktree-path).
 - **Clone-correct reuse** — two local clones of the same remote share one pool, but a worktree is only ever reused by the clone it belongs to, judged by its physical Git common directory (symlinked or, on a case-insensitive filesystem, differently cased paths to one clone count as that clone). Another clone's idle worktree is skipped and left intact; if nothing reusable is left, `get` creates a new worktree up to `max_trees` and otherwise fails with a message counting the foreign and unverifiable worktrees. A worktree whose owning clone cannot be proven is never reused, and neither is any worktree when the requesting clone's own identity cannot be proven. Non-colocated jj repositories have no Git common directory, so their worktrees are never reused; `get` creates a new one each time until `max_trees` is reached.
@@ -190,6 +190,7 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `get`     | `--lease` | Durably lease the worktree without opening a subshell; print only its path to stdout |
 | `get`     | `--lease-holder` | Optional label recorded as the lease holder (defaults to `$TREEHOUSE_LEASE_HOLDER`) |
 | `get`     | `--json` | Print `path`, `lease_id`, `lease_holder`, `leased_at`, and `base_branch` as JSON (requires `--lease`) |
+| `get`     | `-b`, `--branch` | Create and check out a new Git branch at the acquired commit; fails if it already exists or its name is invalid |
 | `get`     | `--base` | Branch to cut this worktree from, overriding `base_branch` in config |
 | `get`     | `--include-file` | Replace committed `.worktreeinclude` for this acquisition with the supplied manifest |
 | `get`     | `--unique-leaf` | Name a newly created worktree directory `<repo>-<slot>` instead of `<repo>`, overriding `unique_leaf` in config |
@@ -494,7 +495,9 @@ treehouse get --lease --base release/2.x --json
 
 A few things worth knowing:
 
-- **Worktrees stay in detached HEAD.** This selects the commit a worktree starts at; it does not create or check out a branch. There is no `-b` shorthand, because `-b` means branch *creation* in git and this flag creates nothing.
+- **Worktrees stay in detached HEAD by default.** This selects the commit a worktree starts at; it does not itself create or check out a branch. Add `-b <name>` / `--branch <name>` to create a new local Git branch there.
+- **Failed branch checkout keeps the branch and worktree.** If Git creates the branch but checkout fails or a checkout hook moves it away from the acquired commit, `get` fails without handing off the slot. Treehouse quarantines the worktree for inspection, preserving files the hook may have written; the slot remains unavailable until you resolve it. The branch is also left in place because another worktree may have checked it out.
+- **A branch-name collision may also quarantine a new slot.** If a checkout hook could still write files, or the new worktree contains files beyond Treehouse's known seed copies, Treehouse preserves that worktree for inspection rather than deleting its contents while reporting the collision.
 - **Branch names only.** `develop`, not `origin/develop`, a tag, or a commit SHA. Whichever of `develop` and `origin/develop` is further ahead wins, preferring `origin` when they have diverged — exactly how the inferred default behaves. A tag sharing a branch's name never wins: refs are resolved fully qualified.
 - **It fails closed.** A base that resolves to neither a local branch nor `origin/<branch>` is an error; Treehouse never falls back to the inferred default, which would hand you a worktree cut from the wrong branch and report success. `treehouse status` shows the resolved base, and flags a configured one it cannot resolve.
 - **Returned worktrees are parked on the base they were cut from**, so the pool keeps recycling. `base_branch` wins when it is set; otherwise a slot acquired with `--base` is parked back on that branch. A slot parked elsewhere could not be reused whenever the base is not a descendant of it.
