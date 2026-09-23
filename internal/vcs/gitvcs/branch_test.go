@@ -188,15 +188,15 @@ func TestRunGitDoesNotIncludeFailedDiffStdout(t *testing.T) {
 	}
 }
 
-func TestDetachWorktreeReconcilesRealPostCheckoutHookFailure(t *testing.T) {
+func TestDetachWorktreeReportsRealPostCheckoutHookFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("post-checkout fixture requires /bin/sh")
 	}
 	dir := initRepo(t)
 	installFailingPostCheckoutHook(t, dir)
 
-	if err := DetachWorktree(dir); err != nil {
-		t.Fatalf("DetachWorktree rejected a detach Git completed before its hook failed: %v", err)
+	if err := DetachWorktree(dir); err == nil {
+		t.Fatal("DetachWorktree hid a failed post-checkout hook")
 	}
 	branch, err := CheckedOutBranch(dir)
 	if err != nil {

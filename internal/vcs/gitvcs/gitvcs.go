@@ -694,18 +694,7 @@ func RemoveCleanWorktree(repoRoot, path string) error {
 // HasUnseededBranchCreationOutput ignores checkout-hook uncertainty when no
 // checkout ran, but inspects reference-transaction hooks and worktree output.
 func HasUnseededBranchCreationOutput(worktreePath string, seededPaths []string) (bool, error) {
-	return hasUnseededWorktreeOutput(worktreePath, seededPaths, false)
-}
-
-// HasUnseededWorktreeOutput refuses removal when hooks may still write, or
-// when any untracked output is not a known copied seed.
-func HasUnseededWorktreeOutput(worktreePath string, seededPaths []string) (bool, error) {
-	return hasUnseededWorktreeOutput(worktreePath, seededPaths, true)
-}
-
-func hasUnseededWorktreeOutput(worktreePath string, seededPaths []string, checkoutPossible bool) (bool, error) {
 	// A configured hooks path can be relative to the invocation directory.
-	// Preserve the existing fail-closed rule for worktree-add checkout hooks.
 	hooksPath := exec.Command("git", "config", "--get", "core.hooksPath")
 	hooksPath.Dir = worktreePath
 	var configuredHooksPath string
@@ -714,36 +703,27 @@ func hasUnseededWorktreeOutput(worktreePath string, seededPaths []string, checko
 	} else if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
 		return true, err
 	}
-	if checkoutPossible && configuredHooksPath != "" {
-		return true, nil
-	}
-	hookNames := []string{"reference-transaction"}
-	if checkoutPossible {
-		hookNames = append(hookNames, "post-checkout")
-	}
-	for _, hookName := range hookNames {
-		var hook string
-		if configuredHooksPath != "" {
-			hook = filepath.Join(configuredHooksPath, hookName)
-		} else {
-			var err error
-			hook, err = runGit(worktreePath, "rev-parse", "--git-path", "hooks/"+hookName)
-			if err != nil {
-				return true, err
-			}
-		}
-		if !filepath.IsAbs(hook) {
-			hook = filepath.Join(worktreePath, hook)
-		}
-		if info, err := os.Stat(hook); err == nil {
-			// Windows does not expose executable permission bits, but Git for
-			// Windows still runs hook scripts found at this path.
-			if info.Mode().IsRegular() && (runtime.GOOS == "windows" || info.Mode().Perm()&0111 != 0) {
-				return true, nil
-			}
-		} else if !os.IsNotExist(err) {
+	var hook string
+	if configuredHooksPath != "" {
+		hook = filepath.Join(configuredHooksPath, "reference-transaction")
+	} else {
+		var err error
+		hook, err = runGit(worktreePath, "rev-parse", "--git-path", "hooks/reference-transaction")
+		if err != nil {
 			return true, err
 		}
+	}
+	if !filepath.IsAbs(hook) {
+		hook = filepath.Join(worktreePath, hook)
+	}
+	if info, err := os.Stat(hook); err == nil {
+		// Windows does not expose executable permission bits, but Git for
+		// Windows still runs hook scripts found at this path.
+		if info.Mode().IsRegular() && (runtime.GOOS == "windows" || info.Mode().Perm()&0111 != 0) {
+			return true, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return true, err
 	}
 
 	known := make(map[string]struct{}, len(seededPaths))
@@ -1241,27 +1221,8 @@ func authenticateLinkedWorktree(root *os.Root, worktreePath string) error {
 }
 
 func DetachWorktree(worktreePath string) error {
-	_, detachErr := runGit(worktreePath, "checkout", "--detach")
-	// Like branch creation, the hook may change HEAD after checkout, regardless
-	// of its exit status. Reconcile against the actual postcondition.
-	branch, branchErr := CheckedOutBranch(worktreePath)
-	if branchErr == nil && branch == "" {
-		return nil
-	}
-	// A hook that switches HEAD makes the normal detach ineffective. Retry
-	// without hooks so cleanup can release the branch rather than strand it.
-	_, retryErr := runGit(worktreePath, "-c", "core.hooksPath="+os.DevNull, "checkout", "--detach")
-	branch, branchErr = CheckedOutBranch(worktreePath)
-	if branchErr == nil && branch == "" {
-		return nil
-	}
-	if retryErr != nil {
-		return retryErr
-	}
-	if branchErr != nil {
-		return branchErr
-	}
-	return fmt.Errorf("detach in %s left HEAD on branch %q (initial checkout: %v)", worktreePath, branch, detachErr)
+	_, err := runGit(worktreePath, "checkout", "--detach")
+	return err
 }
 
 // DefaultBranchMergeRef returns the fully qualified ref used for merge safety checks.

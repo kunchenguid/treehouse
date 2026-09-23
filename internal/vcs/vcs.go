@@ -393,20 +393,6 @@ func CreateBranch(worktreePath, branch string) error {
 	return gitvcs.CreateBranch(worktreePath, branch)
 }
 
-// HasUnseededWorktreeOutput reports whether removing this worktree could
-// discard output beyond the pool's known seed inventory. Unknown backends and
-// unreadable worktree markers fail closed.
-func HasUnseededWorktreeOutput(worktreePath string, seededPaths []string) (bool, error) {
-	name, err := WorktreeBackendNameChecked(worktreePath)
-	if err != nil {
-		return true, err
-	}
-	if name != "git" {
-		return true, nil
-	}
-	return gitvcs.HasUnseededWorktreeOutput(worktreePath, seededPaths)
-}
-
 // HasUnseededBranchCreationOutput inspects a recycled slot after branch
 // creation fails without running checkout. Post-checkout hooks cannot have run
 // on this path, but reference-transaction hooks can have written output.
