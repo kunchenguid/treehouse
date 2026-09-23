@@ -81,6 +81,11 @@ plain 'treehouse get' carries no lease to compare, so it is returned like any
 other in-use slot. --all takes no path or name, and cannot be combined with the
 --if-lease-* conditions, which target a single lease identity.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// A workspace shell has no single TREEHOUSE_DIR because it contains
+		// several child worktrees. A bare return releases the aggregate.
+		if len(args) == 0 && os.Getenv("TREEHOUSE_WORKSPACE") != "" {
+			return returnWorkspace(os.Getenv("TREEHOUSE_WORKSPACE"), returnForce)
+		}
 		if cmd.Flags().Changed("if-lease-id") && returnIfLeaseID == "" {
 			return fmt.Errorf("--if-lease-id cannot be empty")
 		}
@@ -501,13 +506,26 @@ func unknownWorktreeNameError(poolDir, name string) error {
 }
 
 func resolveWorktreePath(args []string) (string, error) {
+	var path string
+	var err error
 	if len(args) > 0 {
-		return filepath.Abs(args[0])
+		path, err = filepath.Abs(args[0])
+	} else if env := os.Getenv("TREEHOUSE_DIR"); env != "" {
+		path, err = filepath.Abs(env)
+	} else {
+		path, err = os.Getwd()
 	}
-	if env := os.Getenv("TREEHOUSE_DIR"); env != "" {
-		return filepath.Abs(env)
+	if err != nil {
+		return "", err
 	}
-	return os.Getwd()
+	// Workspace facades use symlinks while pool state tracks physical paths.
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved, nil
+	} else if os.IsNotExist(err) {
+		return path, nil
+	} else {
+		return "", err
+	}
 }
 
 // returnBaseBranch resolves the configured base branch for the repository that
