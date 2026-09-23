@@ -50,6 +50,24 @@ func TestCOWCacheLeaseReuseAndCleanup(t *testing.T) {
 	if err := Release(poolDir, reused); err != nil {
 		t.Fatal(err)
 	}
+	// A previous task may have generated ignored files that were never seeded.
+	// They must remain unowned without quarantining an otherwise reusable slot.
+	extra := filepath.Join(reused, ".cache", "go-build", "extra.bin")
+	if err := os.WriteFile(extra, []byte("task-owned"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".cache", "go-build", "extra.bin"), []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reused, err = AcquireWithOptions(repo, poolDir, 1, nil, opts)
+	if err != nil || reused != lease.Path {
+		t.Fatalf("reuse with unowned cache = %q, %v", reused, err)
+	}
+	assertFileContents(t, extra, "task-owned")
+	if err := Release(poolDir, reused); err != nil {
+		t.Fatal(err)
+	}
+	assertFileContents(t, extra, "task-owned")
 	// A dirty checkout is never reset just to refresh the cache.
 	if err := os.WriteFile(filepath.Join(reused, "README.md"), []byte("uncommitted"), 0o644); err != nil {
 		t.Fatal(err)

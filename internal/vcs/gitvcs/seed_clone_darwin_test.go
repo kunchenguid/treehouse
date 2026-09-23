@@ -73,14 +73,24 @@ func TestSafeCachePath(t *testing.T) {
 	}
 }
 
-func TestSeedWorktreeCOWRejectsExistingDestination(t *testing.T) {
+func TestSeedWorktreeCOWPreservesExistingCache(t *testing.T) {
 	repo, worktree := setupSeedWorktree(t, ".cache/go-build/**\n")
 	writeTestFile(t, repo, ".cache/go-build/a", "source")
 	writeTestFile(t, worktree, ".cache/go-build/a", "owner")
-	if _, err := SeedWorktreeCOW(repo, worktree, nil); err == nil {
-		t.Fatal("expected existing destination refusal")
+	seeded, err := SeedWorktreeCOW(repo, worktree, nil)
+	if err != nil || len(seeded) != 0 {
+		t.Fatalf("existing cache should remain unowned: %v, %v", seeded, err)
 	}
 	assertTestFile(t, worktree, ".cache/go-build/a", "owner")
+	if err := os.Remove(filepath.Join(worktree, ".cache/go-build/a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(repo, ".cache/go-build/a"), filepath.Join(worktree, ".cache/go-build/a")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SeedWorktreeCOW(repo, worktree, nil); err == nil {
+		t.Fatal("destination symlink must be refused")
+	}
 }
 
 func TestSeedWorktreeCOWUnsupportedAndFailure(t *testing.T) {
@@ -93,8 +103,8 @@ func TestSeedWorktreeCOWUnsupportedAndFailure(t *testing.T) {
 	if err != nil || len(seeded) != 0 {
 		t.Fatalf("cross-device = %v, %v", seeded, err)
 	}
-	if _, err := os.Stat(filepath.Join(worktree, ".cache/go-build/a")); !os.IsNotExist(err) {
-		t.Fatalf("cross-device cache was copied: %v", err)
+	if _, err := os.Stat(filepath.Join(worktree, ".cache/go-build")); !os.IsNotExist(err) {
+		t.Fatalf("cross-device cache directory created: %v", err)
 	}
 	cloneFileAt = func(int, int, string, int) error { return unix.ENOSPC }
 	if _, err := SeedWorktreeCOW(repo, worktree, nil); !errors.Is(err, unix.ENOSPC) {
