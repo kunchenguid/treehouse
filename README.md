@@ -379,7 +379,8 @@ Pass `treehouse prune --yes` to delete those worktrees.
 
 By default, prune only inspects the current repository's pool and must be run inside a repository.
 Pass `treehouse prune --all` or `treehouse prune --global` to inspect every managed pool under the user-level treehouse root from any directory.
-Global prune reads the user-level config and hooks, derives each worktree's owning repository from version-control metadata, then fetches and checks merge safety against that repository.
+Global prune reads the user-level config and hooks.
+Both forms derive each worktree's owning repository from its own version-control metadata, then fetch and check merge safety against that repository, so a pool shared by two clones of the same remote is pruned from either clone.
 Without `--prune-orphans`, pass `treehouse prune --all --yes` to delete only the globally safe stale candidates.
 
 Prune ignores worktrees that are currently in use, leased, or reserved by another lifecycle operation.
@@ -402,6 +403,8 @@ Targets are narrow and explicit:
 
 - `treehouse destroy <worktree-path>` targets exactly one worktree.
 - `treehouse destroy <pool-path> --all` targets worktrees in THAT pool only. The pool path can be the pool directory, a worktree inside it, or the repository (`.` works from inside a repo).
+
+Like prune, destroy judges and removes each worktree through its own owning repository, so either clone sharing a pool can destroy the other clone's worktrees.
 
 There is no cross-pool or global destroy: `--all` without a pool path is an error, so a stray command can never reach beyond the pool you named.
 

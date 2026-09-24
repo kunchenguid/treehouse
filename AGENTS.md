@@ -54,7 +54,7 @@ make test
 - Prune reports unsafe idle worktrees in grouped, stable categories and keeps raw VCS diagnostics for verbose output instead of default output
 - Prune treats backing-repository-missing linked worktrees as orphans in both flavors (a git `.git` gitdir pointer or a jj `.jj/repo` store pointer naming a deleted directory; a `.jj/repo` directory is a main workspace and never an orphan); they are only deletable with explicit `--prune-orphans --yes`, and each candidate warns that content could not be verified
 - Prune never treats an unreachable origin as a deletable orphan; those worktrees stay skipped because the repository may still be valid. Each backend owns its unreachable-origin error vocabulary (`gitvcs`/`jjvcs` `IsOriginAccessError`; jj shells out to git so its patterns wrap git's), and the `vcs` facade classifies by error content, not by the configured backend
-- Global prune enumerates managed pool directories under the user-level treehouse root and derives each worktree's owning repository from VCS metadata instead of relying on the current directory
+- Global prune enumerates managed pool directories under the user-level treehouse root. Every prune and destroy (repo-scoped too) derives each worktree's owning repository from that worktree's own VCS metadata (`resolvePoolRepoRoot`, `worktreePruneContextResolver`), never from the current directory or one pool-wide root: a shared pool holds slots from several clones, and one clone's root makes git refuse the other's removal
 - Global prune loads user-level config and hooks only because it can run without a repository context
 - State file tracks pool membership, temporary owner/destroy reservations, and explicit durable leases.
   It still does not infer long-term usage from processes.

@@ -21,8 +21,8 @@ import (
 	"github.com/kunchenguid/treehouse/internal/vcs/gitvcs"
 )
 
-// setupSharedClonePool mirrors the report's two same-named clones of one
-// origin. Keep real pool resolution in the fixture: the pool stays shared.
+// setupSharedClonePool builds two same-named clones of one origin. Keep real
+// pool resolution in the fixture: both clones must share one pool.
 func setupSharedClonePool(t *testing.T) (cloneA, cloneB, poolDir string) {
 	t.Helper()
 	t.Setenv("TREEHOUSE_VCS", "git")
@@ -322,6 +322,30 @@ func setupRepo(t *testing.T) (repoDir, poolDir string) {
 	runGit(t, repoDir, "commit", "-m", "initial")
 	runGit(t, repoDir, "push", "-u", "origin", "main")
 	return repoDir, poolDir
+}
+
+func acquireDisposableFromEachClone(t *testing.T) (repoA, poolDir, worktreeA, worktreeB string) {
+	t.Helper()
+	repoA, repoB, poolDir := setupSharedClonePool(t)
+
+	var err error
+	worktreeA, err = Acquire(repoA, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire from first clone failed: %v", err)
+	}
+	// Keep the first slot reserved until the second clone has created its own
+	// slot. Both can then be returned to the shared pool as disposable targets.
+	worktreeB, err = Acquire(repoB, poolDir, 4, nil)
+	if err != nil {
+		t.Fatalf("Acquire from second clone failed: %v", err)
+	}
+	if err := Release(poolDir, worktreeA); err != nil {
+		t.Fatalf("Release first clone worktree failed: %v", err)
+	}
+	if err := Release(poolDir, worktreeB); err != nil {
+		t.Fatalf("Release second clone worktree failed: %v", err)
+	}
+	return repoA, poolDir, worktreeA, worktreeB
 }
 
 func TestStaleJJAuthenticationRequiresSignedInventory(t *testing.T) {
@@ -2064,7 +2088,8 @@ func TestExecuteDestroy_ReclassifiesBeforeReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	destroyed, skipped, err := executeDestroy(poolDir, []DestroyTarget{planned}, repoDir, defaultRef, true, DestroyOptions{})
+	resolveContext := fixedPruneContextResolver(pruneContext{RepoRoot: repoDir, DefaultRef: defaultRef})
+	destroyed, skipped, err := executeDestroy(poolDir, []DestroyTarget{planned}, resolveContext, true, DestroyOptions{})
 	if err != nil {
 		t.Fatalf("executeDestroy failed: %v", err)
 	}
@@ -2102,21 +2127,25 @@ func TestExecuteDestroy_KeepsStateWhenRemovalFails(t *testing.T) {
 	planned := classifyForDestroy(state.Worktrees[0], repoDir, defaultRef)
 	measureDestroySize(poolDir, &planned)
 
-	badRepoRoot := filepath.Join(t.TempDir(), "not-a-repo")
-	if err := os.MkdirAll(badRepoRoot, 0o755); err != nil {
+	bogusGitDir := filepath.Join(t.TempDir(), "not-git-metadata")
+	if err := os.MkdirAll(bogusGitDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	destroyed, skipped, err := executeDestroy(poolDir, []DestroyTarget{planned}, badRepoRoot, defaultRef, true, DestroyOptions{})
+	if err := os.WriteFile(filepath.Join(wtPath, ".git"), []byte("gitdir: "+bogusGitDir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolveContext := fixedPruneContextResolver(pruneContext{RepoRoot: repoDir, DefaultRef: defaultRef})
+	destroyed, skipped, err := executeDestroy(poolDir, []DestroyTarget{planned}, resolveContext, true, DestroyOptions{IncludeUnlanded: true})
 	if err != nil {
 		t.Fatalf("executeDestroy failed: %v", err)
 	}
 	if len(destroyed) != 0 {
 		t.Fatalf("expected failed removal to skip, got destroyed %#v", destroyed)
 	}
-	if !hasDestroySkipFlags(skipped, wtPath, DestroyDisposable) {
+	if !hasDestroySkipFlags(skipped, wtPath, DestroyUnverified) {
 		t.Fatalf("expected failed removal skip without include flags, got %#v", skipped)
 	}
-	if !strings.Contains(skipped[0].Target.Detail, "VCS refused to remove worktree") {
+	if !strings.Contains(skipped[0].Target.Detail, "cannot resolve repository") {
 		t.Fatalf("expected removal failure detail, got %#v", skipped)
 	}
 	if _, err := os.Stat(wtPath); err != nil {
@@ -2132,7 +2161,7 @@ func TestExecuteDestroy_KeepsStateWhenRemovalFails(t *testing.T) {
 	}
 }
 
-func TestExecuteDestroy_ReResolvesRepoRootWhenMissing(t *testing.T) {
+func TestExecuteDestroy_ResolvesRepoRootPerWorktree(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
 	wtPath := acquireDisposable(t, repoDir, poolDir)
@@ -2147,7 +2176,8 @@ func TestExecuteDestroy_ReResolvesRepoRootWhenMissing(t *testing.T) {
 	planned := classifyForDestroy(state.Worktrees[0], repoDir, defaultRef)
 	measureDestroySize(poolDir, &planned)
 
-	destroyed, skipped, err := executeDestroy(poolDir, []DestroyTarget{planned}, "", defaultRef, true, DestroyOptions{})
+	resolveContext := fixedPruneContextResolver(pruneContext{RepoRoot: repoDir, DefaultRef: defaultRef})
+	destroyed, skipped, err := executeDestroy(poolDir, []DestroyTarget{planned}, resolveContext, true, DestroyOptions{})
 	if err != nil {
 		t.Fatalf("executeDestroy failed: %v", err)
 	}
@@ -2197,11 +2227,9 @@ func TestExecuteDestroy_RemovalFailureRestoresOriginalOwnerReservation(t *testin
 	planned := classifyForDestroy(original, repoDir, defaultRef)
 	measureDestroySize(poolDir, &planned)
 
-	badRepoRoot := filepath.Join(t.TempDir(), "not-a-repo")
-	if err := os.MkdirAll(badRepoRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	destroyed, skipped, err := executeDestroy(poolDir, []DestroyTarget{planned}, badRepoRoot, defaultRef, true, DestroyOptions{IncludeInUse: true})
+	runGit(t, repoDir, "worktree", "lock", "--reason", "test removal refusal", wtPath)
+	resolveContext := fixedPruneContextResolver(pruneContext{RepoRoot: repoDir, DefaultRef: defaultRef})
+	destroyed, skipped, err := executeDestroy(poolDir, []DestroyTarget{planned}, resolveContext, true, DestroyOptions{IncludeInUse: true, IncludeUnlanded: true})
 	if err != nil {
 		t.Fatalf("executeDestroy failed: %v", err)
 	}
@@ -2210,6 +2238,9 @@ func TestExecuteDestroy_RemovalFailureRestoresOriginalOwnerReservation(t *testin
 	}
 	if !hasDestroySkipFlags(skipped, wtPath, DestroyInUse) {
 		t.Fatalf("expected failed removal skip without include flags, got %#v", skipped)
+	}
+	if !strings.Contains(skipped[0].Target.Detail, "VCS refused to remove worktree") {
+		t.Fatalf("expected VCS removal refusal detail, got %#v", skipped)
 	}
 
 	state, err = ReadState(poolDir)
@@ -2222,6 +2253,90 @@ func TestExecuteDestroy_RemovalFailureRestoresOriginalOwnerReservation(t *testin
 	if state.Worktrees[0].OwnerPID != original.OwnerPID || state.Worktrees[0].OwnerStartedAt != original.OwnerStartedAt {
 		t.Fatalf("expected original owner reservation restored, got %#v want pid=%d started=%d",
 			state.Worktrees[0], original.OwnerPID, original.OwnerStartedAt)
+	}
+}
+
+func TestDestroyPoolRemovesWorktreesOwnedByDifferentClones(t *testing.T) {
+	_, poolDir, worktreeA, worktreeB := acquireDisposableFromEachClone(t)
+
+	result, err := DestroyPool(poolDir, DestroyOptions{})
+	if err != nil {
+		t.Fatalf("DestroyPool failed: %v", err)
+	}
+	if len(result.Destroyed) != 2 || len(result.Skipped) != 0 {
+		t.Fatalf("expected both clone-owned worktrees destroyed, got destroyed=%#v skipped=%#v", result.Destroyed, result.Skipped)
+	}
+	for _, path := range []string{worktreeA, worktreeB} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("expected worktree %s removed, stat err: %v", path, err)
+		}
+	}
+}
+
+func TestWorktreePruneContextResolverKeepsRootWhenFetchFails(t *testing.T) {
+	repoA, poolDir, worktreeA, _ := acquireDisposableFromEachClone(t)
+	runGit(t, repoA, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing-origin"))
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry WorktreeEntry
+	for _, wt := range state.Worktrees {
+		if wt.Path == worktreeA {
+			entry = wt
+		}
+	}
+	wantRoot, err := resolvePoolRepoRoot(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolveContext := worktreePruneContextResolver()
+	// The second call reads the cached failure and must keep the root too.
+	for i := 0; i < 2; i++ {
+		context, err := resolveContext(entry)
+		if err == nil {
+			t.Fatalf("call %d: expected fetch failure, got context %#v", i, context)
+		}
+		if context.RepoRoot != wantRoot || context.DefaultRef != "" {
+			t.Fatalf("call %d: expected root %q with empty default ref, got %#v", i, wantRoot, context)
+		}
+	}
+}
+
+func TestDestroyPoolRefusesUnattributableWorktreePerPath(t *testing.T) {
+	_, poolDir, attributable, unattributable := acquireDisposableFromEachClone(t)
+	bogusGitDir := filepath.Join(t.TempDir(), "not-git-metadata")
+	if err := os.MkdirAll(bogusGitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unattributable, ".git"), []byte("gitdir: "+bogusGitDir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := DestroyPool(poolDir, DestroyOptions{IncludeUnlanded: true})
+	if err != nil {
+		t.Fatalf("DestroyPool failed: %v", err)
+	}
+	if len(result.Destroyed) != 1 || result.Destroyed[0].Path != attributable {
+		t.Fatalf("expected only attributable worktree %s destroyed, got %#v", attributable, result.Destroyed)
+	}
+	if len(result.Skipped) != 1 || result.Skipped[0].Target.Path != unattributable {
+		t.Fatalf("expected unattributable worktree %s refused, got %#v", unattributable, result.Skipped)
+	}
+	detail := result.Skipped[0].Target.Detail
+	if !strings.Contains(detail, "cannot resolve repository") || !strings.Contains(detail, unattributable) {
+		t.Fatalf("expected refusal to name unattributable path, got %q", detail)
+	}
+	if _, err := os.Stat(unattributable); err != nil {
+		t.Fatalf("unattributable worktree was deleted: %v", err)
+	}
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Worktrees) != 1 || state.Worktrees[0].Path != unattributable {
+		t.Fatalf("expected only refused worktree to remain managed, got %#v", state.Worktrees)
 	}
 }
 
@@ -2402,6 +2517,23 @@ func TestPruneRemovesAvailableWorktree(t *testing.T) {
 	}
 	if len(state.Worktrees) != 0 {
 		t.Fatalf("expected pruned worktree to be removed from state, got %#v", state.Worktrees)
+	}
+}
+
+func TestPruneRemovesWorktreesOwnedByDifferentClones(t *testing.T) {
+	repoA, poolDir, worktreeA, worktreeB := acquireDisposableFromEachClone(t)
+
+	result, err := Prune(repoA, poolDir, false, nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if len(result.Pruned) != 2 || len(result.Skipped) != 0 {
+		t.Fatalf("expected both clone-owned worktrees pruned, got pruned=%#v skipped=%#v", result.Pruned, result.Skipped)
+	}
+	for _, path := range []string{worktreeA, worktreeB} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("expected worktree %s removed, stat err: %v", path, err)
+		}
 	}
 }
 
@@ -3862,6 +3994,47 @@ func TestDestroyWorktree_MarkerlessSlot(t *testing.T) {
 	// at the next add.
 	if _, err := Acquire(repoDir, poolDir, 1, nil); err != nil {
 		t.Fatalf("Acquire after destroying the markerless slot failed: %v", err)
+	}
+}
+
+func TestDestroyWorktree_MarkerlessSlotDoesNotFetchEnclosingRepo(t *testing.T) {
+	repoDir, _ := setupRepo(t)
+	poolDir := filepath.Join(repoDir, "pool") // in-project pool root
+
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	clearOwnerReservation(t, poolDir, wtPath)
+	if err := os.Remove(filepath.Join(wtPath, ".git")); err != nil {
+		t.Fatalf("removing the slot marker: %v", err)
+	}
+
+	localOriginHead := gitOut(t, repoDir, "rev-parse", "refs/remotes/origin/main")
+	updater := filepath.Join(filepath.Dir(repoDir), "updater")
+	runGit(t, "", "clone", filepath.Join(filepath.Dir(repoDir), "remote.git"), updater)
+	runGit(t, updater, "config", "user.email", "test@test.com")
+	runGit(t, updater, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(updater, "remote.txt"), []byte("new remote commit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, updater, "add", "remote.txt")
+	runGit(t, updater, "commit", "-m", "advance remote")
+	runGit(t, updater, "push", "origin", "main")
+	remoteHead := gitOut(t, updater, "rev-parse", "HEAD")
+	if remoteHead == localOriginHead {
+		t.Fatal("test setup did not advance the remote")
+	}
+
+	result, err := DestroyWorktree(poolDir, wtPath, DestroyOptions{IncludeUnlanded: true})
+	if err != nil {
+		t.Fatalf("DestroyWorktree failed: %v", err)
+	}
+	if len(result.Destroyed) != 1 || len(result.Skipped) != 0 {
+		t.Fatalf("expected markerless slot to be destroyed, got %+v", result)
+	}
+	if got := gitOut(t, repoDir, "rev-parse", "refs/remotes/origin/main"); got != localOriginHead {
+		t.Fatalf("markerless destroy fetched the enclosing repository: origin/main moved %s -> %s", localOriginHead, got)
 	}
 }
 

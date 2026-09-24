@@ -206,21 +206,15 @@ func DestroyPool(poolDir string, opts DestroyOptions) (DestroyResult, error) {
 }
 
 func planAndDestroy(poolDir string, targets []WorktreeEntry, allowLeased bool, opts DestroyOptions) (DestroyResult, error) {
-	repoRoot := resolvePoolRepoRoot(targets)
-	defaultRef := ""
-	if repoRoot != "" {
-		// Resolve the merge target the same way prune does, so destroy and prune
-		// agree on what "unmerged" means. A failure leaves defaultRef empty, which
-		// classifyForDestroy reports as unverified rather than disposable.
-		if ref, err := resolvePruneDefaultRef(repoRoot); err == nil {
-			defaultRef = ref
-		}
-	}
+	resolveContext := worktreePruneContextResolver()
 
 	var result DestroyResult
 	var removable []DestroyTarget
 	for _, wt := range targets {
-		target := classifyForDestroy(wt, repoRoot, defaultRef)
+		// A resolution failure leaves the default ref empty, which
+		// classifyForDestroy reports as unverified rather than disposable.
+		context := resolveDestroyContext(resolveContext, wt)
+		target := classifyForDestroy(wt, context.RepoRoot, context.DefaultRef)
 		measureDestroySize(poolDir, &target)
 		ok, skip := opts.allows(target, allowLeased)
 		if ok {
@@ -240,7 +234,7 @@ func planAndDestroy(poolDir string, targets []WorktreeEntry, allowLeased bool, o
 		return result, nil
 	}
 
-	destroyed, execSkips, err := executeDestroy(poolDir, removable, repoRoot, defaultRef, allowLeased, opts)
+	destroyed, execSkips, err := executeDestroy(poolDir, removable, resolveContext, allowLeased, opts)
 	if err != nil {
 		return DestroyResult{}, err
 	}
@@ -250,6 +244,17 @@ func planAndDestroy(poolDir string, targets []WorktreeEntry, allowLeased bool, o
 	}
 	result.Skipped = append(result.Skipped, execSkips...)
 	return result, nil
+}
+
+// resolveDestroyContext keeps markerless slots out of the configured-backend
+// fallback, which could otherwise resolve and fetch a repository enclosing the
+// pool. An empty context keeps the damaged slot unverified.
+func resolveDestroyContext(resolveContext pruneContextResolver, wt WorktreeEntry) pruneContext {
+	if vcs.WorktreeBackendName(wt.Path) == "" {
+		return pruneContext{}
+	}
+	context, _ := resolveContext(wt)
+	return context
 }
 
 // allows reports whether opts authorize removing target, returning a populated
@@ -390,7 +395,7 @@ func (target DestroyTarget) hasUnlandedClass() bool {
 // under the state lock, runs pre-destroy hooks with the lock released, then
 // removes only the worktrees whose reservation is still intact. A worktree
 // re-acquired during its hook (its reservation superseded) is left in place.
-func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, defaultRef string, allowLeased bool, opts DestroyOptions) ([]DestroyTarget, []DestroySkip, error) {
+func executeDestroy(poolDir string, removable []DestroyTarget, resolveContext pruneContextResolver, allowLeased bool, opts DestroyOptions) ([]DestroyTarget, []DestroySkip, error) {
 	if len(removable) == 0 {
 		return nil, nil, nil
 	}
@@ -415,7 +420,8 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 			if _, ok := plannedByPath[state.Worktrees[i].Path]; !ok {
 				continue
 			}
-			current := classifyForDestroy(state.Worktrees[i], repoRoot, defaultRef)
+			context := resolveDestroyContext(resolveContext, state.Worktrees[i])
+			current := classifyForDestroy(state.Worktrees[i], context.RepoRoot, context.DefaultRef)
 			if planned, ok := plannedByPath[current.Path]; ok && current.Bytes == 0 {
 				current.Bytes = planned.Bytes
 			}
@@ -475,7 +481,8 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 			path := state.Worktrees[idx].Path
 			currentEntry := state.Worktrees[idx]
 			restoreOriginalOwnerReservation(&currentEntry, reservation)
-			current := classifyForDestroy(currentEntry, repoRoot, defaultRef)
+			context := resolveDestroyContext(resolveContext, currentEntry)
+			current := classifyForDestroy(currentEntry, context.RepoRoot, context.DefaultRef)
 			measureDestroySize(poolDir, &current)
 			if planned, ok := plannedByPath[path]; ok && current.Bytes == 0 {
 				current.Bytes = planned.Bytes
@@ -510,7 +517,7 @@ func executeDestroy(poolDir string, removable []DestroyTarget, repoRoot, default
 				}
 			}
 
-			if err := removeManagedWorktree(poolDir, repoRoot, currentEntry); err != nil {
+			if err := removeManagedWorktree(poolDir, currentEntry); err != nil {
 				restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
 				current.Detail = err.Error()
 				skips = append(skips, DestroySkip{Target: current})
@@ -562,7 +569,7 @@ func restoreOriginalOwnerReservation(wt *WorktreeEntry, reservation destroyReser
 // when worktree_path placed it elsewhere. git removal uses --force because
 // destroy deliberately removes dirty, unmerged, or unverified worktrees once the
 // caller has opted in.
-func removeManagedWorktree(poolDir, repoRoot string, wt WorktreeEntry) error {
+func removeManagedWorktree(poolDir string, wt WorktreeEntry) error {
 	path := wt.Path
 	orphaned, _ := backingRepositoryMissing(path)
 	// A markerless slot (directory present, .git/.jj marker gone) has no live
@@ -578,13 +585,9 @@ func removeManagedWorktree(poolDir, repoRoot string, wt WorktreeEntry) error {
 		}
 	}
 	if !orphaned && !markerless {
-		removeRepoRoot := repoRoot
-		if removeRepoRoot == "" {
-			resolvedRoot, err := vcs.FindMainRepoRootFrom(path)
-			if err != nil {
-				return fmt.Errorf("cannot resolve repository for worktree removal: %w", err)
-			}
-			removeRepoRoot = resolvedRoot
+		removeRepoRoot, err := resolvePoolRepoRoot(wt)
+		if err != nil {
+			return fmt.Errorf("cannot resolve repository for worktree removal: %w", err)
 		}
 		if err := vcs.RemoveWorktree(removeRepoRoot, path); err != nil {
 			return fmt.Errorf("VCS refused to remove worktree: %w", err)
@@ -605,19 +608,15 @@ func removeManagedWorktree(poolDir, repoRoot string, wt WorktreeEntry) error {
 	return nil
 }
 
-// resolvePoolRepoRoot derives the owning repository from the first target whose
-// backing repository is still present. A pool is per-repository, so one root
-// applies to every worktree in it.
-func resolvePoolRepoRoot(targets []WorktreeEntry) string {
-	for _, wt := range targets {
-		if orphaned, _ := backingRepositoryMissing(wt.Path); orphaned {
-			continue
-		}
-		if root, err := vcs.FindMainRepoRootFrom(wt.Path); err == nil {
-			return root
-		}
+// resolvePoolRepoRoot derives one worktree's owning repository from its path.
+// A pool may be shared by multiple clones, so callers must resolve every slot
+// independently and must not apply one slot's root to another.
+func resolvePoolRepoRoot(wt WorktreeEntry) (string, error) {
+	root, err := vcs.FindMainRepoRootFrom(wt.Path)
+	if err != nil {
+		return "", fmt.Errorf("resolve repository for worktree %s: %w", wt.Path, err)
 	}
-	return ""
+	return root, nil
 }
 
 func measureDestroySize(poolDir string, target *DestroyTarget) {
