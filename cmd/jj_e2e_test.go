@@ -319,3 +319,35 @@ func TestAcquireIsFlavorAware(t *testing.T) {
 		t.Fatalf("status --json must name both flavors, got: %s", stdout)
 	}
 }
+
+func TestJJGetBranchFailsBeforeCreatingWorkspace(t *testing.T) {
+	requireJJ(t)
+	repoDir, homeDir := setupJJTestRepo(t)
+
+	excludeBefore := readExcludeFile(t, repoDir)
+	selfIgnore := filepath.Join(homeDir, ".treehouse", ".gitignore")
+
+	stdout, stderr, exitCode := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease", "--branch", "feature")
+	if exitCode == 0 {
+		t.Fatalf("jj get --branch unexpectedly succeeded: %s", stdout)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("failed jj acquire wrote machine stdout %q", stdout)
+	}
+	if !strings.Contains(stderr, "only supported by the git backend") {
+		t.Fatalf("expected actionable Git-only error, got %q", stderr)
+	}
+	if excludeAfter := readExcludeFile(t, repoDir); excludeAfter != excludeBefore {
+		t.Fatalf("rejected --branch changed .git/info/exclude: before %q, after %q", excludeBefore, excludeAfter)
+	}
+	if _, err := os.Stat(selfIgnore); !os.IsNotExist(err) {
+		t.Fatalf("rejected --branch created the pool self-ignore file, stat err: %v", err)
+	}
+	status, statusErr, statusCode := runTreehouse(t, repoDir, homeDir, nil, "status", "--json")
+	if statusCode != 0 {
+		t.Fatalf("status failed after rejected get (code %d): %s", statusCode, statusErr)
+	}
+	if strings.TrimSpace(status) != "[]" {
+		t.Fatalf("rejected --branch created a pool slot: %s", status)
+	}
+}
