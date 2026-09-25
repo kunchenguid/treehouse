@@ -79,7 +79,9 @@ a slot leased then is skipped unless that same lease is still on it, and a slot
 unleased then is skipped if it has been leased since. A slot handed to another
 plain 'treehouse get' carries no lease to compare, so it is returned like any
 other in-use slot. --all takes no path or name, and cannot be combined with the
---if-lease-* conditions, which target a single lease identity.`,
+--if-lease-* conditions, which target a single lease identity. A slot
+'treehouse status' reports as quarantined by the 3.0.0 upgrade is never
+returned by --all; check it and return it by name.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("if-lease-id") && returnIfLeaseID == "" {
 			return fmt.Errorf("--if-lease-id cannot be empty")
@@ -246,7 +248,9 @@ func returnableStatus(wt pool.WorktreeStatus) bool {
 // there to return.
 //
 // A slot nobody holds - available, damaged, or one the caller merely stands
-// in - is never a target at all and is counted separately.
+// in - is never a target at all and is counted separately. Neither is a slot
+// treehouse 3.0.0 quarantined while upgrading: nothing proves it idle, so it is
+// counted held and skipped, and only a return naming it releases it.
 func returnHeldWorktrees() error {
 	poolDir, err := repositoryPoolDir()
 	if err != nil {
@@ -259,8 +263,13 @@ func returnHeldWorktrees() error {
 	}
 
 	var targets []pool.WorktreeStatus
-	var notHeld int
+	var notHeld, upgradeQuarantined int
 	for _, wt := range worktrees {
+		if wt.LeaseHolder == pool.UpgradeLeaseHolder {
+			upgradeQuarantined++
+			fmt.Fprintf(os.Stderr, "🌳 Leaving %s at %s leased: treehouse 3.0.0 quarantined it while upgrading, so it is only returned by name. Check it, then run: treehouse return %s\n", wt.Name, ui.PrettyPath(wt.Path), quoteReturnPath(wt.Path))
+			continue
+		}
 		if returnableStatus(wt) {
 			targets = append(targets, wt)
 			continue
@@ -271,7 +280,7 @@ func returnHeldWorktrees() error {
 		}
 	}
 
-	if len(targets) == 0 {
+	if len(targets) == 0 && upgradeQuarantined == 0 {
 		fmt.Fprintf(os.Stderr, "🌳 No held worktrees to return (%d in the pool).\n", len(worktrees))
 		return nil
 	}
@@ -302,7 +311,7 @@ func returnHeldWorktrees() error {
 	}
 
 	fmt.Fprintf(os.Stderr, "🌳 Returned %d of %d held worktree(s); %d skipped; %d not held.\n",
-		returned, len(targets), len(skipped), notHeld)
+		returned, len(targets)+upgradeQuarantined, len(skipped)+upgradeQuarantined, notHeld)
 
 	// A failure outranks an abort: retrying is the right response to a failure
 	// and the wrong one to a worktree deliberately left dirty, so the more

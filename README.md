@@ -412,6 +412,7 @@ treehouse 3.0.0 wrongly quarantined every entry of pre-3.0 state as `recovered: 
 Later releases relabel those entries `quarantined by the 3.0.0 upgrade` and let `treehouse return` release them like any other lease.
 3.0.0 overwrote every lease holder, so treehouse cannot tell a slot that was idle before the upgrade from one that was durably leased, and never frees one on its own.
 `treehouse status` names each one with the command that frees it: check that nobody still needs the slot, then run `treehouse return <path>`.
+`treehouse return --all` leaves them leased and names the same command, so each is only ever returned individually.
 After inspecting a recovered worktree, remove it by naming its exact path with `treehouse destroy <path> --include-leased --yes`.
 Bulk `destroy --all` and prune leave recovered entries alone.
 

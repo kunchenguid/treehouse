@@ -101,7 +101,8 @@ const coarseTimestampSlack = 2 * time.Second
 // treehouse 3.0.0 quarantined while upgrading. 3.0.0 overwrote the holder of
 // every entry, so an entry that was idle then is indistinguishable from one a
 // pre-2.1 release leased without a lease identity. It is never released
-// automatically; `return` releases it like any other lease once checked.
+// automatically, and `return --all` leaves it alone; naming it to `return`
+// releases it like any other lease once checked.
 const UpgradeLeaseHolder = "quarantined by the 3.0.0 upgrade"
 
 func stateFilePath(poolDir string) string {
@@ -207,14 +208,14 @@ func hasSeedState(wt WorktreeEntry) bool {
 // lease identity and lease time and stamping a lease time where there was
 // none. It stamped them before it created the state key (keyCreated) on that
 // command's first write; everything it leased or quarantined later was stamped
-// after. Such an entry carries no lease identity (a lease taken by 2.1 or later
-// has one, and 3.0.0 kept it), no seed state, and no recovery error, and it was
+// after. Such an entry carries no seed state and no recovery error, and it was
 // not created at the instant it was leased, as both recovery scans stamp their
-// entries.
+// entries. A lease identity, which a lease taken by 2.1 or later has and 3.0.0
+// kept, does not set it apart: 3.0.0 overwrote its holder all the same.
 //
 // Nothing before 3.0 seeded ignored files, so its inventory is known empty.
 func upgradedPre30Entry(wt WorktreeEntry, keyCreated time.Time) bool {
-	return wt.Leased && wt.LeaseHolder == recoveredLeaseHolder && wt.LeaseID == "" &&
+	return wt.Leased && wt.LeaseHolder == recoveredLeaseHolder &&
 		wt.RecoveryError == "" && !wt.Destroying && !hasSeedState(wt) &&
 		!wt.LeasedAt.IsZero() && !wt.CreatedAt.Equal(wt.LeasedAt) &&
 		wt.LeasedAt.Before(keyCreated)

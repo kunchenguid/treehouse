@@ -183,7 +183,7 @@ func TestReadState_RecognizesThreeZeroUpgradeQuarantine(t *testing.T) {
 		{"leased just before the upgrade", 4, recovered(stamp.Add(-500 * time.Millisecond)), UpgradeLeaseHolder},
 		{"leased long before the upgrade", 4, recovered(stamp.Add(-time.Hour)), UpgradeLeaseHolder},
 		{"quarantined after the key existed", 4, recovered(stamp.Add(time.Minute)), recoveredLeaseHolder},
-		{"lease identity kept by 3.0.0", 4, withLeaseID, recoveredLeaseHolder},
+		{"lease identity kept by 3.0.0", 4, withLeaseID, UpgradeLeaseHolder},
 		{"rebuilt by a recovery scan", 4, scanned, recoveredLeaseHolder},
 		{"recovered with an unreadable marker", 4, damaged, recoveredLeaseHolder},
 		{"written by this build", stateVersion, recovered(stamp), recoveredLeaseHolder},
@@ -215,13 +215,14 @@ func TestReadState_RecognizesThreeZeroUpgradeQuarantine(t *testing.T) {
 // TestUpgrade_KeepsThreeZeroQuarantineUntilReturned covers pools treehouse
 // 3.0.0 already rewrote: every pre-3.0 entry leased as "recovered", with a
 // state key created right after. A slot that was idle and one leased just
-// before the upgrade look alike, so neither is freed automatically, even once
+// before the upgrade look alike, as does a lease that kept its lease identity,
+// so none is freed automatically, even once
 // detached, clean, merged, and idle; `return` frees both after the operator
 // checks them, while a genuinely recovered slot still refuses.
 func TestUpgrade_KeepsThreeZeroQuarantineUntilReturned(t *testing.T) {
 	repoDir, poolDir := setupLocalRepo(t)
-	paths := idleSlots(t, repoDir, poolDir, 3)
-	idle, lease, scanned := paths[0], paths[1], paths[2]
+	paths := idleSlots(t, repoDir, poolDir, 4)
+	idle, lease, idLease, scanned := paths[0], paths[1], paths[2], paths[3]
 
 	stamp := time.Now().Add(-time.Hour).Round(0)
 	created := stamp.Add(-48 * time.Hour)
@@ -232,6 +233,9 @@ func TestUpgrade_KeepsThreeZeroQuarantineUntilReturned(t *testing.T) {
 		switch path {
 		case lease:
 			entry.LeasedAt = stamp.Add(-500 * time.Millisecond)
+		case idLease:
+			entry.LeasedAt = stamp.Add(-time.Hour)
+			entry.LeaseID = "0123456789abcdef0123456789abcdef"
 		case scanned:
 			entry.CreatedAt = stamp
 		}
@@ -240,7 +244,7 @@ func TestUpgrade_KeepsThreeZeroQuarantineUntilReturned(t *testing.T) {
 	writeRawState(t, poolDir, State{Version: upgradeQuarantineStateVersion, Worktrees: entries})
 	writeStateKey(t, poolDir, stamp.Add(200*time.Millisecond))
 
-	for _, path := range []string{idle, lease} {
+	for _, path := range []string{idle, lease, idLease} {
 		if st := statusOf(t, poolDir, path); st.Status != StatusLeased || st.LeaseHolder != UpgradeLeaseHolder {
 			t.Fatalf("slot %s quarantined by the upgrade reads %s held by %q", path, st.Status, st.LeaseHolder)
 		}
@@ -254,13 +258,13 @@ func TestUpgrade_KeepsThreeZeroQuarantineUntilReturned(t *testing.T) {
 			t.Fatalf("acquire reused %s, which the 3.0.0 upgrade quarantined", path)
 		}
 	}
-	for _, path := range []string{idle, lease} {
+	for _, path := range []string{idle, lease, idLease} {
 		if wt := entryFor(t, poolDir, path); !wt.Leased || wt.LeaseHolder != UpgradeLeaseHolder {
 			t.Fatalf("slot %s was freed without a return: leased=%v holder %q", path, wt.Leased, wt.LeaseHolder)
 		}
 	}
 
-	for _, path := range []string{idle, lease} {
+	for _, path := range []string{idle, lease, idLease} {
 		if err := Release(poolDir, path); err != nil {
 			t.Fatalf("return of %s, quarantined by the upgrade: %v", path, err)
 		}
