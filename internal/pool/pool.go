@@ -989,8 +989,8 @@ func ValidateReleasePreconditions(poolDir, worktreePath string, preconditions Re
 	})
 }
 
-// ReleaseConditional verifies any lease preconditions and the quarantine state
-// (both through releasableWorktree, under the lock), runs beforeReset, resets
+// ReleaseConditional verifies any release preconditions (through
+// releasableWorktree, under the lock), runs beforeReset, resets
 // the worktree, and clears its reservation while holding one state lock. The
 // callback is invoked only after all preconditions match and runs under that
 // lock so caller-side termination or detachment cannot race a later acquisition.

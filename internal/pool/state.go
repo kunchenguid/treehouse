@@ -405,8 +405,9 @@ func recoverOneWorktree(slotName, wtPath string) (WorktreeEntry, bool) {
 // evidence alone cannot tell an idle spare from a live, process-independent
 // lease. Every recovered entry is therefore marked leased: Acquire and prune
 // skip it, and destroy only removes it via an explicit, single-target
-// --include-leased. Return cannot safely clear the lease because recovery also
-// loses the trusted inventory of ignored files seeded into the worktree.
+// --include-leased. Only a return naming the slot clears the lease, and it
+// warns that recovery lost the trusted inventory of ignored files seeded into
+// the worktree, so those files are not cleaned up.
 func recoverCorruptState(poolDir string, parseErr error) (State, error) {
 	slots, err := os.ReadDir(poolDir)
 	if err != nil {
