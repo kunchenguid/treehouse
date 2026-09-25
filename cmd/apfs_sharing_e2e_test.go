@@ -14,7 +14,9 @@ import (
 
 func addSharingAsset(t *testing.T, repo string) []byte {
 	t.Helper()
-	data := bytes.Repeat([]byte("independent tracked asset\n"), 8192)
+	// Include a NUL so Git treats the fixture as binary and never converts
+	// its line endings when checking out a new worktree on Windows.
+	data := bytes.Repeat([]byte("independent tracked asset\n\x00"), 8192)
 	if err := os.WriteFile(filepath.Join(repo, "asset.bin"), data, 0o755); err != nil {
 		t.Fatal(err)
 	}
