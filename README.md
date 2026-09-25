@@ -158,7 +158,7 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
   If an existing state file is empty, truncated, or omits an on-disk worktree, treehouse rebuilds the missing entries and quarantines them for inspection and explicit destruction. See [Recovering missing pool state](#recovering-missing-pool-state).
 - **Gitignored file seeding** — commit a `.worktreeinclude` file for the default selection, or pass `get --include-file <path>` for a personal manifest. Selected local files are copied from the main checkout on each acquire. See [Seeding gitignored files](#seeding-gitignored-files).
 - **Dirty detection** - treehouse treats tracked changes and untracked files as dirty, even when repository config hides untracked files from normal `git status` output.
-- **Safe pruning** - By default, `treehouse prune` removes only idle managed worktrees whose HEAD is already merged into the default branch and whose working tree is clean.
+- **Safe pruning** - By default, `treehouse prune` removes only clean, idle managed worktrees with landed HEAD commits. See [Base branch](#base-branch) for the merge rule.
   `treehouse prune --all` applies the same safety checks across every managed pool under the user-level treehouse root.
   Backing-repository-missing orphans are reported by default; `--prune-orphans` includes them as unverified prune candidates, and `--yes` is required before deletion.
   It is a dry run unless you pass `--yes`.
@@ -385,10 +385,10 @@ Both forms derive each worktree's owning repository from its own version-control
 Without `--prune-orphans`, pass `treehouse prune --all --yes` to delete only the globally safe stale candidates.
 
 Prune ignores worktrees that are currently in use, leased, or reserved by another lifecycle operation.
-It skips idle worktrees that are unsafe to remove and prints the skip reason, such as uncommitted tracked or untracked changes, or a HEAD commit that is not merged into the default branch.
+It skips idle worktrees that are unsafe to remove and prints the skip reason, such as uncommitted tracked or untracked changes, or an unlanded HEAD commit (see [Base branch](#base-branch) for the merge rule).
 Skip output is grouped by reason so large global sweeps stay scannable.
-When `origin` exists, prune fetches it and proves each HEAD against the current remote default branch tracking ref.
-Without `origin`, prune uses the local default branch ref.
+When `origin` exists, prune fetches it and checks the current remote default branch tracking ref first.
+Without `origin`, prune checks the local default branch ref first.
 If `origin` cannot be reached, prune reports `origin unreachable (cannot verify)` and leaves the worktree untouched, even when `--prune-orphans` is set.
 If a linked worktree points at a missing backing repository, prune reports `orphaned (backing repository missing)`.
 Plain `treehouse prune` and `treehouse prune --all` never delete those orphans.
@@ -504,7 +504,7 @@ A few things worth knowing:
 - **A concurrent branch-name collision can leave a slot quarantined.** Known collisions fail before a slot is reset or created. If the name is taken after that check and a reference-transaction hook could have written files, or the new worktree contains files beyond Treehouse's known seed copies, Treehouse preserves the worktree for inspection rather than deleting its contents. A post-checkout hook alone does not cause quarantine when checkout never ran.
 - **Base branch names only.** For `--base`, use `develop`, not `origin/develop`, a tag, or a commit SHA. Whichever of `develop` and `origin/develop` is further ahead wins, preferring `origin` when they have diverged — exactly how the inferred default behaves. A tag sharing a branch's name never wins: refs are resolved fully qualified.
 - **It fails closed.** A base that resolves to neither a local branch nor `origin/<branch>` is an error; Treehouse never falls back to the inferred default, which would hand you a worktree cut from the wrong branch and report success. `treehouse status` shows the resolved base, and flags a configured one it cannot resolve.
-- **Returned worktrees are parked on the base they were cut from**, so the pool keeps recycling. `base_branch` wins when it is set; otherwise a slot acquired with `--base` is parked back on that branch. A slot parked elsewhere could not be reused whenever the base is not a descendant of it.
+- **Returned worktrees are parked on the base they were cut from**, so the pool keeps recycling. `base_branch` wins when it is set; otherwise a slot acquired with `--base` is parked back on that branch. A slot parked elsewhere could not be reused whenever the base is not a descendant of it. Prune and destroy also accept a clean slot whose HEAD is merged into its recorded explicit base even when it is not merged into the default branch; slots without an explicit base must pass the default-branch check.
 - **Existing pools migrate on their own.** A slot is recycled onto a newly requested base as long as it carries nothing beyond the base it was cut from; the two bases need no ancestry relation, so a `develop` slot rejoins a plain `treehouse get` and vice versa. A slot holding commits the new base does not contain is still refused, as always.
 - **Git backend only for now.** Under the jj backend an explicit base fails with a clear error rather than silently using the default bookmark.
 
