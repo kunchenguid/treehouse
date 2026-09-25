@@ -61,6 +61,19 @@ max_trees = 16
 # TREEHOUSE_WORKTREE_PATH > this file > user config > default).
 # worktree_path = "{repo_parent}/{repo}-{slot}"
 
+# Optional APFS copy-on-write sharing: "off" (default) or "fresh".
+# Only fresh Git slots, after checkout/optional branch and before Treehouse
+# hooks and handoff. Tracked regular files >=64 KiB only; never ignored output,
+# reused slots, return, or existing worktrees. macOS/APFS and same-volume only.
+# Enable only when no other process can write the destination during setup.
+# Git checkout/reference hooks, custom fsmonitor hooks, and checkout filters
+# cause conservative skips, as do symlinks, ACLs and unsupported metadata.
+# Normal copies remain on unsupported platforms/filesystems or safe failures.
+# Precedence: --apfs-sharing > TREEHOUSE_APFS_SHARING > this file
+# > user config > off. Explicitly disable with --apfs-sharing off or
+# TREEHOUSE_APFS_SHARING=off. See README for allocation metrics and tradeoffs.
+# apfs_sharing = "fresh"
+
 # Version-control backend selection. Git is the default everywhere. Set
 # "jj" to opt in to the experimental Jujutsu backend for this repository
 # (or per-command with TREEHOUSE_VCS=jj). Pooled jj workspaces inherit this

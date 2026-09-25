@@ -113,6 +113,9 @@ type AcquireOptions struct {
 	// IncludeManifest replaces the committed manifest; nil keeps the default,
 	// while a non-nil empty slice explicitly disables seeding.
 	IncludeManifest []byte
+	// APFSSharing opts in to tracked-file copy-on-write sharing for fresh Git
+	// slots only, before hooks and publication. Reuse and return never run it.
+	APFSSharing bool
 }
 
 // acquireOptions controls how Acquire reserves the worktree it hands out.
@@ -127,6 +130,7 @@ type acquireOptions struct {
 	// the built-in layout.
 	worktreePath    string
 	includeManifest []byte
+	apfsSharing     bool
 	// uniqueLeaf makes a newly created worktree's own directory name unique
 	// within the pool instead of the repository name every slot shares.
 	uniqueLeaf bool
@@ -156,6 +160,7 @@ func AcquireWithOptions(repoRoot, poolDir string, poolSize int, postCreate []str
 		branch:          options.Branch,
 		worktreePath:    options.WorktreePath,
 		includeManifest: options.IncludeManifest,
+		apfsSharing:     options.APFSSharing,
 		uniqueLeaf:      options.UniqueLeaf,
 		hookStdout:      os.Stdout,
 		hookStderr:      os.Stderr,
@@ -187,6 +192,7 @@ func AcquireLeaseInfoWithOptions(repoRoot, poolDir string, poolSize int, postCre
 		branch:          options.Branch,
 		worktreePath:    options.WorktreePath,
 		includeManifest: options.IncludeManifest,
+		apfsSharing:     options.APFSSharing,
 		uniqueLeaf:      options.UniqueLeaf,
 		lease:           true,
 		leaseHolder:     holder,
@@ -196,10 +202,11 @@ func AcquireLeaseInfoWithOptions(repoRoot, poolDir string, poolSize int, postCre
 }
 
 var (
-	seedWorktree   = vcs.SeedWorktree
-	removeWorktree = vcs.RemoveWorktree
-	createBranch   = vcs.CreateBranch
-	writeState     = WriteState
+	seedWorktree       = vcs.SeedWorktree
+	removeWorktree     = vcs.RemoveWorktree
+	createBranch       = vcs.CreateBranch
+	writeState         = WriteState
+	shareWorktreeFiles = vcs.ShareWorktreeFiles
 )
 
 const acquisitionIncompleteLeaseHolder = "quarantined: acquisition state incomplete"
@@ -760,6 +767,22 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 					return fmt.Errorf("failed to create branch %q in %s: %w (worktree removed but state cleanup failed: %v)", opts.branch, wtPath, branchErr, writeErr)
 				}
 				return fmt.Errorf("failed to create branch %q in %s: %w", opts.branch, wtPath, branchErr)
+			}
+		}
+
+		// This is deliberately only in the fresh-allocation branch. A reused
+		// slot may still have external writers; neither return nor reuse is an
+		// invitation to sweep it. The provisional lease remains durable until
+		// the pass finishes, before markAcquired, hooks, or path publication.
+		if opts.apfsSharing {
+			report, shareErr := shareWorktreeFiles(repoRoot, wtPath)
+			fmt.Fprintln(opts.hookStderr, report.String())
+			if shareErr != nil {
+				state.Worktrees[len(state.Worktrees)-1].LeaseHolder = "quarantined: APFS sharing interrupted or changed worktree"
+				if writeErr := persistState(poolDir, state); writeErr != nil {
+					return fmt.Errorf("APFS sharing failed: %w (quarantine failed: %v)", shareErr, writeErr)
+				}
+				return fmt.Errorf("APFS sharing failed; worktree quarantined for inspection: %w", shareErr)
 			}
 		}
 

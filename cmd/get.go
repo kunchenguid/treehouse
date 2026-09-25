@@ -29,6 +29,7 @@ var (
 	getIncludeFile  string
 	getUniqueLeaf   bool
 	getWorktreePath string
+	getAPFSSharing  string
 )
 
 // Process seams, overridable in tests, matching the pattern in internal/pool.
@@ -78,7 +79,15 @@ count, because two repositories side by side expand it identically. A template
 supersedes --unique-leaf: it names every segment of the path including the leaf,
 so write {repo}-{slot} in it for a unique leaf. It applies only to slots
 treehouse creates from now on: worktrees already in the pool keep their recorded
-paths and are never moved.`,
+paths and are never moved.
+
+Pass --apfs-sharing fresh, set TREEHOUSE_APFS_SHARING=fresh, or set
+apfs_sharing = "fresh" in treehouse.toml to share identical tracked files at
+least 64 KiB with the main checkout on macOS/APFS. Off by default; use off to
+opt out. Only newly created Git slots are considered, before Treehouse hooks
+and handoff. Existing/reused slots and ignored dependency/build files are never
+swept. The destination must have no concurrent writers; Git checkout hooks or
+filters make the pass skip conservatively.`,
 	RunE: getRunE,
 }
 
@@ -92,10 +101,14 @@ func init() {
 	getCmd.Flags().StringVar(&getIncludeFile, "include-file", "", "Replace committed .worktreeinclude with this file (relative to the current directory)")
 	getCmd.Flags().BoolVar(&getUniqueLeaf, "unique-leaf", false, "Name a newly created worktree directory <repo>-<slot> instead of <repo>, overriding unique_leaf in config")
 	getCmd.Flags().StringVar(&getWorktreePath, "worktree-path", "", "Template for a newly created worktree's directory, overriding worktree_path in config (default: {pool}/{slot}/{repo})")
+	getCmd.Flags().StringVar(&getAPFSSharing, "apfs-sharing", "", "Share tracked data in fresh Git slots on macOS/APFS: off (default) or fresh; overrides TREEHOUSE_APFS_SHARING and config")
 	rootCmd.AddCommand(getCmd)
 }
 
 func getRunE(cmd *cobra.Command, args []string) error {
+	if cmd.Flags().Changed("apfs-sharing") && getAPFSSharing == "" {
+		return fmt.Errorf("--apfs-sharing requires off or fresh")
+	}
 	if cmd.Flags().Changed("branch") && getBranch == "" {
 		return fmt.Errorf("--branch requires a non-empty branch name")
 	}
@@ -127,6 +140,11 @@ func getRunE(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	apfsSharing, err := config.ResolveAPFSSharing(getAPFSSharing, cfg)
+	if err != nil {
+		return err
+	}
+
 	if getBranch != "" && vcs.BackendNameFor(repoRoot) == "jj" {
 		return fmt.Errorf("--branch is only supported by the git backend")
 	}
@@ -147,6 +165,7 @@ func getRunE(cmd *cobra.Command, args []string) error {
 		WorktreePath:    config.ResolveWorktreePath(getWorktreePath, cfg),
 		IncludeManifest: manifest,
 		UniqueLeaf:      resolveUniqueLeaf(cmd, cfg),
+		APFSSharing:     apfsSharing,
 	}
 
 	if getLease {
