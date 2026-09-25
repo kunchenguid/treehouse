@@ -133,12 +133,11 @@ func ReadState(poolDir string) (State, error) {
 		return State{}, fmt.Errorf("unsupported treehouse state version %d", s.Version)
 	}
 	key, keyErr := readStateKey(poolDir)
-	// Before 3.0 no release seeded ignored files, and every 3.0 write creates
-	// the key before it records a seed inventory. Unversioned state with no key
-	// beside it therefore came from a pre-3.0 release and has nothing seeded.
-	// Unversioned state beside a key was rewritten by an older binary after 3.0
-	// ran, and may have dropped a real inventory, so it stays quarantined.
-	legacy := s.Version == 0 && errors.Is(keyErr, fs.ErrNotExist)
+	// Unversioned state was written by a pre-3.0 release, none of which seeded
+	// ignored files. That holds even beside a key: a 2.x binary still running
+	// across the upgrade rewrites 3.0 state unversioned and drops any seed
+	// inventory, which is adopted as empty rather than quarantining the pool.
+	legacy := s.Version == 0 && (keyErr == nil || errors.Is(keyErr, fs.ErrNotExist))
 	for i := range s.Worktrees {
 		wt := &s.Worktrees[i]
 		if legacy && !hasSeedState(*wt) {

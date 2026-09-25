@@ -150,10 +150,11 @@ func init() {
 //
 // The preconditions run first so a slot the release already knows it will
 // refuse - a lease that is no longer the one observed - is never announced as
-// a dirty worktree about to be cleaned. Offering to discard someone's uncommitted changes and then refusing
-// anyway is worse than refusing outright. Both checks reach the same `pool`
-// gate, so the pre-check and the release cannot disagree; the release re-runs
-// them under its own state lock, which is what actually fences the reset.
+// a dirty worktree about to be cleaned. Offering to discard someone's
+// uncommitted changes and then refusing anyway is worse than refusing
+// outright. Both checks reach the same `pool` gate, so the pre-check and the
+// release cannot disagree; the release re-runs them under its own state lock,
+// which is what actually fences the reset.
 func releaseWorktree(target returnTarget, preconditions pool.ReleasePreconditions) error {
 	if err := pool.ValidateReleasePreconditions(target.poolDir, target.path, preconditions, nil); err != nil {
 		return err
@@ -182,8 +183,8 @@ func releaseWorktree(target returnTarget, preconditions pool.ReleasePrecondition
 // can express: a slot handed to another plain `treehouse get` is still
 // unleased, so its new owner reservation is NOT detected - consistent with
 // `--all` reclaiming in-use slots by design. A leased slot with no ID (a state
-// file predating lease IDs) offers nothing to compare and keeps the
-// unconditional release it has today.
+// file predating lease IDs) offers nothing to compare, so its release carries
+// only the recovered-entry refusal below.
 //
 // Every bulk release also refuses a recovered entry, so a slot recovered after
 // the listing (a state key invalidated mid-run relabels a whole pool) is left

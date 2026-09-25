@@ -122,25 +122,52 @@ func TestUpgrade_AdoptsPre30State(t *testing.T) {
 	}
 }
 
-// TestReadState_QuarantinesUnversionedStateBesideKey covers state that an older
-// binary rewrote after 3.0 had already run in the pool: the key proves a 3.0
-// build wrote here, so the unversioned rewrite may have dropped a real seed
-// inventory and must stay quarantined.
-func TestReadState_QuarantinesUnversionedStateBesideKey(t *testing.T) {
-	poolDir := t.TempDir()
-	path := makeFakeWorktree(t, poolDir, "1", "myrepo")
-	writeRawState(t, poolDir, State{Worktrees: []WorktreeEntry{{Name: "1", Path: path, CreatedAt: time.Now()}}})
-	if err := os.WriteFile(stateKeyPath(poolDir), make([]byte, 32), 0o600); err != nil {
+// TestUpgrade_AdoptsTwoXRewriteBesideKey covers issue #151: a 2.x session is
+// live across the upgrade, 3.x adopts the pool and writes versioned state plus
+// a key, then the still-running 2.x binary rewrites the file without version or
+// seed fields. The next 3.x read must adopt that rewrite as well, not
+// quarantine the pool.
+func TestUpgrade_AdoptsTwoXRewriteBesideKey(t *testing.T) {
+	repoDir, poolDir := setupLocalRepo(t)
+	paths := idleSlots(t, repoDir, poolDir, 2)
+	first, second := paths[0], paths[1]
+	created := time.Now().Add(-48 * time.Hour).Round(0)
+	writeRawState(t, poolDir, State{Worktrees: []WorktreeEntry{
+		{Name: "1", Path: first, CreatedAt: created},
+		{Name: "2", Path: second, CreatedAt: created, Leased: true, LeaseHolder: "agent-7", LeasedAt: created.Add(time.Hour)},
+	}})
+	if err := os.Remove(stateKeyPath(poolDir)); err != nil {
 		t.Fatal(err)
 	}
 
-	state, err := ReadState(poolDir)
-	if err != nil {
-		t.Fatal(err)
+	if st := statusOf(t, poolDir, second); st.Status != StatusLeased || st.LeaseHolder != "agent-7" {
+		t.Fatalf("pre-3.0 lease reads %s held by %q, want leased by agent-7", st.Status, st.LeaseHolder)
 	}
-	entry := state.Worktrees[0]
-	if !entry.Leased || entry.SeedInventoryKnown || entry.LeaseHolder != RecoveredLeaseHolder {
-		t.Fatalf("unversioned state beside a key was not quarantined: %#v", entry)
+	if _, err := readStateKey(poolDir); err != nil {
+		t.Fatalf("3.x did not write a state key while adopting: %v", err)
+	}
+
+	leasedAt := created.Add(2 * time.Hour)
+	writeRawState(t, poolDir, State{Worktrees: []WorktreeEntry{
+		{Name: "1", Path: first, CreatedAt: created, Leased: true, LeaseHolder: "agent-8", LeasedAt: leasedAt},
+		{Name: "2", Path: second, CreatedAt: created},
+	}})
+
+	if st := statusOf(t, poolDir, second); st.Status != StatusAvailable {
+		t.Fatalf("slot released by 2.x beside a key reads %s held by %q, want available", st.Status, st.LeaseHolder)
+	}
+	if st := statusOf(t, poolDir, first); st.Status != StatusLeased || st.LeaseHolder != "agent-8" {
+		t.Fatalf("2.x lease beside a key reads %s held by %q, want leased by agent-8", st.Status, st.LeaseHolder)
+	}
+	got, err := AcquireLease(repoDir, poolDir, 2, nil, "after-rewrite")
+	if err != nil {
+		t.Fatalf("acquire over a full pool rewritten by 2.x: %v", err)
+	}
+	if got != second {
+		t.Fatalf("acquired %s, want the slot 2.x released %s", got, second)
+	}
+	if wt := entryFor(t, poolDir, first); !wt.Leased || wt.LeaseHolder != "agent-8" {
+		t.Fatalf("2.x lease changed without a return: %#v", wt)
 	}
 }
 
