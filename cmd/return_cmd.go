@@ -184,15 +184,19 @@ func releaseWorktree(target returnTarget, preconditions pool.ReleasePrecondition
 // `--all` reclaiming in-use slots by design. A leased slot with no ID (a state
 // file predating lease IDs) offers nothing to compare and keeps the
 // unconditional release it has today.
+//
+// Every bulk release also refuses a recovered entry, so a slot recovered after
+// the listing (a state key invalidated mid-run relabels a whole pool) is left
+// for a return that names it, exactly like one recovered before the listing.
 func bulkReturnPreconditions(wt pool.WorktreeStatus) pool.ReleasePreconditions {
 	if wt.Status == pool.StatusLeased {
 		if wt.LeaseID == "" {
-			return pool.ReleasePreconditions{}
+			return pool.ReleasePreconditions{RefuseRecovered: true}
 		}
 		expected := wt.LeaseID
-		return pool.ReleasePreconditions{ExpectedLeaseID: &expected}
+		return pool.ReleasePreconditions{ExpectedLeaseID: &expected, RefuseRecovered: true}
 	}
-	return pool.ReleasePreconditions{RequireUnleased: true}
+	return pool.ReleasePreconditions{RequireUnleased: true, RefuseRecovered: true}
 }
 
 // returnableStatus reports whether `return --all` acts on a slot in this state.
@@ -297,6 +301,9 @@ func returnHeldWorktrees() error {
 		case errors.Is(err, pool.ErrLeasePreconditionFailed):
 			skipped = append(skipped, wt.Name)
 			fmt.Fprintf(os.Stderr, "   %s skipped: it is no longer the acquisition this run listed, so it was left alone (%v).\n", wt.Name, err)
+		case errors.Is(err, pool.ErrRecoveredEntry):
+			skipped = append(skipped, wt.Name)
+			fmt.Fprintf(os.Stderr, "   %s skipped: it was recovered since this run listed it, so it is only returned by name. Check it, then run: treehouse return %s\n", wt.Name, quoteReturnPath(wt.Path))
 		case errors.Is(err, errReturnAborted), errors.Is(err, errReturnAbortedNonTTY):
 			aborted = append(aborted, wt.Name)
 			fmt.Fprintf(os.Stderr, "   %s left as found: its uncommitted changes were kept.\n", wt.Name)

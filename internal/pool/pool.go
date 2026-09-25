@@ -898,6 +898,10 @@ func markAcquired(wt *WorktreeEntry, opts acquireOptions) error {
 // identifies the worktree's current lease.
 var ErrLeasePreconditionFailed = errors.New("lease precondition failed")
 
+// ErrRecoveredEntry reports that a release refusing recovered entries found the
+// worktree carrying RecoveredLeaseHolder. Only a return naming it may clear it.
+var ErrRecoveredEntry = errors.New("recovered entry")
+
 // ErrOwnerPreconditionFailed reports that a release no longer identifies the
 // calling process's own short-lived owner reservation.
 var ErrOwnerPreconditionFailed = errors.New("owner precondition failed")
@@ -941,6 +945,10 @@ type ReleasePreconditions struct {
 	// live agent home, or a later acquisition - would still reset the worktree
 	// and clear that reservation when its subshell exits.
 	RequireOwnedByCaller bool
+	// RefuseRecovered refuses a worktree carrying RecoveredLeaseHolder. A bulk
+	// release sets it so an entry recovered after the listing, under the same
+	// state lock as the release, is left for a return that names it.
+	RefuseRecovered bool
 }
 
 // Release resets a managed worktree, clears its short-lived owner reservation or
@@ -1105,6 +1113,9 @@ func validateReleasePreconditions(wt WorktreeEntry, preconditions ReleasePrecond
 	}
 	if err := preconditions.check(); err != nil {
 		return err
+	}
+	if preconditions.RefuseRecovered && wt.Leased && wt.LeaseHolder == RecoveredLeaseHolder {
+		return fmt.Errorf("%w: worktree %s was recovered and is only returned by name", ErrRecoveredEntry, wt.Path)
 	}
 	if preconditions.RequireUnleased {
 		if wt.Leased {

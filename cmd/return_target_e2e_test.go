@@ -403,6 +403,52 @@ func TestReturnAllSkipsQuarantinedSlotsWithoutFailing(t *testing.T) {
 	}
 }
 
+// TestReturnAllSkipsSlotsRecoveredAfterListing covers a pool whose state key
+// is invalidated while --all waits on a confirmation: every entry, including
+// the one being confirmed, is recovered before its release runs, and a bulk
+// return must never release a recovered entry, only name the return that does.
+func TestReturnAllSkipsSlotsRecoveredAfterListing(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	dirty := acquireLeaseJSON(t, repoDir, homeDir, "dirty-agent")
+	later := acquireLeaseJSON(t, repoDir, homeDir, "later-agent")
+	if dirty.Path == later.Path {
+		t.Fatalf("expected two distinct slots, both are %s", dirty.Path)
+	}
+	dirtyFile := filepath.Join(dirty.Path, "README.md")
+	if err := os.WriteFile(dirtyFile, []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	poolDir := filepath.Dir(filepath.Dir(dirty.Path))
+
+	all, stdin, stderr := startReturnAllAtDirtyPrompt(t, repoDir, homeDir)
+
+	if err := os.WriteFile(filepath.Join(poolDir, "treehouse-state.key"), []byte("rotated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	output, waitErr := finishReturnAllAtPrompt(t, all, stdin, stderr, "y\n")
+	if waitErr != nil {
+		t.Fatalf("a skipped slot is not a failure, expected exit 0, got %v: %s", waitErr, output)
+	}
+	if !strings.Contains(output, "Returned 0 of 2 held worktree(s); 2 skipped") {
+		t.Fatalf("expected both slots skipped, got: %s", output)
+	}
+	for _, path := range []string{dirty.Path, later.Path} {
+		if want := "treehouse return " + quoteReturnPath(path); !strings.Contains(output, want) {
+			t.Fatalf("expected the skip to name %q, got: %s", want, output)
+		}
+	}
+	for _, entry := range statusEntries(t, repoDir, homeDir) {
+		if entry.Status != "leased" || !strings.HasPrefix(entry.LeaseHolder, "recovered:") {
+			t.Fatalf("expected a recovered slot to stay leased, got %+v", entry)
+		}
+	}
+	if data, err := os.ReadFile(dirtyFile); err != nil || string(data) != "dirty\n" {
+		t.Fatalf("recovered slot was reset: data=%q err=%v", data, err)
+	}
+}
+
 // startReturnAllAtDirtyPrompt launches `treehouse return --all` and blocks until
 // it is waiting on the dirty confirmation of its first target. The run is then
 // held open, which is the window every mid-run change in these tests lands in.
