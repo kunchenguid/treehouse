@@ -404,9 +404,11 @@ Every restored entry is marked `leased` because treehouse cannot know whether it
 Both routes scan the pool directory, so a worktree that `worktree_path` placed outside it is not rebuilt — see [Worktree path](#worktree-path) for how to remove one.
 
 Run `treehouse status` to inspect recovered entries.
-State whose pool-local `treehouse-state.key` is missing or invalid, or that lacks inventory integrity data, is handled the same way, including state rewritten by an older release after a newer one ran.
-State from a release before 3.0 is the exception: it never seeded ignored files, so treehouse adopts it as is on the first run after upgrading.
+State from 3.0 or later whose pool-local `treehouse-state.key` is missing, or whose seed inventory fails to verify, is handled the same way, and so is any state beside an invalid key.
+State from a release before 3.0 is the exception: it never seeded ignored files, so treehouse adopts it as is.
 treehouse 3.0.0 got that wrong and quarantined every entry of pre-3.0 state as recovered; those entries read like any other recovered entry, because nothing left in the state file can tell a slot that was idle from one that was durably leased.
+Unversioned state is adopted the same way when a still-running 2.x binary rewrites it after 3.0 has already run in the pool, for example when an agent session outlives the upgrade.
+Such a rewrite drops the record of ignored files that 3.0 seeded from `.worktreeinclude`, so a later reset of that slot does not remove them.
 
 A recovered entry stays leased and is never freed automatically.
 `treehouse status` names each one with the command that frees it: check that nobody still needs the slot, then run `treehouse return <path>`.
