@@ -1,0 +1,12 @@
+CLI live APFS scenario
+get fresh stdout:
+/Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01M3BTQSDY6MMD0Y8E4KAV7C6T/.apfs-live-wYSA7Z/pool/.treehouse/repo-ce1a66/1/repo
+get fresh stderr:
+APFS sharing: cloned=2 logical_bytes=262144 private_data_reduced_bytes=262144 below_threshold=2
+Independent edit leaves donor intact: donor bytes=131072
+Ignored cache absent from slot
+Override fresh via off:
+/Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01M3BTQSDY6MMD0Y8E4KAV7C6T/.apfs-live-wYSA7Z/pool/.treehouse/repo-ce1a66/2/repo
+No sharing pass
+invalid setting:
+invalid apfs_sharing "auto": use off or fresh
