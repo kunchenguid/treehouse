@@ -409,10 +409,9 @@ State whose pool-local `treehouse-state.key` is missing or invalid, or that lack
 State from a release before 3.0 is the exception: it never seeded ignored files, so treehouse adopts it as is on the first run after upgrading.
 
 treehouse 3.0.0 wrongly quarantined every entry of pre-3.0 state as `recovered: state file was corrupt or truncated`.
-Later releases undo that on their own.
-A slot that was idle or in use before the upgrade shows as `quarantined by the 3.0.0 upgrade` and returns to the pool as soon as it is detached, clean, merged into its base, and free of running processes - the next `treehouse status` or `get` notices.
-A slot that was leased before the upgrade shows as `leased before the 3.0.0 upgrade` and stays leased until you `treehouse return` it.
-Both can be returned with `treehouse return` like any other lease.
+Later releases relabel those entries `quarantined by the 3.0.0 upgrade` and let `treehouse return` release them like any other lease.
+3.0.0 overwrote every lease holder, so treehouse cannot tell a slot that was idle before the upgrade from one that was durably leased, and never frees one on its own.
+`treehouse status` names each one with the command that frees it: check that nobody still needs the slot, then run `treehouse return <path>`.
 After inspecting a recovered worktree, remove it by naming its exact path with `treehouse destroy <path> --include-leased --yes`.
 Bulk `destroy --all` and prune leave recovered entries alone.
 

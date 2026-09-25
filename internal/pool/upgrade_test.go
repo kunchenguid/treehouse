@@ -157,8 +157,9 @@ func TestReadState_QuarantinesUnversionedStateBesideKey(t *testing.T) {
 
 // TestReadState_RecognizesThreeZeroUpgradeQuarantine pins which version-4
 // entries count as quarantined by 3.0.0's misreading of pre-3.0 state. 3.0.0
-// relabeled every pre-3.0 entry, stamped a lease time on the ones without one
-// in a single pass, then created the state key on its first write.
+// relabeled every pre-3.0 entry, stamped a lease time on the ones without one,
+// then created the state key on its first write. Whether the entry was idle or
+// leased before the upgrade, it gets the same returnable label.
 func TestReadState_RecognizesThreeZeroUpgradeQuarantine(t *testing.T) {
 	stamp := time.Now().Add(-time.Hour).Round(0)
 	created := stamp.Add(-48 * time.Hour)
@@ -178,9 +179,9 @@ func TestReadState_RecognizesThreeZeroUpgradeQuarantine(t *testing.T) {
 		entry      WorktreeEntry
 		wantHolder string
 	}{
-		{"stamped by the upgrade", 4, recovered(stamp), upgradeQuarantineLeaseHolder},
-		{"stamped in the same pass", 4, recovered(stamp.Add(-time.Millisecond)), upgradeQuarantineLeaseHolder},
-		{"leased before the upgrade", 4, recovered(stamp.Add(-time.Hour)), upgradeLeaseHolder},
+		{"stamped by the upgrade", 4, recovered(stamp), UpgradeLeaseHolder},
+		{"leased just before the upgrade", 4, recovered(stamp.Add(-500 * time.Millisecond)), UpgradeLeaseHolder},
+		{"leased long before the upgrade", 4, recovered(stamp.Add(-time.Hour)), UpgradeLeaseHolder},
 		{"quarantined after the key existed", 4, recovered(stamp.Add(time.Minute)), recoveredLeaseHolder},
 		{"lease identity kept by 3.0.0", 4, withLeaseID, recoveredLeaseHolder},
 		{"rebuilt by a recovery scan", 4, scanned, recoveredLeaseHolder},
@@ -191,21 +192,16 @@ func TestReadState_RecognizesThreeZeroUpgradeQuarantine(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			poolDir := t.TempDir()
 			entry := tc.entry
-			entry.Name = "2"
-			entry.Path = makeFakeWorktree(t, poolDir, "2", "myrepo")
-			// A second stamped entry, as 3.0.0 leaves in any pool that had an
-			// idle slot, fixes the stamp regardless of the entry under test.
-			anchor := recovered(stamp)
-			anchor.Name = "1"
-			anchor.Path = makeFakeWorktree(t, poolDir, "1", "myrepo")
-			writeRawState(t, poolDir, State{Version: tc.version, Worktrees: []WorktreeEntry{anchor, entry}})
+			entry.Name = "1"
+			entry.Path = makeFakeWorktree(t, poolDir, "1", "myrepo")
+			writeRawState(t, poolDir, State{Version: tc.version, Worktrees: []WorktreeEntry{entry}})
 			writeStateKey(t, poolDir, stamp.Add(200*time.Millisecond))
 
 			state, err := ReadState(poolDir)
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := state.Worktrees[1]
+			got := state.Worktrees[0]
 			if !got.Leased || got.LeaseHolder != tc.wantHolder {
 				t.Fatalf("entry read as leased=%v holder %q, want leased by %q", got.Leased, got.LeaseHolder, tc.wantHolder)
 			}
@@ -216,83 +212,61 @@ func TestReadState_RecognizesThreeZeroUpgradeQuarantine(t *testing.T) {
 	}
 }
 
-// TestUpgrade_ReleasesThreeZeroQuarantineOnlyWhenIdle covers pools treehouse
+// TestUpgrade_KeepsThreeZeroQuarantineUntilReturned covers pools treehouse
 // 3.0.0 already rewrote: every pre-3.0 entry leased as "recovered", with a
-// state key created right after. A slot is released only once it passes the
-// checks acquire applies to an idle slot and is detached; anything else stays
-// leased until it does, or until it is returned or destroyed.
-func TestUpgrade_ReleasesThreeZeroQuarantineOnlyWhenIdle(t *testing.T) {
+// state key created right after. A slot that was idle and one leased just
+// before the upgrade look alike, so neither is freed automatically, even once
+// detached, clean, merged, and idle; `return` frees both after the operator
+// checks them, while a genuinely recovered slot still refuses.
+func TestUpgrade_KeepsThreeZeroQuarantineUntilReturned(t *testing.T) {
 	repoDir, poolDir := setupLocalRepo(t)
-	paths := idleSlots(t, repoDir, poolDir, 7)
-	idle, dirty, branched, unmerged, busy, oldLease, scanned := paths[0], paths[1], paths[2], paths[3], paths[4], paths[5], paths[6]
+	paths := idleSlots(t, repoDir, poolDir, 3)
+	idle, lease, scanned := paths[0], paths[1], paths[2]
 
 	stamp := time.Now().Add(-time.Hour).Round(0)
 	created := stamp.Add(-48 * time.Hour)
 	var entries []WorktreeEntry
-	for i, path := range paths {
+	for _, path := range paths {
 		entry := WorktreeEntry{Name: filepath.Base(filepath.Dir(path)), Path: path, CreatedAt: created,
-			Leased: true, LeaseHolder: recoveredLeaseHolder, LeasedAt: stamp.Add(time.Duration(i) * time.Microsecond)}
+			Leased: true, LeaseHolder: recoveredLeaseHolder, LeasedAt: stamp}
 		switch path {
-		case oldLease:
-			entry.LeasedAt = stamp.Add(-time.Hour)
+		case lease:
+			entry.LeasedAt = stamp.Add(-500 * time.Millisecond)
 		case scanned:
-			entry.CreatedAt, entry.LeasedAt = stamp, stamp
+			entry.CreatedAt = stamp
 		}
 		entries = append(entries, entry)
 	}
 	writeRawState(t, poolDir, State{Version: upgradeQuarantineStateVersion, Worktrees: entries})
 	writeStateKey(t, poolDir, stamp.Add(200*time.Millisecond))
 
-	if err := os.WriteFile(filepath.Join(dirty, "notes.txt"), []byte("work\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, branched, "switch", "-c", "feature")
-	runGit(t, unmerged, "-c", "user.email=test@test.com", "-c", "user.name=Test", "commit", "--allow-empty", "-m", "unlanded")
-	holder := startCwdHolder(t, busy)
-
-	if st := statusOf(t, poolDir, idle); st.Status != StatusAvailable {
-		t.Fatalf("idle slot quarantined by the upgrade reads %s, want available", st.Status)
-	}
-	for _, path := range []string{dirty, branched, unmerged, busy} {
-		if wt := entryFor(t, poolDir, path); !wt.Leased || wt.LeaseHolder != upgradeQuarantineLeaseHolder {
-			t.Fatalf("slot %s that is not provably idle reads leased=%v holder %q", path, wt.Leased, wt.LeaseHolder)
+	for _, path := range []string{idle, lease} {
+		if st := statusOf(t, poolDir, path); st.Status != StatusLeased || st.LeaseHolder != UpgradeLeaseHolder {
+			t.Fatalf("slot %s quarantined by the upgrade reads %s held by %q", path, st.Status, st.LeaseHolder)
 		}
 	}
-	if wt := entryFor(t, poolDir, oldLease); !wt.Leased || wt.LeaseHolder != upgradeLeaseHolder {
-		t.Fatalf("pre-upgrade lease reads leased=%v holder %q, want a lease that is never freed automatically", wt.Leased, wt.LeaseHolder)
-	}
-	if wt := entryFor(t, poolDir, scanned); !wt.Leased || wt.LeaseHolder != recoveredLeaseHolder {
-		t.Fatalf("genuinely recovered slot reads leased=%v holder %q", wt.Leased, wt.LeaseHolder)
-	}
-
-	got, err := AcquireLease(repoDir, poolDir, len(paths), nil, "after-fix")
+	got, err := AcquireLease(repoDir, poolDir, len(paths)+1, nil, "after-fix")
 	if err != nil {
 		t.Fatalf("acquire over a pool 3.0.0 quarantined: %v", err)
 	}
-	if got != idle {
-		t.Fatalf("acquired %s, want the freed slot %s", got, idle)
-	}
-
-	if err := os.Remove(filepath.Join(dirty, "notes.txt")); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, branched, "switch", "--detach", "main")
-	_ = holder.Process.Kill()
-	_ = holder.Wait()
-	for _, path := range []string{dirty, branched, busy} {
-		if st := statusOf(t, poolDir, path); st.Status != StatusAvailable {
-			t.Fatalf("slot %s reads %s once idle, want available", path, st.Status)
+	for _, path := range paths {
+		if got == path {
+			t.Fatalf("acquire reused %s, which the 3.0.0 upgrade quarantined", path)
 		}
 	}
-	if wt := entryFor(t, poolDir, unmerged); wt.LeaseHolder != upgradeQuarantineLeaseHolder {
-		t.Fatalf("slot holding unlanded commits reads holder %q", wt.LeaseHolder)
+	for _, path := range []string{idle, lease} {
+		if wt := entryFor(t, poolDir, path); !wt.Leased || wt.LeaseHolder != UpgradeLeaseHolder {
+			t.Fatalf("slot %s was freed without a return: leased=%v holder %q", path, wt.Leased, wt.LeaseHolder)
+		}
 	}
 
-	if err := Release(poolDir, unmerged); err != nil {
-		t.Fatalf("return of a slot quarantined by the upgrade: %v", err)
-	}
-	if err := Release(poolDir, oldLease); err != nil {
-		t.Fatalf("return of a pre-upgrade lease: %v", err)
+	for _, path := range []string{idle, lease} {
+		if err := Release(poolDir, path); err != nil {
+			t.Fatalf("return of %s, quarantined by the upgrade: %v", path, err)
+		}
+		if st := statusOf(t, poolDir, path); st.Status != StatusAvailable {
+			t.Fatalf("returned slot %s reads %s, want available", path, st.Status)
+		}
 	}
 	if err := Release(poolDir, scanned); !errors.Is(err, ErrSeedInventoryUntrusted) {
 		t.Fatalf("return of a genuinely recovered slot = %v, want %v", err, ErrSeedInventoryUntrusted)

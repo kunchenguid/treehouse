@@ -1321,45 +1321,11 @@ func healState(poolDir string, state State) (State, error) {
 				wt.OwnerStartedAt = 0
 				wt.Destroying = false
 			}
-			if wt.Leased && wt.LeaseHolder == upgradeQuarantineLeaseHolder && provablyIdle(wt) {
-				clearLease(&wt)
-				fmt.Fprintf(os.Stderr, "treehouse: released %s: treehouse 3.0.0 quarantined it while upgrading pre-3.0 state, and it is now detached, clean, merged, and idle.\n", wt.Path)
-			}
 			healed = append(healed, wt)
 		}
 	}
 	state.Worktrees = healed
 	return state, nil
-}
-
-// provablyIdle reports whether a worktree passes every check acquire applies
-// before it recycles an idle slot, plus a detached HEAD: a quarantined entry
-// has lost the record of whether someone was working there, and a branch that
-// has no commits of its own yet is still somebody's work in progress. Only a
-// Git slot can prove it is detached. Any check that cannot answer fails closed.
-func provablyIdle(wt WorktreeEntry) bool {
-	if wt.Destroying || ownerAlive(wt) || vcs.WorktreeBackendName(wt.Path) != "git" {
-		return false
-	}
-	if _, detached, err := vcs.CheckedOutBranch(wt.Path); err != nil || !detached {
-		return false
-	}
-	if dirty, err := vcs.IsDirty(wt.Path); err != nil || dirty {
-		return false
-	}
-	base := wt.BaseBranch
-	if base == "" {
-		resolved, err := vcs.DefaultBranchForWorktree(wt.Path)
-		if err != nil {
-			return false
-		}
-		base = resolved
-	}
-	if safe, _, _, err := vcs.IsWorktreeSafeToReset(wt.Path, base); err != nil || !safe {
-		return false
-	}
-	inUse, err := process.IsWorktreeInUse(wt.Path)
-	return err == nil && !inUse
 }
 
 func removeAuthenticatedStaleJJSeedState(poolDir string, state State) error {

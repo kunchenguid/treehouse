@@ -84,7 +84,7 @@ type State struct {
 // shape as version 4; the bump only marks files written by a build that no
 // longer misreads pre-3.0 state, so a version-4 file is known to come from
 // treehouse 3.0.0 and ReadState can undo the quarantine that release applied
-// while upgrading (see upgradeQuarantineStamp).
+// while upgrading (see upgradedPre30Entry).
 const stateVersion = 5
 
 // upgradeQuarantineStateVersion is the version treehouse 3.0.0 wrote. Its first
@@ -92,32 +92,17 @@ const stateVersion = 5
 // state was valid.
 const upgradeQuarantineStateVersion = 4
 
-// upgradeQuarantineWindow bounds how long before its pool's state key was
-// created 3.0.0 can have stamped its upgrade quarantine. It stamped the lease
-// time while reading pre-3.0 state and created the key on the same command's
-// first write, so the gap is only the work in between - at most a fresh
-// worktree checkout.
-const upgradeQuarantineWindow = 10 * time.Minute
-
-// upgradeQuarantineSpread bounds how far apart 3.0.0 stamped the entries of one
-// pool: it stamped them all in one pass over the state, microseconds apart.
-const upgradeQuarantineSpread = time.Second
-
 // coarseTimestampSlack absorbs a file system that records whole-second (or,
 // like FAT, two-second) modification times, so the state key's mtime can read
 // earlier than a lease time stamped just before the key was written.
 const coarseTimestampSlack = 2 * time.Second
 
-// upgradeQuarantineLeaseHolder replaces recoveredLeaseHolder on an entry that
-// was idle or in use when treehouse 3.0.0 quarantined it while upgrading pre-3.0
-// state. healState releases it once the worktree proves idle; until then it
-// stays leased, and `return` releases it like any other lease.
-const upgradeQuarantineLeaseHolder = "quarantined by the 3.0.0 upgrade; freed once detached, clean, and idle"
-
-// upgradeLeaseHolder replaces recoveredLeaseHolder on an entry that was already
-// leased when treehouse 3.0.0 upgraded pre-3.0 state, which overwrote the
-// holder. It is never released automatically.
-const upgradeLeaseHolder = "leased before the 3.0.0 upgrade, which lost the holder"
+// UpgradeLeaseHolder replaces recoveredLeaseHolder on a pre-3.0 entry that
+// treehouse 3.0.0 quarantined while upgrading. 3.0.0 overwrote the holder of
+// every entry, so an entry that was idle then is indistinguishable from one a
+// pre-2.1 release leased without a lease identity. It is never released
+// automatically; `return` releases it like any other lease once checked.
+const UpgradeLeaseHolder = "quarantined by the 3.0.0 upgrade"
 
 func stateFilePath(poolDir string) string {
 	return filepath.Join(poolDir, "treehouse-state.json")
@@ -176,14 +161,13 @@ func ReadState(poolDir string) (State, error) {
 	// Unversioned state beside a key was rewritten by an older binary after 3.0
 	// ran, and may have dropped a real inventory, so it stays quarantined.
 	legacy := s.Version == 0 && errors.Is(keyErr, fs.ErrNotExist)
-	var keyCreated, upgradeStamp time.Time
+	var keyCreated time.Time
 	if s.Version == upgradeQuarantineStateVersion && keyErr == nil {
 		if info, err := os.Stat(stateKeyPath(poolDir)); err == nil {
 			keyCreated = info.ModTime()
 			if keyCreated.Nanosecond() == 0 {
 				keyCreated = keyCreated.Add(coarseTimestampSlack)
 			}
-			upgradeStamp = upgradeQuarantineStamp(s.Worktrees, keyCreated)
 		}
 	}
 	for i := range s.Worktrees {
@@ -193,10 +177,7 @@ func ReadState(poolDir string) (State, error) {
 			continue
 		}
 		if !keyCreated.IsZero() && upgradedPre30Entry(*wt, keyCreated) {
-			wt.LeaseHolder = upgradeLeaseHolder
-			if !upgradeStamp.IsZero() && !wt.LeasedAt.Before(upgradeStamp.Add(-upgradeQuarantineSpread)) {
-				wt.LeaseHolder = upgradeQuarantineLeaseHolder
-			}
+			wt.LeaseHolder = UpgradeLeaseHolder
 			setSeedInventory(wt, nil, true)
 			continue
 		}
@@ -237,29 +218,6 @@ func upgradedPre30Entry(wt WorktreeEntry, keyCreated time.Time) bool {
 		wt.RecoveryError == "" && !wt.Destroying && !hasSeedState(wt) &&
 		!wt.LeasedAt.IsZero() && !wt.CreatedAt.Equal(wt.LeasedAt) &&
 		wt.LeasedAt.Before(keyCreated)
-}
-
-// upgradeQuarantineStamp returns the lease time treehouse 3.0.0 stamped on the
-// pre-3.0 entries that had none, or the zero time when it finds none. Those
-// were idle or in use; the rest had a lease of their own, whose time 3.0.0 kept.
-// The stamp was taken after every such lease, in the command that created the
-// state key, so it is the latest lease time among upgraded entries, provided it
-// falls within upgradeQuarantineWindow of the key's creation. ReadState treats
-// the entries stamped within upgradeQuarantineSpread of it as the ones 3.0.0
-// stamped.
-//
-// A pool in which every entry was leased before the upgrade has no stamp, and
-// its latest lease, if taken inside the window, is taken for one. That entry
-// is still released only once it proves idle.
-func upgradeQuarantineStamp(entries []WorktreeEntry, keyCreated time.Time) time.Time {
-	var stamp time.Time
-	for _, wt := range entries {
-		if upgradedPre30Entry(wt, keyCreated) && wt.LeasedAt.After(stamp) &&
-			!wt.LeasedAt.Before(keyCreated.Add(-upgradeQuarantineWindow)) {
-			stamp = wt.LeasedAt
-		}
-	}
-	return stamp
 }
 
 func validSeedInventoryDigest(key []byte, wt WorktreeEntry) bool {
