@@ -230,7 +230,7 @@ Or set `apfs_sharing = "fresh"` in `treehouse.toml` or `~/.config/treehouse/conf
 
 **Fresh Git slots only.** The pass runs after normal checkout, seeding and optional branch creation, before the slot is marked acquired, Treehouse's `post_create` hooks run, or its path is published. Reused slots, `return`, existing worktrees, and jj workspaces are never swept. Only tracked regular files at least **64 KiB** are candidates. It does not copy or share ignored `node_modules`, build directories, caches, Git metadata, or seeded files. Different source bytes are left alone; different branches are fine. Files rewritten by later builds or resets may lose sharing.
 
-**Exclusive destination ownership is required.** Do not enable this when another editor, build, Git operation, or external watcher can write into the destination during setup. Pool leases and final stat checks are not filesystem writer locks. Treehouse conservatively skips sharing when Git `post-checkout`/`reference-transaction` hooks, custom fsmonitor hooks, or checkout filter attributes could already have started a writer. This also skips LFS-filtered checkouts. Treehouse's own hooks still run afterward as usual. The main checkout is read, never modified by the pass.
+**Exclusive destination ownership is required.** Do not enable this when another editor, build, Git operation, or external watcher can write into the destination during setup. Pool leases and final stat checks are not filesystem writer locks. Treehouse conservatively skips sharing when Git `post-checkout`/`reference-transaction` hooks, custom fsmonitor hooks, or checkout filter attributes could already have started a writer. This also skips LFS-filtered checkouts. Treehouse's own hooks still run afterward as usual. The pass does not write source file content or metadata, though reading may update source access times.
 
 The native implementation hashes the original destination and source, clones into destination-local staging, verifies the staged bytes, restores destination permissions/timestamps/xattrs and verifies them along with owner/group, hashes again, and atomically replaces the destination. Inode and ctime change; creation time is not preserved. Symlinked paths, ACLs, hardlinks, special mode/flag bits, sparse/compressed representations, different owners, and unsupported metadata are skipped. Other operating systems, non-APFS filesystems and cross-volume pairs keep ordinary copies, with the reason on stderr. No Python helper or daemon is required.
 
@@ -503,8 +503,7 @@ max_trees = 16
 # Unset uses {pool}/{slot}/{repo} (see "Worktree path" below).
 # worktree_path = "{repo_parent}/{repo}-{slot}"
 
-# Optional tracked-file sharing in fresh Git slots on macOS/APFS.
-# Off by default; requires no concurrent destination writers during setup.
+# Optional tracked-file sharing (see "APFS copy-on-write sharing" above).
 # apfs_sharing = "fresh"
 
 # Optional version-control backend. Git is the default everywhere; set "jj"
