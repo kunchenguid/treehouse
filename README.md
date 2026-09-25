@@ -408,7 +408,7 @@ State from 3.0 or later whose pool-local `treehouse-state.key` is missing, or wh
 State from a release before 3.0 is the exception: it never seeded ignored files, so treehouse adopts it as is.
 treehouse 3.0.0 got that wrong and quarantined every entry of pre-3.0 state as recovered; those entries read like any other recovered entry, because nothing left in the state file can tell a slot that was idle from one that was durably leased.
 Unversioned state is adopted the same way when a still-running 2.x binary rewrites it after 3.0 has already run in the pool, for example when an agent session outlives the upgrade.
-Such a rewrite drops the record of ignored files that 3.0 seeded from `.worktreeinclude`, so a later reset of that slot does not remove them.
+This is a known limitation: such a rewrite drops the record of ignored files that 3.0 seeded from `.worktreeinclude`, so a later reset of that slot does not remove them and they stay in it when the slot is reused.
 
 A recovered entry stays leased and is never freed automatically.
 `treehouse status` names each one with the command that frees it: check that nobody still needs the slot, then run `treehouse return <path>`.
