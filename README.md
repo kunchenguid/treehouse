@@ -405,7 +405,14 @@ Both routes scan the pool directory, so a worktree that `worktree_path` placed o
 
 Run `treehouse status` to inspect recovered entries.
 Treehouse cannot safely return these entries to the pool because recovery cannot reconstruct the trusted inventory of seeded ignored files.
-State written by versions without inventory integrity data, or whose pool-local `treehouse-state.key` is missing or invalid, is handled the same way, including state rewritten after a downgrade.
+State whose pool-local `treehouse-state.key` is missing or invalid, or that lacks inventory integrity data, is handled the same way, including state rewritten by an older release after a newer one ran.
+State from a release before 3.0 is the exception: it never seeded ignored files, so treehouse adopts it as is on the first run after upgrading.
+
+treehouse 3.0.0 wrongly quarantined every entry of pre-3.0 state as `recovered: state file was corrupt or truncated`.
+Later releases undo that on their own.
+A slot that was idle or in use before the upgrade shows as `quarantined by the 3.0.0 upgrade` and returns to the pool as soon as it is detached, clean, merged into its base, and free of running processes - the next `treehouse status` or `get` notices.
+A slot that was leased before the upgrade shows as `leased before the 3.0.0 upgrade` and stays leased until you `treehouse return` it.
+Both can be returned with `treehouse return` like any other lease.
 After inspecting a recovered worktree, remove it by naming its exact path with `treehouse destroy <path> --include-leased --yes`.
 Bulk `destroy --all` and prune leave recovered entries alone.
 

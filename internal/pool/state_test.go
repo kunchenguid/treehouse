@@ -68,7 +68,10 @@ func TestReadState_RecoversJJWorktreeMissingFromValidState(t *testing.T) {
 	}
 }
 
-func TestReadState_QuarantinesPreIntegrityLease(t *testing.T) {
+// TestReadState_AdoptsPreIntegrityLease covers unversioned state with no state
+// key, which only a pre-3.0 release writes. Those releases never seeded
+// ignored files, so the lease is adopted with a known, empty inventory.
+func TestReadState_AdoptsPreIntegrityLease(t *testing.T) {
 	poolDir := t.TempDir()
 	stateJSON := `{
   "worktrees": [{
@@ -92,8 +95,8 @@ func TestReadState_QuarantinesPreIntegrityLease(t *testing.T) {
 		t.Fatalf("ReadState returned %d entries, want 1", len(state.Worktrees))
 	}
 	lease := state.Worktrees[0]
-	if !lease.Leased || lease.SeedInventoryKnown || lease.LeaseHolder != recoveredLeaseHolder {
-		t.Fatalf("pre-integrity lease was not quarantined: %#v", lease)
+	if !lease.Leased || !lease.SeedInventoryKnown || len(lease.SeededPaths) != 0 || lease.LeaseHolder != "legacy-automation" {
+		t.Fatalf("pre-integrity lease was not adopted: %#v", lease)
 	}
 }
 
