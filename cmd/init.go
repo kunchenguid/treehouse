@@ -54,6 +54,10 @@ var initCmd = &cobra.Command{
 			return fmt.Errorf("failed to write config: %w", err)
 		}
 
+		if _, err := f.WriteString("\n# Opt-in tracked-file copy-on-write sharing for fresh Git slots on macOS/APFS.\n# Values: off (default), fresh. Existing slots and ignored output are untouched.\n# Requires no concurrent destination writers during setup; see README.\n# Override with --apfs-sharing or TREEHOUSE_APFS_SHARING.\n# Example: apfs_sharing = \"fresh\"\n"); err != nil {
+			return fmt.Errorf("failed to write config: %w", err)
+		}
+
 		fmt.Fprintf(os.Stderr, "Created %s\n", dest)
 		return nil
 	},

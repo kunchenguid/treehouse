@@ -25,6 +25,9 @@ type Config struct {
 	// `treehouse get --worktree-path`; internal/pool/worktree_path.go owns the
 	// placeholder vocabulary and the rules a template must satisfy.
 	WorktreePath string `toml:"worktree_path,omitempty"`
+	// APFSSharing is "off" (default) or "fresh" for opt-in tracked-file
+	// sharing in newly created Git slots. It never changes existing slots.
+	APFSSharing string `toml:"apfs_sharing,omitempty"`
 	// VCS selects the version-control backend. Git is the default
 	// everywhere; set "jj" to opt in to the Jujutsu backend. The vcs
 	// package parses the config files itself at backend selection time
@@ -68,6 +71,28 @@ const UniqueLeafEnvVar = "TREEHOUSE_UNIQUE_LEAF"
 // worktree path template. It sits below the --worktree-path flag but above
 // repo/user config, matching RootEnvVar (see ResolveWorktreePath).
 const WorktreePathEnvVar = "TREEHOUSE_WORKTREE_PATH"
+
+const APFSSharingEnvVar = "TREEHOUSE_APFS_SHARING"
+
+// ResolveAPFSSharing honors flag > environment > repo/user config > off.
+// Invalid values fail before acquisition instead of silently enabling sharing.
+func ResolveAPFSSharing(flag string, cfg Config) (bool, error) {
+	value := cfg.APFSSharing
+	if env := os.Getenv(APFSSharingEnvVar); env != "" {
+		value = env
+	}
+	if flag != "" {
+		value = flag
+	}
+	switch value {
+	case "", "off":
+		return false, nil
+	case "fresh":
+		return true, nil
+	default:
+		return false, fmt.Errorf("invalid apfs_sharing %q: use off or fresh", value)
+	}
+}
 
 func DefaultConfig() Config {
 	return Config{

@@ -149,6 +149,7 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 - **Unique worktree directory names** — pass `treehouse get --unique-leaf` (or set `unique_leaf` in `treehouse.toml`) to name new slots `<repo>-<slot>` instead of `<repo>`, so tooling that derives per-checkout identity from the directory name tells the slots apart. Opt-in; off keeps today's layout, and existing worktrees are never moved.
 - **Choosable worktree path** — set `worktree_path` in `treehouse.toml`, or pass `treehouse get --worktree-path '<template>'`, to place new worktrees somewhere a tool requires instead of `{pool}/{slot}/{repo}`. Opt-in, and creation-only: worktrees already in the pool keep their recorded paths. See [Worktree path](#worktree-path).
 - **Clone-correct reuse** — two local clones of the same remote share one pool, but a worktree is only ever reused by the clone it belongs to, judged by its physical Git common directory (symlinked or, on a case-insensitive filesystem, differently cased paths to one clone count as that clone). Another clone's idle worktree is skipped and left intact; if nothing reusable is left, `get` creates a new worktree up to `max_trees` and otherwise fails with a message counting the foreign and unverifiable worktrees. A worktree whose owning clone cannot be proven is never reused, and neither is any worktree when the requesting clone's own identity cannot be proven. Non-colocated jj repositories have no Git common directory, so their worktrees are never reused; `get` creates a new one each time until `max_trees` is reached.
+- **Opt-in APFS sharing** - share identical large tracked files with the main checkout using independent copy-on-write clones. Default off, macOS/APFS and fresh Git slots only; existing slots and ignored output are never swept. See [APFS copy-on-write sharing](#apfs-copy-on-write-sharing).
 - **No daemon** - all operations are inline CLI commands.
   Pool state is a small on-disk file, written under a lock by each command.
 - **Interactive shell setup** — when opening a subshell on macOS or Linux, `treehouse`, `treehouse get`, and `treehouse enter` start `$SHELL` as an interactive login shell when it resolves to `bash`, `fish`, or `zsh`. Other shells, fallback shells, and Windows use their default invocation. A regular executable that is merely named like a supported shell but does not accept `-i -l` (for example a wrapper script at `/opt/tools/bash`) is an accepted limitation: the resolved basename is the contract, and PATH-identity probing would reject genuine second installs of the same shell.
@@ -195,6 +196,7 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `get`     | `--include-file` | Replace committed `.worktreeinclude` for this acquisition with the supplied manifest |
 | `get`     | `--unique-leaf` | Name a newly created worktree directory `<repo>-<slot>` instead of `<repo>`, overriding `unique_leaf` in config |
 | `get`     | `--worktree-path` | Template for a newly created worktree's directory, overriding `worktree_path` in config |
+| `get`     | `--apfs-sharing` | `fresh` opts in to tracked-file sharing for new Git slots on macOS/APFS; `off` opts out (default) |
 | `lease`   | `--lease-holder` | Optional label recorded as the lease holder (defaults to `$TREEHOUSE_LEASE_HOLDER`) |
 | `lease`   | `--json` | Print `path`, `lease_id`, `lease_holder`, `leased_at`, and `base_branch` as JSON (`base_branch` is best-effort: empty when the slot records no explicit base and its own worktree cannot resolve a default) |
 | `enter`   | `--print-path` | Print only the worktree's absolute path to stdout instead of opening a subshell (for `cd "$(treehouse enter --print-path 1)"`) |
@@ -213,6 +215,41 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `destroy` | `--include-unlanded` | Also remove dirty, unmerged, or unverified worktrees (irreversible data loss) |
 | `destroy` | `--include-in-use` | Also remove worktrees with a running process or owner reservation (processes are terminated cleanly first) |
 | `destroy` | `--include-leased` | Also remove a leased worktree; only when the exact path is named, never via `--all` |
+
+### APFS copy-on-write sharing
+
+Git worktrees already share Git's object database, but checked-out file data can still occupy separate blocks. On macOS/APFS, Treehouse can replace identical tracked files with independent copy-on-write clones of the same path in the owning main checkout. Editing either file does not change the other; deleting the source does not invalidate the clone. These are **not hardlinks**.
+
+Opt in for one acquisition:
+
+```sh
+treehouse get --lease --apfs-sharing fresh
+```
+
+Or set `apfs_sharing = "fresh"` in `treehouse.toml` or `~/.config/treehouse/config.toml`. Precedence is `--apfs-sharing` > `TREEHOUSE_APFS_SHARING` > repo/user config > `off`. The only values are `off` and `fresh`; invalid values fail before allocation. Override a configured opt-in with `--apfs-sharing off` or `TREEHOUSE_APFS_SHARING=off`.
+
+**Fresh Git slots only.** The pass runs after normal checkout, seeding and optional branch creation, before the slot is marked acquired, Treehouse's `post_create` hooks run, or its path is published. Reused slots, `return`, existing worktrees, and jj workspaces are never swept. Only tracked regular files at least **64 KiB** are candidates. It does not copy or share ignored `node_modules`, build directories, caches, Git metadata, or seeded files. Different source bytes are left alone; different branches are fine. Files rewritten by later builds or resets may lose sharing.
+
+**Exclusive destination ownership is required.** Do not enable this when another editor, build, Git operation, or external watcher can write into the destination during setup. Pool leases and final stat checks are not filesystem writer locks. Treehouse conservatively skips sharing when Git `post-checkout`/`reference-transaction` hooks, custom fsmonitor hooks, or checkout filter attributes could already have started a writer. This also skips LFS-filtered checkouts. Treehouse's own hooks still run afterward as usual. The pass does not write source file content or metadata, though reading may update source access times.
+
+The native implementation hashes the original destination and source, clones into destination-local staging, verifies the staged bytes, restores destination permissions/timestamps/xattrs and verifies them along with owner/group, hashes again, and atomically replaces the destination. Inode and ctime change; creation time is not preserved. Symlinked paths, ACLs, hardlinks, special mode/flag bits, sparse/compressed representations, different owners, and unsupported metadata are skipped. Other operating systems, non-APFS filesystems and cross-volume pairs keep ordinary copies, with the reason on stderr. No Python helper or daemon is required.
+
+Diagnostics stay on **stderr**, including for `get --lease --json`; stdout retains its path/lease contract. `logical_bytes` is the payload cloned. `private_data_reduced_bytes` is a separate before/after APFS allocation measurement, **not** an immediate increase in volume free space: snapshots, shared extents and filesystem metadata matter. The initial checkout still needs its full allocation, and later writes need free space for private blocks. The pass adds synchronous hashing/metadata work while the pool is locked; opt-in does not guarantee a speedup.
+
+A safe per-file clone, metadata or ENOSPC failure leaves the original in place and reports a skip/error. Detected destination/status/index/HEAD changes, cancellation, or incomplete staging cleanup fail acquisition and retain the provisional lease as quarantine, without publishing a path. Inspect the slot before returning or destroying it. SIGINT/SIGTERM unwind staging; SIGKILL can leave `.treehouse-sharing-*` directories, but the unpublished slot remains leased. Do not treat such a slot as ready for use or delete similarly named files in other worktrees.
+
+#### Measured benefit
+
+The pre-implementation scout measured real APFS private data on an arm64 Mac running macOS 26.6.2, using the [reference algorithm](https://gist.github.com/philippb/ad3d81d33fe4e752fd014cf16ee5ae56) on two independently created Git worktrees per public repository:
+
+| Public corpus | Pre-pass tracked private data | Private data removed per worktree | Reduction |
+|---|---:|---:|---:|
+| [Godot demo projects](https://github.com/godotengine/godot-demo-projects/tree/15d4fcd70a429dfd455d6fce9d0cd004abd07373) | 324.57 MB | 301.39 MB | **92.86%** |
+| [Google Fonts](https://github.com/google/fonts/tree/23e54b51ddffbc7713c583748e3bd86f62b1fa4a) | 3,059.27 MB | 2,919.83 MB | **95.44%** |
+
+MB are decimal. The denominator includes **all tracked regular-file private data**, not just candidates; shared Git administration and inode/directory metadata are excluded. These fresh worktrees had no build/dependency output, so their whole-worktree regular-file denominators were the same. Benefits can be much smaller as a fraction of a populated worktree: another measured corpus fell from **87.97% of tracked data to 6.78% of whole regular-file data** when its installed dependencies and build output were included. Multiply per-worktree savings by your retained slot count, but account for branch differences, writes and existing sharing.
+
+The reference pass added 7.95-8.55 seconds for Godot and 96.58-98.92 seconds for Fonts. A single native-metadata prototype trial reduced these to 2.28 and 19.18 seconds. Those are **scout prototype timings, not benchmarks or promises for the shipped Go implementation**; cold caches, metadata and workload shape matter. Default-on behavior and automatic ignored-file sharing are intentionally out of scope.
 
 ### Seeding gitignored files
 
@@ -465,6 +502,9 @@ max_trees = 16
 # Optional path for newly created worktrees.
 # Unset uses {pool}/{slot}/{repo} (see "Worktree path" below).
 # worktree_path = "{repo_parent}/{repo}-{slot}"
+
+# Optional tracked-file sharing (see "APFS copy-on-write sharing" above).
+# apfs_sharing = "fresh"
 
 # Optional version-control backend. Git is the default everywhere; set "jj"
 # to opt in to the experimental Jujutsu backend
