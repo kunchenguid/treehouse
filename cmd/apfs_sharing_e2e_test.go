@@ -149,6 +149,44 @@ func TestGetAPFSSharingBeforeTreehouseHook(t *testing.T) {
 	}
 }
 
+func TestGetAPFSSharingSkipsConfiguredGitHooks(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("APFS and POSIX hook test")
+	}
+	for _, tc := range []struct{ hook, path string }{
+		{"post-checkout", "absolute"},
+		{"reference-transaction", "absolute"},
+		{"post-checkout", "relative"},
+		{"reference-transaction", "relative"},
+	} {
+		t.Run(tc.hook+"/"+tc.path, func(t *testing.T) {
+			repo, home := setupTestRepo(t)
+			requireSharingVolume(t, repo)
+			original := addSharingAsset(t, repo)
+			hooks := filepath.Join(repo, "configured-hooks")
+			if err := os.Mkdir(hooks, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(hooks, tc.hook), []byte("#!/bin/sh\nprintf hook-ran > hook-result\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			configured := hooks
+			if tc.path == "relative" {
+				configured = "configured-hooks"
+			}
+			gitCmd(t, repo, "config", "core.hooksPath", configured)
+			out, stderr, code := runTreehouse(t, repo, home, nil, "get", "--lease", "--no-fetch", "--apfs-sharing", "fresh")
+			if code != 0 || !strings.Contains(stderr, "Git "+tc.hook+" hook may have started a writer") || strings.Contains(stderr, "cloned=1") {
+				t.Fatalf("configured hook not skipped: %q %q %d", out, stderr, code)
+			}
+			got, err := os.ReadFile(filepath.Join(strings.TrimSpace(out), "asset.bin"))
+			if err != nil || !bytes.Equal(got, original) {
+				t.Fatal("skip changed checkout")
+			}
+		})
+	}
+}
+
 func TestGetAPFSSharingSkipsGitHooksAndFilters(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("APFS safety gates")

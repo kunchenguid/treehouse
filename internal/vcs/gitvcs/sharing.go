@@ -38,10 +38,26 @@ func ShareWorktreeFiles(repoRoot, worktreePath string) (fileclone.Report, error)
 				return fileclone.Report{Reason: "Git fsmonitor hook may have started a writer"}, nil
 			}
 		}
-		for _, hook := range []string{"post-checkout", "reference-transaction"} {
-			path, err := gitPath(root, "hooks/"+hook)
-			if err != nil {
+		configuredHooksPath, configErr := gitOutput(root, nil, "config", "--get", "core.hooksPath")
+		if configErr != nil {
+			var exit *exec.ExitError
+			if !errors.As(configErr, &exit) || exit.ExitCode() != 1 {
 				return fileclone.Report{Reason: "Git hook configuration cannot be verified"}, nil
+			}
+		}
+		for _, hook := range []string{"post-checkout", "reference-transaction"} {
+			var path string
+			if configErr == nil && strings.TrimSpace(string(configuredHooksPath)) != "" {
+				path = filepath.Join(filepath.FromSlash(strings.TrimSpace(string(configuredHooksPath))), hook)
+				if !filepath.IsAbs(path) {
+					path = filepath.Join(root, path)
+				}
+			} else {
+				var err error
+				path, err = gitPath(root, filepath.Join("hooks", hook))
+				if err != nil {
+					return fileclone.Report{Reason: "Git hook configuration cannot be verified"}, nil
+				}
 			}
 			info, err := os.Lstat(path)
 			if os.IsNotExist(err) {
