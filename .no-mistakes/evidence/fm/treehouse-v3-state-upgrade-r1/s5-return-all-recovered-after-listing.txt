@@ -1,0 +1,32 @@
+=================== S5: return --all never releases a slot that becomes recovered after listing
+
+$ /tmp/th-e2e.hpn9/bin/th-new status
+base  main  (repository default)
+1     leased       ~/.treehouse/work-c5fb60/1/work  (detached)  (held by dirty-agent)
+2     leased       ~/.treehouse/work-c5fb60/2/work  (detached)  (held by later-agent)
+[exit 0]
+
+$ th-new return --all < fifo   (blocks at the dirty-worktree confirmation)
+
+🌳 Returning 1 (leased) at ~/.treehouse/work-c5fb60/1/work
+Worktree has uncommitted changes. Clean and return? [Y/n] 
+$ while prompt is open: rotate treehouse-state.key
+
+$ answer y
+[exit 0]
+
+🌳 Returning 1 (leased) at ~/.treehouse/work-c5fb60/1/work
+Worktree has uncommitted changes. Clean and return? [Y/n]    1 skipped: it was recovered since this run listed it, so it is only returned by name. Check it, then run: treehouse return '/tmp/th-e2e.hpn9/home-s5/.treehouse/work-c5fb60/1/work'
+🌳 Returning 2 (leased) at ~/.treehouse/work-c5fb60/2/work
+   2 skipped: it was recovered since this run listed it, so it is only returned by name. Check it, then run: treehouse return '/tmp/th-e2e.hpn9/home-s5/.treehouse/work-c5fb60/2/work'
+🌳 Returned 0 of 2 held worktree(s); 2 skipped; 0 not held.
+
+$ /tmp/th-e2e.hpn9/bin/th-new status
+
+base  main  (repository default)
+1     leased       ~/.treehouse/work-c5fb60/1/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s5/.treehouse/work-c5fb60/1/work')
+2     leased       ~/.treehouse/work-c5fb60/2/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s5/.treehouse/work-c5fb60/2/work')
+[exit 0]
+
+$ dirty file still present in /tmp/th-e2e.hpn9/home-s5/.treehouse/work-c5fb60/1/work ?
+dirty

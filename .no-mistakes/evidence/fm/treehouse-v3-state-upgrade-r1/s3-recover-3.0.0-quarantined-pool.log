@@ -1,0 +1,59 @@
+## 2.0.1 pool: slots 1,2 idle; slot 3 leased by agent-c; plus a normally leased slot later
+## 3.0.0 runs once and quarantines the whole pool
+base  main  (repository default)
+1     leased       ~/.treehouse/repo-f882cb/1/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)
+2     leased       ~/.treehouse/repo-f882cb/2/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)
+3     leased       ~/.treehouse/repo-f882cb/3/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)
+## user upgrades to fixed build; a fresh ordinary lease is taken (creates slot 4, since 1-3 stay recovered)
+/tmp/th-e2e/s3/home/.treehouse/repo-f882cb/4/repo
+## status names the per-slot return command for recovered slots
+base  main  (repository default)
+1     leased       ~/.treehouse/repo-f882cb/1/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e/s3/home/.treehouse/repo-f882cb/1/repo')
+2     leased       ~/.treehouse/repo-f882cb/2/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e/s3/home/.treehouse/repo-f882cb/2/repo')
+3     leased       ~/.treehouse/repo-f882cb/3/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e/s3/home/.treehouse/repo-f882cb/3/repo')
+4     leased       ~/.treehouse/repo-f882cb/4/repo  (detached)  (held by agent-d)
+## return --all: recovered slots are skipped with the named command; only slot 4 is returned; no dirty prompt for slot 2
+
+🌳 Leaving 1 at ~/.treehouse/repo-f882cb/1/repo leased: it was recovered, so nothing proves it idle and it is only returned by name. Check it, then run: treehouse return '/tmp/th-e2e/s3/home/.treehouse/repo-f882cb/1/repo'
+🌳 Leaving 2 at ~/.treehouse/repo-f882cb/2/repo leased: it was recovered, so nothing proves it idle and it is only returned by name. Check it, then run: treehouse return '/tmp/th-e2e/s3/home/.treehouse/repo-f882cb/2/repo'
+🌳 Leaving 3 at ~/.treehouse/repo-f882cb/3/repo leased: it was recovered, so nothing proves it idle and it is only returned by name. Check it, then run: treehouse return '/tmp/th-e2e/s3/home/.treehouse/repo-f882cb/3/repo'
+🌳 Returning 4 (leased) at ~/.treehouse/repo-f882cb/4/repo
+🌳 Returned 1 of 4 held worktree(s); 3 skipped; 0 not held.
+exit=0
+
+base  main  (repository default)
+1     leased       ~/.treehouse/repo-f882cb/1/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e/s3/home/.treehouse/repo-f882cb/1/repo')
+2     leased       ~/.treehouse/repo-f882cb/2/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e/s3/home/.treehouse/repo-f882cb/2/repo')
+3     leased       ~/.treehouse/repo-f882cb/3/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e/s3/home/.treehouse/repo-f882cb/3/repo')
+4     available    ~/.treehouse/repo-f882cb/4/repo  (detached)
+## named return of recovered, clean slot 1 (warns about seeded files)
+
+🌳 Warning: /tmp/th-e2e/s3/home/.treehouse/repo-f882cb/1/repo was recovered without a trusted record of the ignored files treehouse seeded into it; any such files are not cleaned up and remain in the worktree.
+🌳 Worktree returned to pool.
+exit=0
+## named return of recovered, dirty slot 2 without a TTY (must not discard silently)
+
+Worktree has uncommitted changes. Clean and return? [Y/n] 🌳 worktree not returned: it has uncommitted changes and the confirmation could not be answered (stdin reached EOF); prune will not reclaim this slot. Use treehouse return --force '/tmp/th-e2e/s3/home/.treehouse/repo-f882cb/2/repo' to clean and return it
+exit=3
+a.txt
+uncommitted.txt
+## named return --force of dirty slot 2
+
+🌳 Warning: /tmp/th-e2e/s3/home/.treehouse/repo-f882cb/2/repo was recovered without a trusted record of the ignored files treehouse seeded into it; any such files are not cleaned up and remain in the worktree.
+🌳 Worktree returned to pool.
+exit=0
+a.txt
+
+base  main  (repository default)
+1     available    ~/.treehouse/repo-f882cb/1/repo  (detached)
+2     available    ~/.treehouse/repo-f882cb/2/repo  (detached)
+3     leased       ~/.treehouse/repo-f882cb/3/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e/s3/home/.treehouse/repo-f882cb/3/repo')
+4     available    ~/.treehouse/repo-f882cb/4/repo  (detached)
+## get --lease now reuses a freed slot
+/tmp/th-e2e/s3/home/.treehouse/repo-f882cb/1/repo
+
+base  main  (repository default)
+1     leased       ~/.treehouse/repo-f882cb/1/repo  (detached)
+2     available    ~/.treehouse/repo-f882cb/2/repo  (detached)
+3     leased       ~/.treehouse/repo-f882cb/3/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e/s3/home/.treehouse/repo-f882cb/3/repo')
+4     available    ~/.treehouse/repo-f882cb/4/repo  (detached)

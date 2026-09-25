@@ -1,0 +1,48 @@
+## 2.0.1 creates pool: two leases, return one (idle), keep one durably leased
+🌳 Worktree returned to pool.
+1     available    ~/.treehouse/repo-3e7686/1/repo
+2     leased       ~/.treehouse/repo-3e7686/2/repo  (held by agent-b)
+state file: /tmp/th-e2e/s1-new/home/.treehouse/repo-3e7686/treehouse-state.json
+1
+2
+treehouse-state.json
+treehouse-state.lock
+--- 2.0.1 state JSON
+{
+  "worktrees": [
+    {
+      "name": "1",
+      "path": "/tmp/th-e2e/s1-new/home/.treehouse/repo-3e7686/1/repo",
+      "created_at": "2026-09-25T16:21:03.076723-07:00"
+    },
+    {
+      "name": "2",
+      "path": "/tmp/th-e2e/s1-new/home/.treehouse/repo-3e7686/2/repo",
+      "created_at": "2026-09-25T16:21:03.195637-07:00",
+      "leased": true,
+      "lease_holder": "agent-b",
+      "leased_at": "2026-09-25T16:21:03.195637-07:00"
+    }
+  ]
+}
+## upgrade: first run of new binary: status
+base  main  (repository default)
+1     available    ~/.treehouse/repo-3e7686/1/repo  (detached)
+2     leased       ~/.treehouse/repo-3e7686/2/repo  (detached)  (held by agent-b)
+--- state after upgrade
+1
+2
+treehouse-state.json
+treehouse-state.key
+treehouse-state.lock
+version 4
+1 leased= None holder= None
+2 leased= True holder= agent-b
+
+## new get --lease (should reuse idle slot 1 rather than create a new one)
+🌳 Setting up worktree...
+🌳 Leased worktree at ~/.treehouse/repo-3e7686/1/repo. Run 'treehouse return ~/.treehouse/repo-3e7686/1/repo' to release it.
+/tmp/th-e2e/s1-new/home/.treehouse/repo-3e7686/1/repo
+base  main  (repository default)
+1     leased       ~/.treehouse/repo-3e7686/1/repo  (detached)
+2     leased       ~/.treehouse/repo-3e7686/2/repo  (detached)  (held by agent-b)

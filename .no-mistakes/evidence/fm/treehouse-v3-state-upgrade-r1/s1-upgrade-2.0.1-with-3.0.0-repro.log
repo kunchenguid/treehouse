@@ -1,0 +1,49 @@
+## 2.0.1 creates pool: two leases, return one (idle), keep one durably leased
+🌳 Worktree returned to pool.
+1     available    ~/.treehouse/repo-b98e6c/1/repo
+2     leased       ~/.treehouse/repo-b98e6c/2/repo  (held by agent-b)
+state file: /tmp/th-e2e/s1-fd5927e/home/.treehouse/repo-b98e6c/treehouse-state.json
+1
+2
+treehouse-state.json
+treehouse-state.lock
+--- 2.0.1 state JSON
+{
+  "worktrees": [
+    {
+      "name": "1",
+      "path": "/tmp/th-e2e/s1-fd5927e/home/.treehouse/repo-b98e6c/1/repo",
+      "created_at": "2026-09-25T16:20:59.901947-07:00"
+    },
+    {
+      "name": "2",
+      "path": "/tmp/th-e2e/s1-fd5927e/home/.treehouse/repo-b98e6c/2/repo",
+      "created_at": "2026-09-25T16:21:00.019236-07:00",
+      "leased": true,
+      "lease_holder": "agent-b",
+      "leased_at": "2026-09-25T16:21:00.019236-07:00"
+    }
+  ]
+}
+## upgrade: first run of fd5927e binary: status
+base  main  (repository default)
+1     leased       ~/.treehouse/repo-b98e6c/1/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)
+2     leased       ~/.treehouse/repo-b98e6c/2/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)
+--- state after upgrade
+1
+2
+treehouse-state.json
+treehouse-state.key
+treehouse-state.lock
+version 4
+1 leased= True holder= recovered: state file was corrupt or truncated; verify before reuse
+2 leased= True holder= recovered: state file was corrupt or truncated; verify before reuse
+
+## fd5927e get --lease (should reuse idle slot 1 rather than create a new one)
+🌳 Setting up worktree...
+🌳 Leased worktree at ~/.treehouse/repo-b98e6c/3/repo. Run 'treehouse return ~/.treehouse/repo-b98e6c/3/repo' to release it.
+/tmp/th-e2e/s1-fd5927e/home/.treehouse/repo-b98e6c/3/repo
+base  main  (repository default)
+1     leased       ~/.treehouse/repo-b98e6c/1/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)
+2     leased       ~/.treehouse/repo-b98e6c/2/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)
+3     leased       ~/.treehouse/repo-b98e6c/3/repo  (detached)

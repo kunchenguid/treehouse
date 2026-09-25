@@ -1,0 +1,95 @@
+=================== S3: pool already quarantined by 3.0.0 (fd5927e), then upgraded to the fixed build
+
+$ /tmp/th-e2e.hpn9/bin/th-fd5927e status
+
+base  main  (repository default)
+1     leased       ~/.treehouse/work-f6afd1/1/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)
+2     leased       ~/.treehouse/work-f6afd1/2/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)
+3     leased       ~/.treehouse/work-f6afd1/3/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)
+[exit 0]
+
+$ /tmp/th-e2e.hpn9/bin/th-new status
+
+base  main  (repository default)
+1     leased       ~/.treehouse/work-f6afd1/1/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s3/.treehouse/work-f6afd1/1/work')
+2     leased       ~/.treehouse/work-f6afd1/2/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s3/.treehouse/work-f6afd1/2/work')
+3     leased       ~/.treehouse/work-f6afd1/3/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s3/.treehouse/work-f6afd1/3/work')
+[exit 0]
+
+$ get --lease (fixed build must NOT reuse a recovered slot)
+got: /tmp/th-e2e.hpn9/home-s3/.treehouse/work-f6afd1/4/work
+
+$ /tmp/th-e2e.hpn9/bin/th-new return --all
+
+🌳 Leaving 1 at ~/.treehouse/work-f6afd1/1/work leased: it was recovered, so nothing proves it idle and it is only returned by name. Check it, then run: treehouse return '/tmp/th-e2e.hpn9/home-s3/.treehouse/work-f6afd1/1/work'
+🌳 Leaving 2 at ~/.treehouse/work-f6afd1/2/work leased: it was recovered, so nothing proves it idle and it is only returned by name. Check it, then run: treehouse return '/tmp/th-e2e.hpn9/home-s3/.treehouse/work-f6afd1/2/work'
+🌳 Leaving 3 at ~/.treehouse/work-f6afd1/3/work leased: it was recovered, so nothing proves it idle and it is only returned by name. Check it, then run: treehouse return '/tmp/th-e2e.hpn9/home-s3/.treehouse/work-f6afd1/3/work'
+🌳 Returning 4 (leased) at ~/.treehouse/work-f6afd1/4/work
+🌳 Returned 1 of 4 held worktree(s); 3 skipped; 0 not held.
+[exit 0]
+
+$ /tmp/th-e2e.hpn9/bin/th-new status
+
+base  main  (repository default)
+1     leased       ~/.treehouse/work-f6afd1/1/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s3/.treehouse/work-f6afd1/1/work')
+2     leased       ~/.treehouse/work-f6afd1/2/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s3/.treehouse/work-f6afd1/2/work')
+3     leased       ~/.treehouse/work-f6afd1/3/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s3/.treehouse/work-f6afd1/3/work')
+4     available    ~/.treehouse/work-f6afd1/4/work  (detached)
+[exit 0]
+
+$ /tmp/th-e2e.hpn9/bin/th-new return /tmp/th-e2e.hpn9/home-s3/.treehouse/work-f6afd1/1/work
+
+🌳 Warning: /tmp/th-e2e.hpn9/home-s3/.treehouse/work-f6afd1/1/work was recovered without a trusted record of the ignored files treehouse seeded into it; any such files are not cleaned up and remain in the worktree.
+🌳 Worktree returned to pool.
+[exit 0]
+
+$ /tmp/th-e2e.hpn9/bin/th-new status
+
+base  main  (repository default)
+1     available    ~/.treehouse/work-f6afd1/1/work  (detached)
+2     leased       ~/.treehouse/work-f6afd1/2/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s3/.treehouse/work-f6afd1/2/work')
+3     leased       ~/.treehouse/work-f6afd1/3/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s3/.treehouse/work-f6afd1/3/work')
+4     available    ~/.treehouse/work-f6afd1/4/work  (detached)
+[exit 0]
+=================== S4a: adversarial - v4 state beside a tampered key is still quarantined
+
+$ overwrite treehouse-state.key with different 32 bytes
+
+$ /tmp/th-e2e.hpn9/bin/th-new status
+
+base  main  (repository default)
+1     leased       ~/.treehouse/work-dfe698/1/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s4a/.treehouse/work-dfe698/1/work')
+2     leased       ~/.treehouse/work-dfe698/2/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s4a/.treehouse/work-dfe698/2/work')
+3     leased       ~/.treehouse/work-dfe698/3/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s4a/.treehouse/work-dfe698/3/work')
+[exit 0]
+
+$ cat treehouse-state.json (version, leased, holder)
+version= 4
+1 leased= True holder= recovered: state file was corrupt or truncated; verify before reuse seed_known= None
+2 leased= True holder= recovered: state file was corrupt or truncated; verify before reuse seed_known= None
+3 leased= True holder= recovered: state file was corrupt or truncated; verify before reuse seed_known= None
+treehouse-state.json
+treehouse-state.key
+=================== S4b: adversarial - v4 state whose key was deleted is still quarantined
+
+$ rm treehouse-state.key
+
+$ /tmp/th-e2e.hpn9/bin/th-new status
+
+base  main  (repository default)
+1     leased       ~/.treehouse/work-f7f8e1/1/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s4b/.treehouse/work-f7f8e1/1/work')
+2     leased       ~/.treehouse/work-f7f8e1/2/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s4b/.treehouse/work-f7f8e1/2/work')
+3     leased       ~/.treehouse/work-f7f8e1/3/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s4b/.treehouse/work-f7f8e1/3/work')
+[exit 0]
+=================== S4c: adversarial - truncated state file is still quarantined
+
+$ truncate treehouse-state.json to 40 bytes
+
+$ /tmp/th-e2e.hpn9/bin/th-new status
+
+treehouse: WARNING: state file /tmp/th-e2e.hpn9/home-s4c/.treehouse/work-031bf0/treehouse-state.json is corrupt or truncated (unexpected end of JSON input); recovering from worktrees found on disk. They are marked leased because their seeded-file inventory is unknown - see `treehouse status`, then remove one with `treehouse destroy <path> --include-leased --yes`.
+base  main  (repository default)
+1     leased       ~/.treehouse/work-031bf0/1/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s4c/.treehouse/work-031bf0/1/work')
+2     leased       ~/.treehouse/work-031bf0/2/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s4c/.treehouse/work-031bf0/2/work')
+3     leased       ~/.treehouse/work-031bf0/3/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e.hpn9/home-s4c/.treehouse/work-031bf0/3/work')
+[exit 0]

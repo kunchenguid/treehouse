@@ -1,0 +1,19 @@
+## fresh 3.x pool (v4 + key)
+base  main  (repository default)
+1     available    ~/.treehouse/repo-df6e16/1/repo  (detached)
+## adversarial A: v4 state beside an invalid (wrong-length) key -> must quarantine
+base  main  (repository default)
+1     leased       ~/.treehouse/repo-df6e16/1/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e/s4/home/.treehouse/repo-df6e16/1/repo')
+## adversarial B: v4 state with key deleted -> must quarantine
+base  main  (repository default)
+1     leased       ~/.treehouse/repo-df6e16/1/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e/s4/home/.treehouse/repo-df6e16/1/repo')
+## adversarial C: unversioned state beside an invalid key -> must quarantine (not adopt)
+base  main  (repository default)
+1     leased       ~/.treehouse/repo-df6e16/1/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e/s4/home/.treehouse/repo-df6e16/1/repo')
+## adversarial D: unversioned state that still carries a (forged) seed inventory beside valid key -> must quarantine
+base  main  (repository default)
+1     leased       ~/.treehouse/repo-df6e16/1/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e/s4/home/.treehouse/repo-df6e16/1/repo')
+## adversarial E: truncated state file -> recovered
+treehouse: WARNING: state file /tmp/th-e2e/s4/home/.treehouse/repo-df6e16/treehouse-state.json is corrupt or truncated (unexpected end of JSON input); recovering from worktrees found on disk. They are marked leased because their seeded-file inventory is unknown - see `treehouse status`, then remove one with `treehouse destroy <path> --include-leased --yes`.
+base  main  (repository default)
+1     leased       ~/.treehouse/repo-df6e16/1/repo  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)  (check it, then free it with: treehouse return '/tmp/th-e2e/s4/home/.treehouse/repo-df6e16/1/repo')

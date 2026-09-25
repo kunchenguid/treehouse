@@ -1,0 +1,28 @@
+## 2.3.0 pool: slot 1 idle, slot 2 leased by agent-b, slot 3 leased by long-running agent-c
+## binary swapped: first 3.x (branch) command runs
+base  main  (repository default)
+1     available    ~/.treehouse/repo-ad9c2d/1/repo  (detached)
+2     leased       ~/.treehouse/repo-ad9c2d/2/repo  (detached)  (held by agent-b)
+3     leased       ~/.treehouse/repo-ad9c2d/3/repo  (detached)  (held by agent-c)
+state version after 3.x: 4
+treehouse-state.key
+## still-running 2.3.0 agent-c returns its slot, rewriting state unversioned
+🌳 Worktree returned to pool.
+state version after 2.x rewrite: None | seed fields present: False
+## next 3.x command
+A new version of treehouse is available: v1.8.1-0.20260925231719-2908407bc34f → v3.0.0
+Run "treehouse update" to update
+
+base  main  (repository default)
+1     available    ~/.treehouse/repo-ad9c2d/1/repo  (detached)
+2     leased       ~/.treehouse/repo-ad9c2d/2/repo  (detached)  (held by agent-b)
+3     available    ~/.treehouse/repo-ad9c2d/3/repo  (detached)
+## 3.x get --lease reuses an idle slot
+/tmp/th-e2e/s2/home/.treehouse/repo-ad9c2d/1/repo
+A new version of treehouse is available: v1.8.1-0.20260925231719-2908407bc34f → v3.0.0
+Run "treehouse update" to update
+
+base  main  (repository default)
+1     leased       ~/.treehouse/repo-ad9c2d/1/repo  (detached)
+2     leased       ~/.treehouse/repo-ad9c2d/2/repo  (detached)  (held by agent-b)
+3     available    ~/.treehouse/repo-ad9c2d/3/repo  (detached)

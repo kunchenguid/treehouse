@@ -1,0 +1,58 @@
+=================== S2: issue #151 - 3.x runs while a 2.3.0 'get' subshell is live, then 2.3.0 rewrites state
+
+$ /tmp/th-e2e.hpn9/bin/th-v2.3.0 status
+
+1     leased       ~/.treehouse/work-da83b4/1/work  (held by agent-b)
+[exit 0]
+
+$ cat treehouse-state.json (version, leased, holder)
+version= None
+1 leased= True holder= agent-b seed_known= None
+treehouse-state.json
+
+$ SHELL=sub.sh th-v2.3.0 get   (interactive 2.3.0 session; 3.x runs inside it)
+  
+  🌳 Setting up worktree...
+  🌳 Entered worktree at ~/.treehouse/work-da83b4/2/work. Type 'exit' to return.
+  --- inside 2.3.0 subshell at /private/tmp/th-e2e.hpn9/home-s2/.treehouse/work-da83b4/2/work; binary upgraded to 3.x; running 3.x status ---
+  
+  base  main  (repository default)
+  1     leased       ~/.treehouse/work-da83b4/1/work  (detached)  (held by agent-b)
+  2     in-use       ~/.treehouse/work-da83b4/2/work  (detached)
+  --- state now:
+  version= 4 [('1', True, 'agent-b'), ('2', None, None)]
+  treehouse-state.key
+  --- exiting subshell; 2.3.0 now releases the slot and rewrites state ---
+  🌳 Worktree returned to pool.
+--- after 2.3.0 subshell exit:
+
+$ cat treehouse-state.json (version, leased, holder)
+version= None
+1 leased= True holder= agent-b seed_known= None
+2 leased= None holder= None seed_known= None
+treehouse-state.json
+treehouse-state.key
+
+$ /tmp/th-e2e.hpn9/bin/th-new status
+
+base  main  (repository default)
+1     leased       ~/.treehouse/work-da83b4/1/work  (detached)  (held by agent-b)
+2     available    ~/.treehouse/work-da83b4/2/work  (detached)
+[exit 0]
+
+$ cat treehouse-state.json (version, leased, holder)
+version= 4
+1 leased= True holder= agent-b seed_known= True
+2 leased= None holder= None seed_known= True
+treehouse-state.json
+treehouse-state.key
+
+$ get --lease with 3.x (must reuse slot 1, not create slot 3)
+got: /tmp/th-e2e.hpn9/home-s2/.treehouse/work-da83b4/2/work
+
+$ /tmp/th-e2e.hpn9/bin/th-new status
+
+base  main  (repository default)
+1     leased       ~/.treehouse/work-da83b4/1/work  (detached)  (held by agent-b)
+2     leased       ~/.treehouse/work-da83b4/2/work  (detached)  (held by new-work)
+[exit 0]

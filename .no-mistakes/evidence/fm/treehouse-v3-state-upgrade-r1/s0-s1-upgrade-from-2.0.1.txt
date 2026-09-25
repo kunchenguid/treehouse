@@ -1,0 +1,115 @@
+=================== S0: baseline 3.0.0 (fd5927e) reproduces the bug on a 2.0.1 pool
+
+$ /tmp/th-e2e.hpn9/bin/th-v2.0.1 --version
+v1.8.1-0.20260719222411-5b8ecdec4903
+[exit 0]
+
+$ /tmp/th-e2e.hpn9/bin/th-v2.0.1 status
+A new version of treehouse is available: v1.8.1-0.20260719222411-5b8ecdec4903 → v3.0.0
+Run "treehouse update" to update
+
+1     available    ~/.treehouse/work-3a9d8e/1/work
+2     available    ~/.treehouse/work-3a9d8e/2/work
+3     leased       ~/.treehouse/work-3a9d8e/3/work  (held by live-agent)
+[exit 0]
+
+$ cat treehouse-state.json (version, leased, holder)
+version= None
+1 leased= None holder= None seed_known= None
+2 leased= None holder= None seed_known= None
+3 leased= True holder= live-agent seed_known= None
+treehouse-state.json
+
+$ /tmp/th-e2e.hpn9/bin/th-fd5927e status
+A new version of treehouse is available: v1.8.1-0.20260925171829-fd5927e10174 → v3.0.0
+Run "treehouse update" to update
+
+base  main  (repository default)
+1     leased       ~/.treehouse/work-3a9d8e/1/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)
+2     leased       ~/.treehouse/work-3a9d8e/2/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)
+3     leased       ~/.treehouse/work-3a9d8e/3/work  (detached)  (held by recovered: state file was corrupt or truncated; verify before reuse)
+[exit 0]
+
+$ cat treehouse-state.json (version, leased, holder)
+version= 4
+1 leased= True holder= recovered: state file was corrupt or truncated; verify before reuse seed_known= None
+2 leased= True holder= recovered: state file was corrupt or truncated; verify before reuse seed_known= None
+3 leased= True holder= recovered: state file was corrupt or truncated; verify before reuse seed_known= None
+treehouse-state.json
+treehouse-state.key
+=================== S1: fixed build adopts a clean 2.0.1 pool
+
+$ /tmp/th-e2e.hpn9/bin/th-v2.0.1 --version
+v1.8.1-0.20260719222411-5b8ecdec4903
+[exit 0]
+
+$ /tmp/th-e2e.hpn9/bin/th-v2.0.1 status
+A new version of treehouse is available: v1.8.1-0.20260719222411-5b8ecdec4903 → v3.0.0
+Run "treehouse update" to update
+
+1     available    ~/.treehouse/work-4ec16c/1/work
+2     available    ~/.treehouse/work-4ec16c/2/work
+3     leased       ~/.treehouse/work-4ec16c/3/work  (held by live-agent)
+[exit 0]
+
+$ cat treehouse-state.json (version, leased, holder)
+version= None
+1 leased= None holder= None seed_known= None
+2 leased= None holder= None seed_known= None
+3 leased= True holder= live-agent seed_known= None
+treehouse-state.json
+
+$ /tmp/th-e2e.hpn9/bin/th-new status
+A new version of treehouse is available: v1.8.1-0.20260925232316-e1d773e4da30 → v3.0.0
+Run "treehouse update" to update
+
+base  main  (repository default)
+1     available    ~/.treehouse/work-4ec16c/1/work  (detached)
+2     available    ~/.treehouse/work-4ec16c/2/work  (detached)
+3     leased       ~/.treehouse/work-4ec16c/3/work  (detached)  (held by live-agent)
+[exit 0]
+
+$ cat treehouse-state.json (version, leased, holder)
+version= 4
+1 leased= None holder= None seed_known= True
+2 leased= None holder= None seed_known= True
+3 leased= True holder= live-agent seed_known= True
+treehouse-state.json
+treehouse-state.key
+
+$ get --lease (should reuse an idle slot, not create slot 4)
+A new version of treehouse is available: v1.8.1-0.20260925232316-e1d773e4da30 → v3.0.0
+Run "treehouse update" to update
+
+🌳 Setting up worktree...
+🌳 Leased worktree at ~/.treehouse/work-4ec16c/1/work. Run 'treehouse return ~/.treehouse/work-4ec16c/1/work' to release it.
+got: /tmp/th-e2e.hpn9/home-s1/.treehouse/work-4ec16c/1/work
+
+$ /tmp/th-e2e.hpn9/bin/th-new status
+A new version of treehouse is available: v1.8.1-0.20260925232316-e1d773e4da30 → v3.0.0
+Run "treehouse update" to update
+
+base  main  (repository default)
+1     leased       ~/.treehouse/work-4ec16c/1/work  (detached)  (held by new-work)
+2     available    ~/.treehouse/work-4ec16c/2/work  (detached)
+3     leased       ~/.treehouse/work-4ec16c/3/work  (detached)  (held by live-agent)
+[exit 0]
+
+$ /tmp/th-e2e.hpn9/bin/th-new return --all
+A new version of treehouse is available: v1.8.1-0.20260925232316-e1d773e4da30 → v3.0.0
+Run "treehouse update" to update
+
+🌳 Returning 1 (leased) at ~/.treehouse/work-4ec16c/1/work
+🌳 Returning 3 (leased) at ~/.treehouse/work-4ec16c/3/work
+🌳 Returned 2 of 2 held worktree(s); 0 skipped; 1 not held.
+[exit 0]
+
+$ /tmp/th-e2e.hpn9/bin/th-new status
+A new version of treehouse is available: v1.8.1-0.20260925232316-e1d773e4da30 → v3.0.0
+Run "treehouse update" to update
+
+base  main  (repository default)
+1     available    ~/.treehouse/work-4ec16c/1/work  (detached)
+2     available    ~/.treehouse/work-4ec16c/2/work  (detached)
+3     available    ~/.treehouse/work-4ec16c/3/work  (detached)
+[exit 0]
