@@ -1,0 +1,27 @@
+SCENARIO default-off: acquire
+stdout path: /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01M3CQHNM2NE9G72KTHWB3235A/.apfs-live-check-38853/home/.treehouse/repo-c24999/1/repo
+stderr: 🌳 Setting up worktree...
+🌳 Leased worktree at ~/.treehouse/repo-c24999/1/repo. Run 'treehouse return ~/.treehouse/repo-c24999/1/repo' to release it.
+default off: PASS
+SCENARIO fresh: acquire another slot
+stdout: {"path":"/Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01M3CQHNM2NE9G72KTHWB3235A/.apfs-live-check-38853/home/.treehouse/repo-c24999/2/repo","lease_id":"060e426dbfc29e001e35272150c089db","lease_holder":"","leased_at":"2026-09-25T09:52:41.227404-07:00","base_branch":"main"}
+stderr: 🌳 Setting up worktree...
+APFS sharing: cloned=1 logical_bytes=210000 private_data_reduced_bytes=212992 below_threshold=1
+🌳 Leased worktree at ~/.treehouse/repo-c24999/2/repo. Run 'treehouse return ~/.treehouse/repo-c24999/2/repo' to release it.
+fresh bytes and allocation diagnostics: PASS
+independent edit: PASS
+SCENARIO reuse: return then reacquire with fresh
+return:  🌳 Worktree returned to pool.
+stdout: /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01M3CQHNM2NE9G72KTHWB3235A/.apfs-live-check-38853/home/.treehouse/repo-c24999/2/repo
+stderr: 🌳 Setting up worktree...
+🌳 Leased worktree at ~/.treehouse/repo-c24999/2/repo. Run 'treehouse return ~/.treehouse/repo-c24999/2/repo' to release it.
+reuse not re-swept: PASS
+SCENARIO configured hook: Git hook executes, sharing skips
+stdout: /Users/kunchen/.no-mistakes/worktrees/8c0b202f5740/01M3CQHNM2NE9G72KTHWB3235A/.apfs-live-check-38853/home/.treehouse/repo-c24999/3/repo
+stderr: 🌳 Setting up worktree...
+APFS sharing skipped: Git post-checkout hook may have started a writer
+🌳 Leased worktree at ~/.treehouse/repo-c24999/3/repo. Run 'treehouse return ~/.treehouse/repo-c24999/3/repo' to release it.
+configured hook skip: PASS
+SCENARIO invalid setting: reject before allocation in separate home
+exit: 1, stdout: , stderr: invalid apfs_sharing "auto": use off or fresh
+invalid rejected: PASS
