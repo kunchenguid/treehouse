@@ -909,13 +909,6 @@ var ErrOwnerPreconditionFailed = errors.New("owner precondition failed")
 // classifies and skips.
 var ErrInvalidReleasePreconditions = errors.New("invalid release preconditions")
 
-// ErrSeedInventoryUntrusted reports that a worktree is quarantined: its seed
-// inventory could not be authenticated, so no release may clear it. A state
-// version bump or a rotated state key puts a whole pool in this state at once,
-// which is why callers classify it with errors.Is: a bulk return has to report
-// such a slot as skipped rather than as a failure it should retry forever.
-var ErrSeedInventoryUntrusted = errors.New("untrusted seed inventory")
-
 // ReleasePreconditions optionally constrain a release to the current lease.
 // Pointer fields distinguish an omitted condition from an expected empty value.
 //
@@ -1042,6 +1035,9 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 				return err
 			}
 		}
+		if !wt.SeedInventoryKnown {
+			fmt.Fprintf(os.Stderr, "🌳 Warning: %s was recovered without a trusted record of the ignored files treehouse seeded into it; any such files are not cleaned up and remain in the worktree.\n", worktreePath)
+		}
 		if !markerless {
 			seededPaths := wt.SeededPaths
 			if !wt.SeedInventoryKnown {
@@ -1083,17 +1079,6 @@ func releasableWorktree(state *State, worktreePath string, preconditions Release
 		}
 		if err := validateReleasePreconditions(*wt, preconditions); err != nil {
 			return nil, err
-		}
-		// Clearing a safety quarantine without a trusted seed inventory could
-		// expose ignored files hidden by a mutable manifest. It is judged here,
-		// with the preconditions, so that every caller learns a release is
-		// impossible BEFORE it prepares one: `return` would otherwise offer to
-		// discard a worktree's uncommitted changes and then refuse it anyway.
-		// It is judged AFTER the preconditions so a caller that named a lease,
-		// or `get` confirming its own reservation, still gets the answer to the
-		// question it asked.
-		if !wt.SeedInventoryKnown {
-			return nil, fmt.Errorf("%w: worktree %s is quarantined without a trusted seed inventory; inspect it and use destroy --include-leased instead", ErrSeedInventoryUntrusted, worktreePath)
 		}
 		return wt, nil
 	}

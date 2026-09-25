@@ -711,7 +711,10 @@ func TestReleaseRemovesSeedHiddenByLocalManifestCommit(t *testing.T) {
 	}
 }
 
-func TestReleaseQuarantinesRecoveredMissingStateEntryWithUnknownSeedInventory(t *testing.T) {
+// TestReleaseOfRecoveredMissingStateEntryLeavesUnknownSeeds covers a worktree
+// restored from disk: it stays leased and is never handed out, and a return
+// naming it releases it but cannot clean seeded files it has no record of.
+func TestReleaseOfRecoveredMissingStateEntryLeavesUnknownSeeds(t *testing.T) {
 	repoDir, poolDir := setupLocalRepo(t)
 	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("secret.env\nunmanaged.env\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -741,18 +744,18 @@ func TestReleaseQuarantinesRecoveredMissingStateEntryWithUnknownSeedInventory(t 
 	runGit(t, wtPath, "add", ".worktreeinclude")
 	runGit(t, wtPath, "-c", "user.email=test@test.com", "-c", "user.name=Test", "commit", "-m", "hide seed")
 
-	if err := Release(poolDir, wtPath); err == nil {
-		t.Fatal("Release succeeded with an unknown recovered seed inventory")
+	if _, err := Acquire(repoDir, poolDir, 1, nil); err == nil {
+		t.Fatal("Acquire reused a recovered worktree with an unknown seed inventory")
 	}
 	state, err := ReadState(poolDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state.Worktrees) != 1 || !state.Worktrees[0].Leased {
-		t.Fatalf("recovered worktree became reusable: %#v", state.Worktrees)
+	if len(state.Worktrees) != 1 || !state.Worktrees[0].Leased || state.Worktrees[0].LeaseHolder != RecoveredLeaseHolder {
+		t.Fatalf("recovered worktree is not quarantined: %#v", state.Worktrees)
 	}
-	if _, err := Acquire(repoDir, poolDir, 1, nil); err == nil {
-		t.Fatal("Acquire reused a recovered worktree with an unknown seed inventory")
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("return naming a recovered worktree: %v", err)
 	}
 	assertFileContents(t, filepath.Join(wtPath, "secret.env"), "secret\n")
 	assertFileContents(t, filepath.Join(wtPath, "unmanaged.env"), "keep\n")
@@ -829,7 +832,7 @@ func TestAcquire_InitialStateWriteFailureRecoversCreatedWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state.Worktrees) != 1 || !state.Worktrees[0].Leased || state.Worktrees[0].LeaseHolder != recoveredLeaseHolder {
+	if len(state.Worktrees) != 1 || !state.Worktrees[0].Leased || state.Worktrees[0].LeaseHolder != RecoveredLeaseHolder {
 		t.Fatalf("created worktree was not conservatively recovered: %#v", state.Worktrees)
 	}
 }
@@ -953,15 +956,18 @@ func TestAcquire_ReusedRepeatedStateWriteFailureKeepsSeedInventoryUnknown(t *tes
 	if len(state.Worktrees) != 1 || state.Worktrees[0].SeedInventoryKnown {
 		t.Fatalf("durable quarantine trusts incomplete inventory: %#v", state.Worktrees)
 	}
-	if err := Release(poolDir, wtPath); err == nil {
-		t.Fatal("Release succeeded with an unknown seed inventory")
-	}
 	if _, err := Acquire(repoDir, poolDir, 1, nil); err == nil {
 		t.Fatal("worktree with unknown seed inventory became reusable")
 	}
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("return naming a worktree with an unknown seed inventory: %v", err)
+	}
 }
 
-func TestRelease_RejectsFailedSeedingQuarantineWithUnknownInventory(t *testing.T) {
+// TestRelease_FailedSeedingQuarantineStaysLeasedUntilNamedReturn covers an
+// acquisition whose seeding failed: ReadState treats its unknown inventory as
+// recovered, so it is never handed out and only a return naming it frees it.
+func TestRelease_FailedSeedingQuarantineStaysLeasedUntilNamedReturn(t *testing.T) {
 	repoDir, poolDir := setupLocalRepo(t)
 	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
 	if err != nil {
@@ -983,17 +989,20 @@ func TestRelease_RejectsFailedSeedingQuarantineWithUnknownInventory(t *testing.T
 		t.Fatal(err)
 	}
 
-	if err := Release(poolDir, wtPath); err == nil {
-		t.Fatal("Release succeeded with a failed-seeding quarantine and unknown inventory")
-	}
 	state, err = ReadState(poolDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !state.Worktrees[0].Leased || state.Worktrees[0].SeedInventoryKnown {
+	if !state.Worktrees[0].Leased || state.Worktrees[0].SeedInventoryKnown || state.Worktrees[0].LeaseHolder != RecoveredLeaseHolder {
 		t.Fatalf("unsafe quarantine was cleared: %#v", state.Worktrees[0])
 	}
+	if _, err := Acquire(repoDir, poolDir, 1, nil); err == nil {
+		t.Fatal("Acquire reused a failed-seeding quarantine")
+	}
 	assertFileContents(t, partialPath, "partial\n")
+	if err := Release(poolDir, wtPath); err != nil {
+		t.Fatalf("return naming a failed-seeding quarantine: %v", err)
+	}
 }
 
 func TestAcquire_ReusedCommittedFinalStateWriteErrorReturnsAcquisition(t *testing.T) {

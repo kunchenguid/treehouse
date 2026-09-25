@@ -13,7 +13,7 @@ import (
 // treehouse 3.0.0 left it after upgrading pre-3.0 state, then checks that
 // status keeps it leased and prints the command that frees it, that
 // `return --all` returns other held slots but leaves it leased, and that the
-// named command frees it.
+// named command frees it with a warning about its lost seed inventory.
 func TestStatusNamesReturnForThreeZeroUpgradeQuarantine(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	lease := acquireLeaseJSON(t, repoDir, homeDir, "setup")
@@ -42,17 +42,13 @@ func TestStatusNamesReturnForThreeZeroUpgradeQuarantine(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(poolDir, "treehouse-state.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	keyCreated := stamp.Add(200 * time.Millisecond)
-	if err := os.Chtimes(filepath.Join(poolDir, "treehouse-state.key"), keyCreated, keyCreated); err != nil {
-		t.Fatal(err)
-	}
 
 	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "status")
 	if code != 0 {
 		t.Fatalf("status failed, code=%d stderr=%q", code, stderr)
 	}
-	if !strings.Contains(stdout, "leased") || !strings.Contains(stdout, "quarantined by the 3.0.0 upgrade") {
-		t.Fatalf("status does not report the upgrade quarantine:\n%s", stdout)
+	if !strings.Contains(stdout, "leased") || !strings.Contains(stdout, "held by recovered: state file was corrupt") {
+		t.Fatalf("status does not report the quarantine:\n%s", stdout)
 	}
 	if want := "treehouse return " + quoteReturnPath(lease.Path); !strings.Contains(stdout, want) {
 		t.Fatalf("status does not name %q:\n%s", want, stdout)
@@ -73,12 +69,16 @@ func TestStatusNamesReturnForThreeZeroUpgradeQuarantine(t *testing.T) {
 		t.Fatalf("return --all summary does not count the skipped quarantine:\n%s", stderr)
 	}
 	stdout, _, _ = runTreehouse(t, repoDir, homeDir, nil, "status")
-	if strings.Count(stdout, "leased") != 1 || !strings.Contains(stdout, "quarantined by the 3.0.0 upgrade") {
+	if strings.Count(stdout, "leased") != 1 || !strings.Contains(stdout, "held by recovered: state file was corrupt") {
 		t.Fatalf("return --all did not return only the other slot:\n%s", stdout)
 	}
 
-	if _, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "return", lease.Path); code != 0 {
+	_, stderr, code = runTreehouse(t, repoDir, homeDir, nil, "return", lease.Path)
+	if code != 0 {
 		t.Fatalf("return of a slot quarantined by the upgrade failed, code=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stderr, "not cleaned up") {
+		t.Fatalf("return does not warn about the lost seed inventory:\n%s", stderr)
 	}
 	stdout, _, _ = runTreehouse(t, repoDir, homeDir, nil, "status")
 	if strings.Contains(stdout, "leased") || !strings.Contains(stdout, "available") {

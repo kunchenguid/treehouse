@@ -117,7 +117,7 @@ var statusCmd = &cobra.Command{
 			if wt.Status == pool.StatusLeased && wt.LeaseHolder != "" {
 				line += fmt.Sprintf("  (held by %s)", wt.LeaseHolder)
 			}
-			if wt.Status == pool.StatusLeased && wt.LeaseHolder == pool.UpgradeLeaseHolder {
+			if wt.Status == pool.StatusLeased && wt.LeaseHolder == pool.RecoveredLeaseHolder {
 				line += yellow(fmt.Sprintf("  (check it, then free it with: treehouse return %s)", quoteReturnPath(wt.Path)))
 			}
 			if wt.Flavor != "" && wt.Flavor != repoFlavor {

@@ -43,7 +43,7 @@ func TestReadState_RecoversWorktreeMissingFromValidState(t *testing.T) {
 		t.Fatalf("ReadState returned %d entries, want recovered worktree", len(got.Worktrees))
 	}
 	entry := got.Worktrees[0]
-	if entry.Path != missingPath || !entry.Leased || entry.LeaseHolder != recoveredLeaseHolder {
+	if entry.Path != missingPath || !entry.Leased || entry.LeaseHolder != RecoveredLeaseHolder {
 		t.Fatalf("missing worktree was not conservatively recovered: %#v", entry)
 	}
 }
@@ -63,7 +63,7 @@ func TestReadState_RecoversJJWorktreeMissingFromValidState(t *testing.T) {
 		t.Fatalf("ReadState returned %d entries, want recovered jj worktree", len(got.Worktrees))
 	}
 	entry := got.Worktrees[0]
-	if entry.Path != missingPath || !entry.Leased || entry.LeaseHolder != recoveredLeaseHolder {
+	if entry.Path != missingPath || !entry.Leased || entry.LeaseHolder != RecoveredLeaseHolder {
 		t.Fatalf("missing jj worktree was not conservatively recovered: %#v", entry)
 	}
 }
@@ -120,7 +120,7 @@ func TestReadState_QuarantinesCurrentStateWithMissingSeedInventory(t *testing.T)
 		t.Fatal(err)
 	}
 	entry := state.Worktrees[0]
-	if !entry.Leased || entry.SeedInventoryKnown || entry.LeaseHolder != recoveredLeaseHolder {
+	if !entry.Leased || entry.SeedInventoryKnown || entry.LeaseHolder != RecoveredLeaseHolder {
 		t.Fatalf("missing current inventory was not quarantined: %#v", entry)
 	}
 }
@@ -147,7 +147,7 @@ func TestReadState_RecoversInvalidSeedInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := state.Worktrees[0]
-	if !entry.Leased || entry.SeedInventoryKnown || entry.LeaseHolder != recoveredLeaseHolder {
+	if !entry.Leased || entry.SeedInventoryKnown || entry.LeaseHolder != RecoveredLeaseHolder {
 		t.Fatalf("invalid inventory was not conservatively recovered: %#v", entry)
 	}
 	if _, err := os.Stat(filepath.Join(worktreePath, ".git")); err != nil {
@@ -182,7 +182,7 @@ func TestReadState_QuarantinesInventoryWithoutValidDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := state.Worktrees[0]
-	if !entry.Leased || entry.SeedInventoryKnown || entry.LeaseHolder != recoveredLeaseHolder {
+	if !entry.Leased || entry.SeedInventoryKnown || entry.LeaseHolder != RecoveredLeaseHolder {
 		t.Fatalf("unverified inventory was not quarantined: %#v", entry)
 	}
 }
@@ -222,7 +222,7 @@ func TestReadState_QuarantinesInventoryMovedBetweenWorktrees(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, entry := range got.Worktrees {
-		if !entry.Leased || entry.SeedInventoryKnown || entry.LeaseHolder != recoveredLeaseHolder {
+		if !entry.Leased || entry.SeedInventoryKnown || entry.LeaseHolder != RecoveredLeaseHolder {
 			t.Fatalf("moved inventory was not quarantined: %#v", entry)
 		}
 	}
@@ -337,8 +337,8 @@ func TestReadState_RecoversFromEmptyFile(t *testing.T) {
 		if !wt.Leased {
 			t.Errorf("recovered worktree %s not marked leased", wt.Path)
 		}
-		if wt.LeaseHolder != recoveredLeaseHolder {
-			t.Errorf("recovered worktree %s has lease holder %q, want %q", wt.Path, wt.LeaseHolder, recoveredLeaseHolder)
+		if wt.LeaseHolder != RecoveredLeaseHolder {
+			t.Errorf("recovered worktree %s has lease holder %q, want %q", wt.Path, wt.LeaseHolder, RecoveredLeaseHolder)
 		}
 	}
 }

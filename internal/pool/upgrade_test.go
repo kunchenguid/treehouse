@@ -2,7 +2,6 @@ package pool
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -38,18 +37,6 @@ func writeRawState(t *testing.T, poolDir string, s State) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(stateFilePath(poolDir), data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// writeStateKey writes a pool state key whose modification time says when it
-// was created.
-func writeStateKey(t *testing.T, poolDir string, created time.Time) {
-	t.Helper()
-	if err := os.WriteFile(stateKeyPath(poolDir), make([]byte, 32), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(stateKeyPath(poolDir), created, created); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -143,110 +130,45 @@ func TestReadState_QuarantinesUnversionedStateBesideKey(t *testing.T) {
 	poolDir := t.TempDir()
 	path := makeFakeWorktree(t, poolDir, "1", "myrepo")
 	writeRawState(t, poolDir, State{Worktrees: []WorktreeEntry{{Name: "1", Path: path, CreatedAt: time.Now()}}})
-	writeStateKey(t, poolDir, time.Now())
+	if err := os.WriteFile(stateKeyPath(poolDir), make([]byte, 32), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	state, err := ReadState(poolDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	entry := state.Worktrees[0]
-	if !entry.Leased || entry.SeedInventoryKnown || entry.LeaseHolder != recoveredLeaseHolder {
+	if !entry.Leased || entry.SeedInventoryKnown || entry.LeaseHolder != RecoveredLeaseHolder {
 		t.Fatalf("unversioned state beside a key was not quarantined: %#v", entry)
 	}
 }
 
-// TestReadState_RecognizesThreeZeroUpgradeQuarantine pins which version-4
-// entries count as quarantined by 3.0.0's misreading of pre-3.0 state. 3.0.0
-// relabeled every pre-3.0 entry, stamped a lease time on the ones without one,
-// then created the state key on its first write. Whether the entry was idle or
-// leased before the upgrade, it gets the same returnable label.
-func TestReadState_RecognizesThreeZeroUpgradeQuarantine(t *testing.T) {
-	stamp := time.Now().Add(-time.Hour).Round(0)
-	created := stamp.Add(-48 * time.Hour)
-	recovered := func(leasedAt time.Time) WorktreeEntry {
-		return WorktreeEntry{CreatedAt: created, Leased: true, LeaseHolder: recoveredLeaseHolder, LeasedAt: leasedAt}
-	}
-	withLeaseID := recovered(stamp)
-	withLeaseID.LeaseID = "0123456789abcdef0123456789abcdef"
-	scanned := recovered(stamp)
-	scanned.CreatedAt = stamp
-	damaged := recovered(stamp)
-	damaged.RecoveryError = "unreadable marker"
-
-	cases := []struct {
-		name       string
-		version    int
-		entry      WorktreeEntry
-		wantHolder string
-	}{
-		{"stamped by the upgrade", 4, recovered(stamp), UpgradeLeaseHolder},
-		{"leased just before the upgrade", 4, recovered(stamp.Add(-500 * time.Millisecond)), UpgradeLeaseHolder},
-		{"leased long before the upgrade", 4, recovered(stamp.Add(-time.Hour)), UpgradeLeaseHolder},
-		{"quarantined after the key existed", 4, recovered(stamp.Add(time.Minute)), recoveredLeaseHolder},
-		{"lease identity kept by 3.0.0", 4, withLeaseID, UpgradeLeaseHolder},
-		{"rebuilt by a recovery scan", 4, scanned, recoveredLeaseHolder},
-		{"recovered with an unreadable marker", 4, damaged, recoveredLeaseHolder},
-		{"written by this build", stateVersion, recovered(stamp), recoveredLeaseHolder},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			poolDir := t.TempDir()
-			entry := tc.entry
-			entry.Name = "1"
-			entry.Path = makeFakeWorktree(t, poolDir, "1", "myrepo")
-			writeRawState(t, poolDir, State{Version: tc.version, Worktrees: []WorktreeEntry{entry}})
-			writeStateKey(t, poolDir, stamp.Add(200*time.Millisecond))
-
-			state, err := ReadState(poolDir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := state.Worktrees[0]
-			if !got.Leased || got.LeaseHolder != tc.wantHolder {
-				t.Fatalf("entry read as leased=%v holder %q, want leased by %q", got.Leased, got.LeaseHolder, tc.wantHolder)
-			}
-			if wantKnown := tc.wantHolder != recoveredLeaseHolder; got.SeedInventoryKnown != wantKnown {
-				t.Fatalf("seed inventory known = %v, want %v", got.SeedInventoryKnown, wantKnown)
-			}
-		})
-	}
-}
-
-// TestUpgrade_KeepsThreeZeroQuarantineUntilReturned covers pools treehouse
-// 3.0.0 already rewrote: every pre-3.0 entry leased as "recovered", with a
-// state key created right after. A slot that was idle and one leased just
-// before the upgrade look alike, as does a lease that kept its lease identity,
-// so none is freed automatically, even once
-// detached, clean, merged, and idle; `return` frees both after the operator
-// checks them, while a genuinely recovered slot still refuses.
-func TestUpgrade_KeepsThreeZeroQuarantineUntilReturned(t *testing.T) {
+// TestUpgrade_KeepsThreeZeroQuarantineUntilNamedReturn covers pools treehouse
+// 3.0.0 already rewrote: every pre-3.0 entry leased as recovered, with or
+// without the lease identity it had, and a state key beside it. Nothing tells
+// a formerly idle slot from a durable lease, so every one stays leased and is
+// never handed out, and a return naming it releases it despite its unknown
+// seed inventory.
+func TestUpgrade_KeepsThreeZeroQuarantineUntilNamedReturn(t *testing.T) {
 	repoDir, poolDir := setupLocalRepo(t)
-	paths := idleSlots(t, repoDir, poolDir, 4)
-	idle, lease, idLease, scanned := paths[0], paths[1], paths[2], paths[3]
-
+	paths := idleSlots(t, repoDir, poolDir, 2)
 	stamp := time.Now().Add(-time.Hour).Round(0)
-	created := stamp.Add(-48 * time.Hour)
 	var entries []WorktreeEntry
-	for _, path := range paths {
-		entry := WorktreeEntry{Name: filepath.Base(filepath.Dir(path)), Path: path, CreatedAt: created,
-			Leased: true, LeaseHolder: recoveredLeaseHolder, LeasedAt: stamp}
-		switch path {
-		case lease:
-			entry.LeasedAt = stamp.Add(-500 * time.Millisecond)
-		case idLease:
-			entry.LeasedAt = stamp.Add(-time.Hour)
+	for i, path := range paths {
+		entry := WorktreeEntry{Name: filepath.Base(filepath.Dir(path)), Path: path, CreatedAt: stamp.Add(-48 * time.Hour),
+			Leased: true, LeaseHolder: RecoveredLeaseHolder, LeasedAt: stamp}
+		if i == 1 {
 			entry.LeaseID = "0123456789abcdef0123456789abcdef"
-		case scanned:
-			entry.CreatedAt = stamp
+			entry.LeasedAt = stamp.Add(-time.Hour)
 		}
 		entries = append(entries, entry)
 	}
-	writeRawState(t, poolDir, State{Version: upgradeQuarantineStateVersion, Worktrees: entries})
-	writeStateKey(t, poolDir, stamp.Add(200*time.Millisecond))
+	writeRawState(t, poolDir, State{Version: stateVersion, Worktrees: entries})
 
-	for _, path := range []string{idle, lease, idLease} {
-		if st := statusOf(t, poolDir, path); st.Status != StatusLeased || st.LeaseHolder != UpgradeLeaseHolder {
-			t.Fatalf("slot %s quarantined by the upgrade reads %s held by %q", path, st.Status, st.LeaseHolder)
+	for _, path := range paths {
+		if st := statusOf(t, poolDir, path); st.Status != StatusLeased || st.LeaseHolder != RecoveredLeaseHolder {
+			t.Fatalf("slot %s quarantined by 3.0.0 reads %s held by %q", path, st.Status, st.LeaseHolder)
 		}
 	}
 	got, err := AcquireLease(repoDir, poolDir, len(paths)+1, nil, "after-fix")
@@ -255,24 +177,19 @@ func TestUpgrade_KeepsThreeZeroQuarantineUntilReturned(t *testing.T) {
 	}
 	for _, path := range paths {
 		if got == path {
-			t.Fatalf("acquire reused %s, which the 3.0.0 upgrade quarantined", path)
+			t.Fatalf("acquire reused %s, which 3.0.0 quarantined", path)
 		}
-	}
-	for _, path := range []string{idle, lease, idLease} {
-		if wt := entryFor(t, poolDir, path); !wt.Leased || wt.LeaseHolder != UpgradeLeaseHolder {
-			t.Fatalf("slot %s was freed without a return: leased=%v holder %q", path, wt.Leased, wt.LeaseHolder)
+		if wt := entryFor(t, poolDir, path); !wt.Leased || wt.LeaseHolder != RecoveredLeaseHolder || wt.SeedInventoryKnown {
+			t.Fatalf("slot %s changed without a return: %#v", path, wt)
 		}
 	}
 
-	for _, path := range []string{idle, lease, idLease} {
+	for _, path := range paths {
 		if err := Release(poolDir, path); err != nil {
-			t.Fatalf("return of %s, quarantined by the upgrade: %v", path, err)
+			t.Fatalf("return naming %s: %v", path, err)
 		}
 		if st := statusOf(t, poolDir, path); st.Status != StatusAvailable {
 			t.Fatalf("returned slot %s reads %s, want available", path, st.Status)
 		}
-	}
-	if err := Release(poolDir, scanned); !errors.Is(err, ErrSeedInventoryUntrusted) {
-		t.Fatalf("return of a genuinely recovered slot = %v, want %v", err, ErrSeedInventoryUntrusted)
 	}
 }

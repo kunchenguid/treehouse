@@ -80,30 +80,7 @@ type State struct {
 	Worktrees []WorktreeEntry `json:"worktrees"`
 }
 
-// stateVersion is the state format this build writes. Version 5 has the same
-// shape as version 4; the bump only marks files written by a build that no
-// longer misreads pre-3.0 state, so a version-4 file is known to come from
-// treehouse 3.0.0 and ReadState can undo the quarantine that release applied
-// while upgrading (see upgradedPre30Entry).
-const stateVersion = 5
-
-// upgradeQuarantineStateVersion is the version treehouse 3.0.0 wrote. Its first
-// run over pre-3.0 state quarantined every entry as recovered even though that
-// state was valid.
-const upgradeQuarantineStateVersion = 4
-
-// coarseTimestampSlack absorbs a file system that records whole-second (or,
-// like FAT, two-second) modification times, so the state key's mtime can read
-// earlier than a lease time stamped just before the key was written.
-const coarseTimestampSlack = 2 * time.Second
-
-// UpgradeLeaseHolder replaces recoveredLeaseHolder on a pre-3.0 entry that
-// treehouse 3.0.0 quarantined while upgrading. 3.0.0 overwrote the holder of
-// every entry, so an entry that was idle then is indistinguishable from one a
-// pre-2.1 release leased without a lease identity. It is never released
-// automatically, and `return --all` leaves it alone; naming it to `return`
-// releases it like any other lease once checked.
-const UpgradeLeaseHolder = "quarantined by the 3.0.0 upgrade"
+const stateVersion = 4
 
 func stateFilePath(poolDir string) string {
 	return filepath.Join(poolDir, "treehouse-state.json")
@@ -162,29 +139,15 @@ func ReadState(poolDir string) (State, error) {
 	// Unversioned state beside a key was rewritten by an older binary after 3.0
 	// ran, and may have dropped a real inventory, so it stays quarantined.
 	legacy := s.Version == 0 && errors.Is(keyErr, fs.ErrNotExist)
-	var keyCreated time.Time
-	if s.Version == upgradeQuarantineStateVersion && keyErr == nil {
-		if info, err := os.Stat(stateKeyPath(poolDir)); err == nil {
-			keyCreated = info.ModTime()
-			if keyCreated.Nanosecond() == 0 {
-				keyCreated = keyCreated.Add(coarseTimestampSlack)
-			}
-		}
-	}
 	for i := range s.Worktrees {
 		wt := &s.Worktrees[i]
 		if legacy && !hasSeedState(*wt) {
 			setSeedInventory(wt, nil, true)
 			continue
 		}
-		if !keyCreated.IsZero() && upgradedPre30Entry(*wt, keyCreated) {
-			wt.LeaseHolder = UpgradeLeaseHolder
-			setSeedInventory(wt, nil, true)
-			continue
-		}
-		if s.Version < upgradeQuarantineStateVersion || keyErr != nil || !validSeedInventoryDigest(key, *wt) {
+		if s.Version != stateVersion || keyErr != nil || !validSeedInventoryDigest(key, *wt) {
 			wt.Leased = true
-			wt.LeaseHolder = recoveredLeaseHolder
+			wt.LeaseHolder = RecoveredLeaseHolder
 			wt.SeededPaths = nil
 			wt.SeedInventoryKnown = false
 			wt.SeedInventoryDigest = ""
@@ -201,24 +164,6 @@ func ReadState(poolDir string) (State, error) {
 
 func hasSeedState(wt WorktreeEntry) bool {
 	return wt.SeedInventoryKnown || len(wt.SeededPaths) > 0 || wt.SeedInventoryDigest != "" || wt.SeedBackend != "" || wt.SeedAuthIdentity != ""
-}
-
-// upgradedPre30Entry reports whether a version-4 entry is a pre-3.0 entry that
-// treehouse 3.0.0 relabeled recoveredLeaseHolder while upgrading, keeping any
-// lease identity and lease time and stamping a lease time where there was
-// none. It stamped them before it created the state key (keyCreated) on that
-// command's first write; everything it leased or quarantined later was stamped
-// after. Such an entry carries no seed state and no recovery error, and it was
-// not created at the instant it was leased, as both recovery scans stamp their
-// entries. A lease identity, which a lease taken by 2.1 or later has and 3.0.0
-// kept, does not set it apart: 3.0.0 overwrote its holder all the same.
-//
-// Nothing before 3.0 seeded ignored files, so its inventory is known empty.
-func upgradedPre30Entry(wt WorktreeEntry, keyCreated time.Time) bool {
-	return wt.Leased && wt.LeaseHolder == recoveredLeaseHolder &&
-		wt.RecoveryError == "" && !wt.Destroying && !hasSeedState(wt) &&
-		!wt.LeasedAt.IsZero() && !wt.CreatedAt.Equal(wt.LeasedAt) &&
-		wt.LeasedAt.Before(keyCreated)
 }
 
 func validSeedInventoryDigest(key []byte, wt WorktreeEntry) bool {
@@ -394,14 +339,18 @@ func recoverMissingStateEntries(poolDir string, s State) (State, error) {
 	return s, nil
 }
 
-// recoveredLeaseHolder marks a WorktreeEntry reconstructed by either recovery
-// scan (recoverMissingStateEntries or recoverCorruptState) so callers (status
-// output, destroy) can explain why it is unexpectedly leased.
-const recoveredLeaseHolder = "recovered: state file was corrupt or truncated; verify before reuse"
+// RecoveredLeaseHolder marks a WorktreeEntry whose reservation and seed
+// inventory could not be trusted: one reconstructed by either recovery scan
+// (recoverMissingStateEntries or recoverCorruptState), or one ReadState
+// quarantined because its inventory failed to authenticate. treehouse 3.0.0
+// also put it on every entry of valid pre-3.0 state. None of these can be told
+// apart, so all stay leased until a `return` naming the slot releases it; bulk
+// `return --all` leaves them alone.
+const RecoveredLeaseHolder = "recovered: state file was corrupt or truncated; verify before reuse"
 
 // quarantineEntry builds the conservative entry both recovery scans write for a
 // worktree whose reservation state was lost. It is leased under
-// recoveredLeaseHolder, so Acquire and prune skip it and destroy removes it only
+// RecoveredLeaseHolder, so Acquire and prune skip it and destroy removes it only
 // via an explicit single-target --include-leased. recoveryError is empty for a
 // worktree whose marker resolved normally, and non-empty for one whose marker
 // exists but could not be read.
@@ -412,7 +361,7 @@ func quarantineEntry(slotName, wtPath, recoveryError string) WorktreeEntry {
 		Path:          wtPath,
 		CreatedAt:     now,
 		Leased:        true,
-		LeaseHolder:   recoveredLeaseHolder,
+		LeaseHolder:   RecoveredLeaseHolder,
 		LeasedAt:      now,
 		RecoveryError: recoveryError,
 	}
