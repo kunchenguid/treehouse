@@ -17,8 +17,9 @@ User-facing behavior: [README.md](README.md). Settings and precedence: [treehous
 
 ## Invariants
 
-- Never destroy work: every destructive path (acquire reuse, prune, destroy, return reset) fails closed when dirtiness, merge state, ownership, or the slot's marker cannot be proven. Keep it that way.
-- No daemon; the state file tracks membership, short-lived owner/destroy reservations, and durable leases. Never infer long-term usage from processes, and never clear a lease outside `return`.
+- Acquire reuse, prune, and destroy fail closed on unproven dirtiness, merge state, ownership, or slot marker; `return` may reset a dirty tree after confirmation.
+- No daemon; state tracks membership, short-lived reservations, and durable leases, not process-derived long-term usage.
+- Only `return` clears leases; after inspection, remove a recovered quarantined slot with `destroy <path> --include-leased --yes`.
 - All VCS operations go through `internal/vcs`; per-slot operations dispatch on the slot's own marker, never the configured backend. Git is the default; jj is strict opt-in.
 - One base branch per slot is shared by acquire, parking, prune, and destroy; `WorktreeEntry.BaseBranch` records only an explicitly requested base.
 - Prune and destroy are dry-run unless `--yes`; each risk class needs its own opt-in flag, and there is no cross-pool destroy.
