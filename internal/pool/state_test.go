@@ -401,16 +401,16 @@ func TestReadState_RecoveredWorktreesBlockAcquire(t *testing.T) {
 		t.Fatalf("truncate state file: %v", err)
 	}
 
-	if _, err := Acquire(repoDir, poolDir, 1, nil); err == nil {
-		t.Fatal("Acquire after state corruption should refuse to hand out the pool's only worktree, got nil error")
+	if _, err := Acquire(repoDir, poolDir, 1, nil); err != nil {
+		t.Fatalf("Acquire should auto-free the provably safe recovered slot: %v", err)
 	}
 
 	state, err := ReadState(poolDir)
 	if err != nil {
 		t.Fatalf("ReadState: %v", err)
 	}
-	if len(state.Worktrees) != 1 || !state.Worktrees[0].Leased {
-		t.Fatalf("state after recovery = %+v, want the recovered worktree marked leased", state.Worktrees)
+	if len(state.Worktrees) != 1 || state.Worktrees[0].Leased || state.Worktrees[0].OwnerPID == 0 {
+		t.Fatalf("state after auto-recovery/acquire = %+v, want the slot acquired by this run", state.Worktrees)
 	}
 }
 

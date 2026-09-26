@@ -62,6 +62,11 @@ type WorktreeStatus struct {
 	// instead of leaving Branch empty, so a read failure is never mistaken for
 	// a detached HEAD.
 	BranchErr string
+	// RecoveryReason explains why a recovered lease was kept quarantined.
+	RecoveryReason string
+	// RecoveryBackup is the non-empty folder recovery moved this slot's
+	// untracked files into, or "" when there is none.
+	RecoveryBackup string
 	// HeldOnlyByCwd reports a StatusHere slot that nobody is actually holding:
 	// it is unleased, idle, clean, quiet and undamaged, and the only reason it
 	// is not reported available is that the caller is standing in it. Status
@@ -899,7 +904,8 @@ func markAcquired(wt *WorktreeEntry, opts acquireOptions) error {
 var ErrLeasePreconditionFailed = errors.New("lease precondition failed")
 
 // ErrRecoveredEntry reports that a release refusing recovered entries found the
-// worktree carrying RecoveredLeaseHolder. Only a return naming it may clear it.
+// worktree carrying RecoveredLeaseHolder. If automatic recovery cannot prove it
+// safe, bulk return refuses it; an operator may release it by naming the slot.
 var ErrRecoveredEntry = errors.New("recovered entry")
 
 // ErrOwnerPreconditionFailed reports that a release no longer identifies the
@@ -1068,10 +1074,7 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 			wt.BaseBranch = requested
 		}
 
-		wt.OwnerPID = 0
-		wt.OwnerStartedAt = 0
-		clearLease(wt)
-		setSeedInventory(wt, nil, true)
+		releaseEntry(wt)
 		return WriteState(poolDir, state)
 	})
 }
@@ -1175,10 +1178,12 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 				continue
 			}
 			ws := WorktreeStatus{
-				Name:   wt.Name,
-				Path:   wt.Path,
-				Status: StatusAvailable,
-				Flavor: vcs.WorktreeBackendName(wt.Path),
+				Name:           wt.Name,
+				Path:           wt.Path,
+				Status:         StatusAvailable,
+				Flavor:         vcs.WorktreeBackendName(wt.Path),
+				RecoveryReason: wt.RecoveryReason,
+				RecoveryBackup: recoveryBackup(poolDir, wt.Name),
 			}
 
 			// The two failure modes get different answers, which is why the
@@ -1448,6 +1453,17 @@ func clearLease(wt *WorktreeEntry) {
 	wt.LeaseID = ""
 	wt.LeaseHolder = ""
 	wt.LeasedAt = time.Time{}
+	wt.RecoveryReason = ""
+}
+
+// releaseEntry returns a slot to the pool in state: no reservation, no lease,
+// and an empty trusted seed inventory. Ignored files seeded before an unknown
+// inventory are not recorded, so they stay in the worktree.
+func releaseEntry(wt *WorktreeEntry) {
+	wt.OwnerPID = 0
+	wt.OwnerStartedAt = 0
+	clearLease(wt)
+	setSeedInventory(wt, nil, true)
 }
 
 func sameDestroyReservation(current, reserved WorktreeEntry) bool {

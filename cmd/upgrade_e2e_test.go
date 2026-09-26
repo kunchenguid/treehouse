@@ -21,6 +21,13 @@ func TestStatusNamesReturnForThreeZeroUpgradeQuarantine(t *testing.T) {
 		t.Fatalf("return failed, code=%d stderr=%q", code, stderr)
 	}
 	poolDir := filepath.Dir(filepath.Dir(lease.Path))
+	// A private commit ensures this remains quarantined instead of being
+	// automatically freed as a proven-safe 3.0.0 recovery.
+	if err := os.WriteFile(filepath.Join(lease.Path, "local-only.txt"), []byte("private\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, lease.Path, "add", "local-only.txt")
+	gitCmd(t, lease.Path, "commit", "-m", "local-only")
 
 	stamp := time.Now().Add(-time.Hour).Round(0)
 	state := map[string]any{
@@ -83,5 +90,50 @@ func TestStatusNamesReturnForThreeZeroUpgradeQuarantine(t *testing.T) {
 	stdout, _, _ = runTreehouse(t, repoDir, homeDir, nil, "status")
 	if strings.Contains(stdout, "leased") || !strings.Contains(stdout, "available") {
 		t.Fatalf("returned slot is not available:\n%s", stdout)
+	}
+}
+
+// TestStatusNamesReturnForDamagedRecoveredSlot covers a recovered slot whose
+// marker could not be read at recovery: status reports it damaged, and still
+// says why it stays quarantined and names the return that frees it.
+func TestStatusNamesReturnForDamagedRecoveredSlot(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	lease := acquireLeaseJSON(t, repoDir, homeDir, "setup")
+	poolDir := filepath.Dir(filepath.Dir(lease.Path))
+	state := map[string]any{
+		"version": 4,
+		"worktrees": []map[string]any{{
+			"name":           filepath.Base(filepath.Dir(lease.Path)),
+			"path":           lease.Path,
+			"created_at":     time.Now().Add(-48 * time.Hour),
+			"leased":         true,
+			"lease_holder":   "recovered: state file was corrupt or truncated; verify before reuse",
+			"leased_at":      time.Now().Add(-time.Hour),
+			"recovery_error": "too many levels of symbolic links",
+		}},
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(poolDir, "treehouse-state.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "status")
+	if code != 0 {
+		t.Fatalf("status failed, code=%d stderr=%q", code, stderr)
+	}
+	want := "treehouse return " + quoteReturnPath(lease.Path)
+	if !strings.Contains(stdout, "damaged") || !strings.Contains(stdout, "marker could not be read") || !strings.Contains(stdout, want) {
+		t.Fatalf("status does not explain the damaged recovery and name %q:\n%s", want, stdout)
+	}
+
+	if _, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "return", lease.Path); code != 0 {
+		t.Fatalf("the named return status printed failed, code=%d stderr=%q", code, stderr)
+	}
+	stdout, _, _ = runTreehouse(t, repoDir, homeDir, nil, "status")
+	if strings.Contains(stdout, "recovery held") {
+		t.Fatalf("returned slot still reports a recovery hold:\n%s", stdout)
 	}
 }

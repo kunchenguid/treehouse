@@ -366,6 +366,9 @@ func TestReturnAllSkipsQuarantinedSlotsWithoutFailing(t *testing.T) {
 	if err := os.WriteFile(dirtyFile, []byte("dirty\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(second.Path, "README.md"), []byte("also dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := os.WriteFile(filepath.Join(poolDir, "treehouse-state.key"), []byte("rotated"), 0o600); err != nil {
 		t.Fatal(err)
@@ -406,7 +409,8 @@ func TestReturnAllSkipsQuarantinedSlotsWithoutFailing(t *testing.T) {
 // TestReturnAllSkipsSlotsRecoveredAfterListing covers a pool whose state key
 // is invalidated while --all waits on a confirmation: every entry, including
 // the one being confirmed, is recovered before its release runs, and a bulk
-// return must never release a recovered entry, only name the return that does.
+// return must skip entries that remain recovered after the safety check and
+// name the return that releases each one.
 func TestReturnAllSkipsSlotsRecoveredAfterListing(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 
@@ -419,6 +423,11 @@ func TestReturnAllSkipsSlotsRecoveredAfterListing(t *testing.T) {
 	if err := os.WriteFile(dirtyFile, []byte("dirty\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(later.Path, "local-only.txt"), []byte("unpushable\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, later.Path, "add", "local-only.txt")
+	gitCmd(t, later.Path, "commit", "-m", "local-only")
 	poolDir := filepath.Dir(filepath.Dir(dirty.Path))
 
 	all, stdin, stderr := startReturnAllAtDirtyPrompt(t, repoDir, homeDir)

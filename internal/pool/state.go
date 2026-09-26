@@ -65,6 +65,9 @@ type WorktreeEntry struct {
 	// reason, so a skipped slot is visible and never reads as available or an
 	// ordinarily leased home.
 	RecoveryError string `json:"recovery_error,omitempty"`
+	// RecoveryReason records why automatic recovery kept a recovered lease
+	// quarantined; clearing the lease clears it.
+	RecoveryReason string `json:"recovery_reason,omitempty"`
 }
 
 func newLeaseID() (string, error) {
@@ -343,8 +346,8 @@ func recoverMissingStateEntries(poolDir string, s State) (State, error) {
 // (recoverMissingStateEntries or recoverCorruptState), or one ReadState
 // quarantined because its inventory failed to authenticate. treehouse 3.0.0
 // also put it on every entry of valid pre-3.0 state. None of these can be told
-// apart, so all stay leased until a `return` naming the slot releases it; bulk
-// `return --all` leaves them alone.
+// apart, so all stay leased until recoverQuarantinedEntries proves one safe or
+// a `return` naming the slot releases it; bulk `return --all` leaves them alone.
 const RecoveredLeaseHolder = "recovered: state file was corrupt or truncated; verify before reuse"
 
 // quarantineEntry builds the conservative entry both recovery scans write for a
@@ -405,9 +408,9 @@ func recoverOneWorktree(slotName, wtPath string) (WorktreeEntry, bool) {
 // evidence alone cannot tell an idle spare from a live, process-independent
 // lease. Every recovered entry is therefore marked leased: Acquire and prune
 // skip it, and destroy only removes it via an explicit, single-target
-// --include-leased. Only a return naming the slot clears the lease, and it
-// warns that recovery lost the trusted inventory of ignored files seeded into
-// the worktree, so those files are not cleaned up.
+// --include-leased. Only automatic recovery of a proven-safe slot or a return
+// naming the slot clears the lease; recovery lost the trusted inventory of
+// ignored files seeded into the worktree, so those files are not cleaned up.
 func recoverCorruptState(poolDir string, parseErr error) (State, error) {
 	slots, err := os.ReadDir(poolDir)
 	if err != nil {
@@ -434,7 +437,7 @@ func recoverCorruptState(poolDir string, parseErr error) (State, error) {
 			}
 		}
 	}
-	fmt.Fprintf(os.Stderr, "treehouse: WARNING: state file %s is corrupt or truncated (%v); recovering from worktrees found on disk. They are marked leased because their seeded-file inventory is unknown - see `treehouse status`, then remove one with `treehouse destroy <path> --include-leased --yes`.\n", stateFilePath(poolDir), parseErr)
+	fmt.Fprintf(os.Stderr, "treehouse: WARNING: state file %s is corrupt or truncated (%v); recovering worktrees found on disk as leased because their seeded-file inventory is unknown. See `treehouse status` for automatic recovery results and any slots that still need inspection.\n", stateFilePath(poolDir), parseErr)
 	return State{Worktrees: recovered}, nil
 }
 
@@ -540,5 +543,8 @@ func WithStateLock(poolDir string, fn func() error) error {
 	}
 	defer unlockFile(f)
 
+	if err := recoverQuarantinedEntries(poolDir); err != nil {
+		return err
+	}
 	return fn()
 }
