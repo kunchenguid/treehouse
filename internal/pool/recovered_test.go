@@ -54,6 +54,21 @@ func TestRecoveredAutoFreeGates(t *testing.T) {
 			t.Fatalf("status = %+v", st)
 		}
 	})
+	for _, flag := range []string{"--skip-worktree", "--assume-unchanged"} {
+		t.Run("tracked edit hidden by "+flag+" remains leased", func(t *testing.T) {
+			_, poolDir, path := recoveredFixture(t)
+			runGit(t, path, "update-index", flag, "README.md")
+			file := filepath.Join(path, "README.md")
+			if err := os.WriteFile(file, []byte("hidden edit\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			st := statusOf(t, poolDir, path)
+			if st.Status != StatusLeased || !strings.Contains(st.RecoveryReason, "skip-worktree or assume-unchanged") {
+				t.Fatalf("status = %+v", st)
+			}
+			assertFileContents(t, file, "hidden edit\n")
+		})
+	}
 	t.Run("unpushed head remains leased", func(t *testing.T) {
 		_, poolDir, path := recoveredFixture(t)
 		if err := os.WriteFile(filepath.Join(path, "new.txt"), []byte("commit\n"), 0o644); err != nil {

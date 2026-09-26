@@ -46,9 +46,10 @@ func recoverQuarantinedEntries(poolDir string) error {
 
 // recoverSafeEntry proves a 3.0.0-style recovered slot safe to free: nothing,
 // including the caller and its ancestors, uses it, it has no tracked edits,
-// including inside submodules, and its HEAD is safely reachable. Untracked
-// files are moved into a kept backup first where the platform supports it. It returns "" when the slot may be
-// freed, and otherwise why it stays quarantined.
+// including inside submodules or behind skip-worktree or assume-unchanged,
+// and its HEAD is safely reachable. Untracked files are moved into a kept
+// backup first where the platform supports it. It returns "" when the slot may
+// be freed, and otherwise why it stays quarantined.
 func recoverSafeEntry(poolDir string, wt *WorktreeEntry) string {
 	if wt.RecoveryError != "" {
 		return "its VCS marker could not be read, so it cannot be verified automatically"
@@ -62,6 +63,15 @@ func recoverSafeEntry(poolDir string, wt *WorktreeEntry) string {
 	}
 	if len(procs) != 0 || ownerAlive(*wt) {
 		return "a process is using this worktree (a shell standing in it counts); stop it or leave the worktree"
+	}
+	flags, err := gitRaw(wt.Path, "ls-files", "-v", "-z")
+	if err != nil {
+		return "cannot verify tracked changes"
+	}
+	for _, entry := range splitNUL(flags) {
+		if tag := entry[0]; tag == 'S' || (tag >= 'a' && tag <= 'z') {
+			return "tracked files are marked skip-worktree or assume-unchanged, which hides their edits; clear those flags and check them"
+		}
 	}
 	tracked, err := gitRaw(wt.Path, "diff", "--name-only", "--ignore-submodules=none", "HEAD", "--")
 	if err != nil {
