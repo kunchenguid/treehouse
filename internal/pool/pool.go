@@ -904,7 +904,8 @@ func markAcquired(wt *WorktreeEntry, opts acquireOptions) error {
 var ErrLeasePreconditionFailed = errors.New("lease precondition failed")
 
 // ErrRecoveredEntry reports that a release refusing recovered entries found the
-// worktree carrying RecoveredLeaseHolder. Only a return naming it may clear it.
+// worktree carrying RecoveredLeaseHolder. If automatic recovery cannot prove it
+// safe, bulk return refuses it; an operator may release it by naming the slot.
 var ErrRecoveredEntry = errors.New("recovered entry")
 
 // ErrOwnerPreconditionFailed reports that a release no longer identifies the
