@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -40,7 +41,19 @@ func recoverQuarantinedEntries(poolDir string) error {
 	if !changed {
 		return nil
 	}
-	return WriteState(poolDir, state)
+	if err := WriteState(poolDir, state); err != nil {
+		var backups []string
+		for _, wt := range state.Worktrees {
+			if backup := recoveryBackup(poolDir, wt.Name); backup != "" {
+				backups = append(backups, backup)
+			}
+		}
+		if len(backups) > 0 {
+			return fmt.Errorf("%w; recovered untracked files are kept in %s", err, strings.Join(backups, ", "))
+		}
+		return err
+	}
+	return nil
 }
 
 // recoverSafeEntry proves a 3.0.0-style recovered slot safe to free: nothing,
@@ -156,10 +169,13 @@ func recoveryBackupDir(poolDir, name string) string {
 	return filepath.Join(filepath.Dir(poolDir), "treehouse-recovered-backup-"+filepath.Base(poolDir)+"-"+name)
 }
 
-// recoveryBackup reports the slot's recovery backup folder when it exists and
-// holds anything, and "" otherwise.
+// recoveryBackup reports the slot's recovery backup folder when it is a real
+// directory that holds anything, and "" otherwise.
 func recoveryBackup(poolDir, name string) string {
 	backup := recoveryBackupDir(poolDir, name)
+	if info, err := os.Lstat(backup); err != nil || !info.IsDir() {
+		return ""
+	}
 	entries, err := os.ReadDir(backup)
 	if err != nil || len(entries) == 0 {
 		return ""
@@ -168,16 +184,28 @@ func recoveryBackup(poolDir, name string) string {
 }
 
 // backupUntracked moves, never copies-and-deletes, every reported untracked
-// path into backup. A path already taken there by an earlier attempt gets a
-// numeric suffix instead of being overwritten. A failed move leaves the slot
-// quarantined; already moved files stay in the backup.
+// path into backup. The backup and every folder inside it that a move lands in
+// must be a real directory, never a symlink that would carry files elsewhere.
+// A path already taken there by an earlier attempt gets a numeric suffix
+// instead of being overwritten. A failed move leaves the slot quarantined;
+// already moved files stay in the backup.
 func backupUntracked(backup, worktreePath string, paths []string) error {
+	if err := ensureRealDir(backup); err != nil {
+		return err
+	}
 	for _, name := range paths {
 		src := filepath.Join(worktreePath, filepath.FromSlash(name))
-		dst := filepath.Join(backup, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-			return err
+		dir := backup
+		for _, part := range strings.Split(path.Dir(name), "/") {
+			if part == "." {
+				continue
+			}
+			dir = filepath.Join(dir, part)
+			if err := ensureRealDir(dir); err != nil {
+				return err
+			}
 		}
+		dst := filepath.Join(dir, path.Base(name))
 		free := dst
 		for n := 1; ; n++ {
 			if _, err := os.Lstat(free); os.IsNotExist(err) {
@@ -190,6 +218,20 @@ func backupUntracked(backup, worktreePath string, paths []string) error {
 		if err := os.Rename(src, free); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func ensureRealDir(dir string) error {
+	if err := os.Mkdir(dir, 0o700); err != nil && !os.IsExist(err) {
+		return err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a real directory", dir)
 	}
 	return nil
 }

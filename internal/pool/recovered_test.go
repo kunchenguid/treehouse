@@ -214,7 +214,7 @@ func TestRecoveredPartialBackupRetriesIntoSameBackup(t *testing.T) {
 	}
 }
 
-func TestRecoveredBackupReportedAfterFailedStateWrite(t *testing.T) {
+func TestRecoveredBackupNamedWhileStateWriteFails(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("needs a pool directory the state cannot be written into")
 	}
@@ -226,18 +226,54 @@ func TestRecoveredBackupReportedAfterFailedStateWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(poolDir, 0o755) })
-	if _, err := List(poolDir); err == nil {
-		t.Fatal("List succeeded although the state could not be written")
+	backup := filepath.Join(filepath.Dir(poolDir), "treehouse-recovered-backup-"+filepath.Base(poolDir)+"-1")
+	for range 2 {
+		_, err := List(poolDir)
+		if err == nil || !strings.Contains(err.Error(), backup) {
+			t.Fatalf("List error = %v, want it to name backup %s", err, backup)
+		}
 	}
 	if wt := entryFor(t, poolDir, path); !wt.Leased {
 		t.Fatalf("entry was persisted as freed: %#v", wt)
 	}
-	if err := os.Chmod(poolDir, 0o755); err != nil {
-		t.Fatal(err)
+	assertFileContents(t, filepath.Join(backup, "notes.txt"), "keep\n")
+}
+
+func TestRecoveredBackupRefusesSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
 	}
-	st := statusOf(t, poolDir, path)
-	if st.Status != StatusAvailable || st.RecoveryBackup == "" {
-		t.Fatalf("status = %+v, want available reporting the backup", st)
+	for name, link := range map[string]func(backup, elsewhere string) error{
+		"backup folder": func(backup, elsewhere string) error { return os.Symlink(elsewhere, backup) },
+		"folder inside backup": func(backup, elsewhere string) error {
+			if err := os.Mkdir(backup, 0o700); err != nil {
+				return err
+			}
+			return os.Symlink(elsewhere, filepath.Join(backup, "scratch"))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, poolDir, path := recoveredFixture(t)
+			file := filepath.Join(path, "scratch", "notes.txt")
+			if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(file, []byte("keep\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			elsewhere := t.TempDir()
+			backup := filepath.Join(filepath.Dir(poolDir), "treehouse-recovered-backup-"+filepath.Base(poolDir)+"-1")
+			if err := link(backup, elsewhere); err != nil {
+				t.Fatal(err)
+			}
+			st := statusOf(t, poolDir, path)
+			if st.Status != StatusLeased || !strings.Contains(st.RecoveryReason, "not a real directory") {
+				t.Fatalf("status = %+v", st)
+			}
+			assertFileContents(t, file, "keep\n")
+			if entries, _ := os.ReadDir(elsewhere); len(entries) != 0 {
+				t.Fatalf("files were moved through the symlink: %v", entries)
+			}
+		})
 	}
-	assertFileContents(t, filepath.Join(st.RecoveryBackup, "notes.txt"), "keep\n")
 }
