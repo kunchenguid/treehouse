@@ -202,6 +202,63 @@ func TestRecoveredSubmoduleChangesRemainLeased(t *testing.T) {
 	}
 }
 
+func TestRecoveredSubmoduleUntrackedStaysLeased(t *testing.T) {
+	repo, poolDir := setupLocalRepo(t)
+	sub := filepath.Join(filepath.Dir(repo), "sub")
+	runGit(t, "", "init", "--initial-branch=main", sub)
+	runGit(t, sub, "config", "user.email", "test@test.com")
+	runGit(t, sub, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(sub, "f.txt"), []byte("sub\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, sub, "add", ".")
+	runGit(t, sub, "commit", "-m", "sub")
+	runGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", sub, "sub")
+	runGit(t, repo, "commit", "-m", "add submodule")
+	path := idleSlots(t, repo, poolDir, 1)[0]
+	runGit(t, path, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
+	file := filepath.Join(path, "sub", "scratch.txt")
+	if err := os.WriteFile(file, []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeRawState(t, poolDir, State{Version: stateVersion, Worktrees: []WorktreeEntry{{Name: "1", Path: path, Leased: true, LeaseHolder: RecoveredLeaseHolder}}})
+	st := statusOf(t, poolDir, path)
+	if st.Status != StatusLeased || !strings.Contains(st.RecoveryReason, "submodule sub") || !strings.Contains(st.RecoveryReason, "untracked") {
+		t.Fatalf("status = %+v", st)
+	}
+	assertFileContents(t, file, "keep\n")
+	if st.RecoveryBackup != "" {
+		t.Fatalf("submodule contents were backed up: %+v", st)
+	}
+}
+
+func TestBackupMoveNoReplacePreservesBothFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("recovery backup is unsupported on Windows")
+	}
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "source"), filepath.Join(dir, "destination")
+	if err := os.WriteFile(src, []byte("original\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("racer\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := moveNoReplace(src, dst); !os.IsExist(err) {
+		t.Fatalf("occupied destination: %v", err)
+	}
+	assertFileContents(t, src, "original\n")
+	assertFileContents(t, dst, "racer\n")
+	if err := moveNoReplace(src, dst+".1"); err != nil {
+		t.Fatal(err)
+	}
+	assertFileContents(t, dst+".1", "original\n")
+	assertFileContents(t, dst, "racer\n")
+	if _, err := os.Lstat(src); !os.IsNotExist(err) {
+		t.Fatalf("source still present: %v", err)
+	}
+}
+
 func TestRecoveredPartialBackupRetriesIntoSameBackup(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("needs a directory whose entries cannot be renamed")

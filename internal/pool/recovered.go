@@ -1,10 +1,8 @@
 package pool
 
 import (
-	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
@@ -64,27 +62,10 @@ func recoverSafeEntry(poolDir string, wt *WorktreeEntry) string {
 	if len(procs) != 0 || ownerAlive(*wt) {
 		return "a process is using this worktree (a shell standing in it counts); stop it or leave the worktree"
 	}
-	flags, err := gitRaw(wt.Path, "ls-files", "-v", "-z", "--recurse-submodules")
-	if err != nil {
-		return "cannot verify tracked changes"
+	untracked, reason := vcs.RecoveryWorktree(wt.Path)
+	if reason != "" {
+		return reason
 	}
-	for _, entry := range splitNUL(flags) {
-		if tag := entry[0]; tag == 'S' || (tag >= 'a' && tag <= 'z') {
-			return "tracked files are marked skip-worktree or assume-unchanged, which hides their edits; clear those flags and check them"
-		}
-	}
-	tracked, err := gitRaw(wt.Path, "diff", "--name-only", "--ignore-submodules=none", "HEAD", "--")
-	if err != nil {
-		return "cannot verify tracked changes"
-	}
-	if len(bytes.TrimSpace(tracked)) != 0 {
-		return "tracked changes (including submodule contents) are present; commit or preserve them"
-	}
-	untrackedBytes, err := gitRaw(wt.Path, "ls-files", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return "cannot verify untracked files"
-	}
-	untracked := splitNUL(untrackedBytes)
 	if !headContained(wt) {
 		return "HEAD is not contained in a remote-tracking ref or the slot's base branch; push or preserve it"
 	}
@@ -101,66 +82,12 @@ func recoverSafeEntry(poolDir string, wt *WorktreeEntry) string {
 	return ""
 }
 
-func gitRaw(dir string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	return cmd.Output()
-}
-
-func splitNUL(data []byte) []string {
-	var paths []string
-	for _, p := range bytes.Split(data, []byte{0}) {
-		if len(p) != 0 {
-			paths = append(paths, string(p))
-		}
-	}
-	return paths
-}
-
 func headContained(wt *WorktreeEntry) bool {
-	refs, err := gitRaw(wt.Path, "for-each-ref", "--format=%(refname)", "refs/remotes")
-	if err != nil {
-		return false
-	}
-	candidates := splitLines(refs)
 	base := wt.BaseBranch
 	if base == "" {
-		base, err = vcs.DefaultBranchForWorktree(wt.Path)
-		if err == nil && base != "" {
-			for _, ref := range []string{"refs/heads/" + base, "refs/remotes/origin/" + base} {
-				if _, e := gitRaw(wt.Path, "show-ref", "--verify", "--quiet", ref); e == nil {
-					candidates = append(candidates, ref)
-				}
-			}
-		}
-	} else {
-		for _, ref := range []string{"refs/heads/" + base, "refs/remotes/origin/" + base} {
-			if _, e := gitRaw(wt.Path, "show-ref", "--verify", "--quiet", ref); e == nil {
-				candidates = append(candidates, ref)
-			}
-		}
+		base, _ = vcs.DefaultBranchForWorktree(wt.Path)
 	}
-	for _, ref := range candidates {
-		if ref == "" {
-			continue
-		}
-		// Recovery requires commit containment, not the broader squash-merge
-		// content equivalence used by prune/destroy.
-		if _, e := gitRaw(wt.Path, "merge-base", "--is-ancestor", "HEAD", ref); e == nil {
-			return true
-		}
-	}
-	return false
-}
-
-func splitLines(data []byte) []string {
-	var lines []string
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		if line != "" {
-			lines = append(lines, line)
-		}
-	}
-	return lines
+	return vcs.RecoveryHeadContained(wt.Path, base)
 }
 
 // recoveryBackupDir is the one backup folder a slot's recovery ever uses. It is
@@ -211,17 +138,17 @@ func backupUntracked(backup, worktreePath string, paths []string) error {
 			}
 		}
 		dst := filepath.Join(dir, path.Base(name))
-		free := dst
-		for n := 1; ; n++ {
-			if _, err := os.Lstat(free); os.IsNotExist(err) {
-				break
+		for n := 0; ; n++ {
+			free := dst
+			if n != 0 {
+				free = fmt.Sprintf("%s.%d", dst, n)
+			}
+			if err := moveNoReplace(src, free); os.IsExist(err) {
+				continue
 			} else if err != nil {
 				return err
 			}
-			free = fmt.Sprintf("%s.%d", dst, n)
-		}
-		if err := os.Rename(src, free); err != nil {
-			return err
+			break
 		}
 	}
 	return nil
