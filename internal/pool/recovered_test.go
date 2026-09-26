@@ -72,6 +72,9 @@ func TestRecoveredAutoFreeGates(t *testing.T) {
 		}
 	})
 	t.Run("untracked contents are retained in backup then freed", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("untracked backup is not supported on Windows")
+		}
 		_, poolDir, path := recoveredFixture(t)
 		file := filepath.Join(path, "scratch", "notes.txt")
 		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {

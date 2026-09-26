@@ -8,6 +8,8 @@ import (
 	"syscall"
 )
 
+const untrackedBackupUnsupported = ""
+
 // ensureOwnerOnlyDir keeps a recovery backup as private as the owner-only
 // folders recovery creates: a broader folder of the current user's is tightened
 // to 0700, and any other owner's folder is refused.

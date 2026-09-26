@@ -47,7 +47,7 @@ func recoverQuarantinedEntries(poolDir string) error {
 // recoverSafeEntry proves a 3.0.0-style recovered slot safe to free: nothing,
 // including the caller and its ancestors, uses it, it has no tracked edits,
 // including inside submodules, and its HEAD is safely reachable. Untracked
-// files are moved into a kept backup first. It returns "" when the slot may be
+// files are moved into a kept backup first where the platform supports it. It returns "" when the slot may be
 // freed, and otherwise why it stays quarantined.
 func recoverSafeEntry(poolDir string, wt *WorktreeEntry) string {
 	if wt.RecoveryError != "" {
@@ -79,6 +79,9 @@ func recoverSafeEntry(poolDir string, wt *WorktreeEntry) string {
 		return "HEAD is not contained in a remote-tracking ref or the slot's base branch; push or preserve it"
 	}
 	if len(untracked) > 0 {
+		if untrackedBackupUnsupported != "" {
+			return untrackedBackupUnsupported
+		}
 		backup := recoveryBackupDir(poolDir, wt.Name)
 		if err := backupUntracked(backup, wt.Path, untracked); err != nil {
 			return fmt.Sprintf("untracked files could not all be moved into backup %s (%v)", backup, err)
