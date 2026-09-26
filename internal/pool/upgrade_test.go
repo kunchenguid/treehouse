@@ -171,13 +171,9 @@ func TestUpgrade_AdoptsTwoXRewriteBesideKey(t *testing.T) {
 	}
 }
 
-// TestUpgrade_KeepsThreeZeroQuarantineUntilNamedReturn covers pools treehouse
-// 3.0.0 already rewrote: every pre-3.0 entry leased as recovered, with or
-// without the lease identity it had, and a state key beside it. Nothing tells
-// a formerly idle slot from a durable lease, so every one stays leased and is
-// never handed out, and a return naming it releases it despite its unknown
-// seed inventory.
-func TestUpgrade_KeepsThreeZeroQuarantineUntilNamedReturn(t *testing.T) {
+// TestUpgrade_AutoFreesThreeZeroQuarantine covers safe slots that 3.0.0
+// already rewrote as recovered. Proven idle, clean, landed slots become reusable.
+func TestUpgrade_AutoFreesThreeZeroQuarantine(t *testing.T) {
 	repoDir, poolDir := setupLocalRepo(t)
 	paths := idleSlots(t, repoDir, poolDir, 2)
 	stamp := time.Now().Add(-time.Hour).Round(0)
@@ -194,29 +190,21 @@ func TestUpgrade_KeepsThreeZeroQuarantineUntilNamedReturn(t *testing.T) {
 	writeRawState(t, poolDir, State{Version: stateVersion, Worktrees: entries})
 
 	for _, path := range paths {
-		if st := statusOf(t, poolDir, path); st.Status != StatusLeased || st.LeaseHolder != RecoveredLeaseHolder {
-			t.Fatalf("slot %s quarantined by 3.0.0 reads %s held by %q", path, st.Status, st.LeaseHolder)
+		if st := statusOf(t, poolDir, path); st.Status != StatusAvailable {
+			t.Fatalf("safe 3.0.0 slot %s reads %s, want available", path, st.Status)
 		}
 	}
-	got, err := AcquireLease(repoDir, poolDir, len(paths)+1, nil, "after-fix")
+	got, err := AcquireLease(repoDir, poolDir, len(paths), nil, "after-fix")
 	if err != nil {
-		t.Fatalf("acquire over a pool 3.0.0 quarantined: %v", err)
+		t.Fatalf("acquire from recovered pool: %v", err)
 	}
+	found := false
 	for _, path := range paths {
 		if got == path {
-			t.Fatalf("acquire reused %s, which 3.0.0 quarantined", path)
-		}
-		if wt := entryFor(t, poolDir, path); !wt.Leased || wt.LeaseHolder != RecoveredLeaseHolder || wt.SeedInventoryKnown {
-			t.Fatalf("slot %s changed without a return: %#v", path, wt)
+			found = true
 		}
 	}
-
-	for _, path := range paths {
-		if err := Release(poolDir, path); err != nil {
-			t.Fatalf("return naming %s: %v", path, err)
-		}
-		if st := statusOf(t, poolDir, path); st.Status != StatusAvailable {
-			t.Fatalf("returned slot %s reads %s, want available", path, st.Status)
-		}
+	if !found {
+		t.Fatalf("acquired %s, want a recovered slot %v", got, paths)
 	}
 }

@@ -64,7 +64,8 @@ type WorktreeEntry struct {
 	// --include-leased target - but List reports it as damaged with this
 	// reason, so a skipped slot is visible and never reads as available or an
 	// ordinarily leased home.
-	RecoveryError string `json:"recovery_error,omitempty"`
+	RecoveryError  string `json:"recovery_error,omitempty"`
+	RecoveryReason string `json:"recovery_reason,omitempty"`
 }
 
 func newLeaseID() (string, error) {
@@ -434,7 +435,7 @@ func recoverCorruptState(poolDir string, parseErr error) (State, error) {
 			}
 		}
 	}
-	fmt.Fprintf(os.Stderr, "treehouse: WARNING: state file %s is corrupt or truncated (%v); recovering from worktrees found on disk. They are marked leased because their seeded-file inventory is unknown - see `treehouse status`, then remove one with `treehouse destroy <path> --include-leased --yes`.\n", stateFilePath(poolDir), parseErr)
+	fmt.Fprintf(os.Stderr, "treehouse: WARNING: state file %s is corrupt or truncated (%v); recovering worktrees found on disk as leased because their seeded-file inventory is unknown. See `treehouse status` for automatic recovery results and any slots that still need inspection.\n", stateFilePath(poolDir), parseErr)
 	return State{Worktrees: recovered}, nil
 }
 

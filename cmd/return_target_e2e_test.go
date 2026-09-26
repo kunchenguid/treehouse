@@ -366,6 +366,9 @@ func TestReturnAllSkipsQuarantinedSlotsWithoutFailing(t *testing.T) {
 	if err := os.WriteFile(dirtyFile, []byte("dirty\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(second.Path, "README.md"), []byte("also dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := os.WriteFile(filepath.Join(poolDir, "treehouse-state.key"), []byte("rotated"), 0o600); err != nil {
 		t.Fatal(err)
@@ -419,6 +422,11 @@ func TestReturnAllSkipsSlotsRecoveredAfterListing(t *testing.T) {
 	if err := os.WriteFile(dirtyFile, []byte("dirty\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(later.Path, "local-only.txt"), []byte("unpushable\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, later.Path, "add", "local-only.txt")
+	gitCmd(t, later.Path, "commit", "-m", "local-only")
 	poolDir := filepath.Dir(filepath.Dir(dirty.Path))
 
 	all, stdin, stderr := startReturnAllAtDirtyPrompt(t, repoDir, homeDir)

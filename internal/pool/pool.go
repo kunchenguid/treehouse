@@ -62,6 +62,8 @@ type WorktreeStatus struct {
 	// instead of leaving Branch empty, so a read failure is never mistaken for
 	// a detached HEAD.
 	BranchErr string
+	// RecoveryReason explains why a recovered lease was kept quarantined.
+	RecoveryReason string
 	// HeldOnlyByCwd reports a StatusHere slot that nobody is actually holding:
 	// it is unleased, idle, clean, quiet and undamaged, and the only reason it
 	// is not reported available is that the caller is standing in it. Status
@@ -1175,10 +1177,11 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 				continue
 			}
 			ws := WorktreeStatus{
-				Name:   wt.Name,
-				Path:   wt.Path,
-				Status: StatusAvailable,
-				Flavor: vcs.WorktreeBackendName(wt.Path),
+				Name:           wt.Name,
+				Path:           wt.Path,
+				Status:         StatusAvailable,
+				Flavor:         vcs.WorktreeBackendName(wt.Path),
+				RecoveryReason: wt.RecoveryReason,
 			}
 
 			// The two failure modes get different answers, which is why the
@@ -1316,6 +1319,13 @@ func healState(poolDir string, state State) (State, error) {
 				wt.OwnerPID = 0
 				wt.OwnerStartedAt = 0
 				wt.Destroying = false
+			}
+			if wt.Leased && wt.LeaseHolder == RecoveredLeaseHolder {
+				reason, err := recoverSafeEntry(poolDir, &wt)
+				if err != nil {
+					return state, err
+				}
+				wt.RecoveryReason = reason
 			}
 			healed = append(healed, wt)
 		}

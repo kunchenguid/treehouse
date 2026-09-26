@@ -21,6 +21,13 @@ func TestStatusNamesReturnForThreeZeroUpgradeQuarantine(t *testing.T) {
 		t.Fatalf("return failed, code=%d stderr=%q", code, stderr)
 	}
 	poolDir := filepath.Dir(filepath.Dir(lease.Path))
+	// A private commit ensures this remains quarantined instead of being
+	// automatically freed as a proven-safe 3.0.0 recovery.
+	if err := os.WriteFile(filepath.Join(lease.Path, "local-only.txt"), []byte("private\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, lease.Path, "add", "local-only.txt")
+	gitCmd(t, lease.Path, "commit", "-m", "local-only")
 
 	stamp := time.Now().Add(-time.Hour).Round(0)
 	state := map[string]any{

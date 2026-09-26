@@ -24,17 +24,18 @@ type statusJSONProcess struct {
 }
 
 type statusJSONWorktree struct {
-	Name        string              `json:"name"`
-	Path        string              `json:"path"`
-	Status      string              `json:"status"`
-	Branch      string              `json:"branch"`
-	Detached    bool                `json:"detached,omitempty"`
-	BranchErr   string              `json:"branch_error,omitempty"`
-	Flavor      string              `json:"flavor,omitempty"`
-	LeaseID     string              `json:"lease_id"`
-	LeaseHolder string              `json:"lease_holder"`
-	LeasedAt    *time.Time          `json:"leased_at"`
-	Processes   []statusJSONProcess `json:"processes"`
+	Name           string              `json:"name"`
+	Path           string              `json:"path"`
+	Status         string              `json:"status"`
+	Branch         string              `json:"branch"`
+	Detached       bool                `json:"detached,omitempty"`
+	BranchErr      string              `json:"branch_error,omitempty"`
+	RecoveryReason string              `json:"recovery_reason,omitempty"`
+	Flavor         string              `json:"flavor,omitempty"`
+	LeaseID        string              `json:"lease_id"`
+	LeaseHolder    string              `json:"lease_holder"`
+	LeasedAt       *time.Time          `json:"leased_at"`
+	Processes      []statusJSONProcess `json:"processes"`
 }
 
 var statusCmd = &cobra.Command{
@@ -118,7 +119,7 @@ var statusCmd = &cobra.Command{
 				line += fmt.Sprintf("  (held by %s)", wt.LeaseHolder)
 			}
 			if wt.Status == pool.StatusLeased && wt.LeaseHolder == pool.RecoveredLeaseHolder {
-				line += yellow(fmt.Sprintf("  (check it, then free it with: treehouse return %s)", quoteReturnPath(wt.Path)))
+				line += yellow(fmt.Sprintf("  (recovery held: %s; inspect, then treehouse return %s)", wt.RecoveryReason, quoteReturnPath(wt.Path)))
 			}
 			if wt.Flavor != "" && wt.Flavor != repoFlavor {
 				line += yellow(fmt.Sprintf("  (%s-flavored; repo selects %s — destroy to migrate)", wt.Flavor, repoFlavor))
@@ -172,16 +173,17 @@ func writeStatusJSON(worktrees []pool.WorktreeStatus) error {
 	output := make([]statusJSONWorktree, 0, len(worktrees))
 	for _, wt := range worktrees {
 		item := statusJSONWorktree{
-			Name:        wt.Name,
-			Path:        wt.Path,
-			Status:      wt.Status,
-			Branch:      wt.Branch,
-			Detached:    wt.Detached,
-			BranchErr:   wt.BranchErr,
-			Flavor:      wt.Flavor,
-			LeaseID:     wt.LeaseID,
-			LeaseHolder: wt.LeaseHolder,
-			Processes:   make([]statusJSONProcess, 0, len(wt.Processes)),
+			Name:           wt.Name,
+			Path:           wt.Path,
+			Status:         wt.Status,
+			Branch:         wt.Branch,
+			Detached:       wt.Detached,
+			BranchErr:      wt.BranchErr,
+			RecoveryReason: wt.RecoveryReason,
+			Flavor:         wt.Flavor,
+			LeaseID:        wt.LeaseID,
+			LeaseHolder:    wt.LeaseHolder,
+			Processes:      make([]statusJSONProcess, 0, len(wt.Processes)),
 		}
 		if !wt.LeasedAt.IsZero() {
 			leasedAt := wt.LeasedAt
