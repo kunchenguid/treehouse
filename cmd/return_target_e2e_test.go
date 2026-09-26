@@ -409,7 +409,8 @@ func TestReturnAllSkipsQuarantinedSlotsWithoutFailing(t *testing.T) {
 // TestReturnAllSkipsSlotsRecoveredAfterListing covers a pool whose state key
 // is invalidated while --all waits on a confirmation: every entry, including
 // the one being confirmed, is recovered before its release runs, and a bulk
-// return must never release a recovered entry, only name the return that does.
+// return must skip entries that remain recovered after the safety check and
+// name the return that releases each one.
 func TestReturnAllSkipsSlotsRecoveredAfterListing(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 
