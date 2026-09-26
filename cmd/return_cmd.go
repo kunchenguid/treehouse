@@ -186,9 +186,10 @@ func releaseWorktree(target returnTarget, preconditions pool.ReleasePrecondition
 // file predating lease IDs) offers nothing to compare, so its release carries
 // only the recovered-entry refusal below.
 //
-// Every bulk release also refuses a recovered entry, so a slot recovered after
-// the listing (a state key invalidated mid-run relabels a whole pool) is left
-// for a return that names it, exactly like one recovered before the listing.
+// Every bulk release also refuses an entry that remains recovered after the
+// automatic safety check, including one recovered after the listing (for
+// example, when a state key is invalidated mid-run). Such a slot needs a named
+// return after inspection.
 func bulkReturnPreconditions(wt pool.WorktreeStatus) pool.ReleasePreconditions {
 	if wt.Status == pool.StatusLeased {
 		if wt.LeaseID == "" {
@@ -251,10 +252,9 @@ func returnableStatus(wt pool.WorktreeStatus) bool {
 // nothing it set out to return was still there to return.
 //
 // A slot nobody holds - available, damaged, or one the caller merely stands
-// in - is never a target at all and is counted separately. Neither is a
-// recovered slot (including every slot treehouse 3.0.0 wrongly quarantined
-// while upgrading pre-3.0 state): nothing proves it idle, so it is counted held
-// and skipped, and only a return naming it releases it.
+// in - is never a target at all and is counted separately. A recovered slot
+// that the automatic safety check cannot free (including a 3.0.0 upgrade
+// quarantine) is counted held and skipped; only a named return releases it.
 func returnHeldWorktrees() error {
 	poolDir, err := repositoryPoolDir()
 	if err != nil {
