@@ -252,3 +252,32 @@ func TestRecoveredBackupRefusesSymlinks(t *testing.T) {
 		})
 	}
 }
+
+func TestRecoveredBackupTightensBroaderExistingFolder(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits do not govern access on Windows")
+	}
+	_, poolDir, path := recoveredFixture(t)
+	if err := os.WriteFile(filepath.Join(path, "notes.txt"), []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	backup := filepath.Join(filepath.Dir(poolDir), "treehouse-recovered-backup-"+filepath.Base(poolDir)+"-1")
+	if err := os.Mkdir(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st := statusOf(t, poolDir, path)
+	if st.Status != StatusAvailable || st.RecoveryBackup != backup {
+		t.Fatalf("status = %+v, want available reporting backup %s", st, backup)
+	}
+	info, err := os.Stat(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Fatalf("backup mode = %o, want 700", perm)
+	}
+	assertFileContents(t, filepath.Join(backup, "notes.txt"), "keep\n")
+}

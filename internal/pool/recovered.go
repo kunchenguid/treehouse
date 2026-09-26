@@ -172,13 +172,17 @@ func recoveryBackup(poolDir, name string) string {
 }
 
 // backupUntracked moves, never copies-and-deletes, every reported untracked
-// path into backup. The backup and every folder inside it that a move lands in
-// must be a real directory, never a symlink that would carry files elsewhere.
+// path into backup. The backup must be owner-only, and it and every folder
+// inside it that a move lands in must be a real directory, never a symlink
+// that would carry files elsewhere.
 // A path already taken there by an earlier attempt gets a numeric suffix
 // instead of being overwritten. A failed move leaves the slot quarantined;
 // already moved files stay in the backup.
 func backupUntracked(backup, worktreePath string, paths []string) error {
 	if err := ensureRealDir(backup); err != nil {
+		return err
+	}
+	if err := ensureOwnerOnlyDir(backup); err != nil {
 		return err
 	}
 	for _, name := range paths {
