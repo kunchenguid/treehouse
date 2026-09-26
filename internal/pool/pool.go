@@ -1070,10 +1070,7 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 			wt.BaseBranch = requested
 		}
 
-		wt.OwnerPID = 0
-		wt.OwnerStartedAt = 0
-		clearLease(wt)
-		setSeedInventory(wt, nil, true)
+		releaseEntry(wt)
 		return WriteState(poolDir, state)
 	})
 }
@@ -1320,13 +1317,6 @@ func healState(poolDir string, state State) (State, error) {
 				wt.OwnerStartedAt = 0
 				wt.Destroying = false
 			}
-			if wt.Leased && wt.LeaseHolder == RecoveredLeaseHolder {
-				reason, err := recoverSafeEntry(poolDir, &wt)
-				if err != nil {
-					return state, err
-				}
-				wt.RecoveryReason = reason
-			}
 			healed = append(healed, wt)
 		}
 	}
@@ -1458,6 +1448,17 @@ func clearLease(wt *WorktreeEntry) {
 	wt.LeaseID = ""
 	wt.LeaseHolder = ""
 	wt.LeasedAt = time.Time{}
+	wt.RecoveryReason = ""
+}
+
+// releaseEntry returns a slot to the pool in state: no reservation, no lease,
+// and an empty trusted seed inventory. Ignored files seeded before an unknown
+// inventory are not recorded, so they stay in the worktree.
+func releaseEntry(wt *WorktreeEntry) {
+	wt.OwnerPID = 0
+	wt.OwnerStartedAt = 0
+	clearLease(wt)
+	setSeedInventory(wt, nil, true)
 }
 
 func sameDestroyReservation(current, reserved WorktreeEntry) bool {

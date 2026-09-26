@@ -7,58 +7,84 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/kunchenguid/treehouse/internal/vcs"
 )
 
-// recoverSafeEntry only frees 3.0.0-style recovered leases after proving the
-// slot is unused, has no tracked edits, and its HEAD is safely reachable. Any
-// uncertainty leaves the quarantine intact and returns a status explanation.
-func recoverSafeEntry(poolDir string, wt *WorktreeEntry) (string, error) {
-	if !wt.Leased || wt.LeaseHolder != RecoveredLeaseHolder {
-		return "", nil
+// recoverQuarantinedEntries runs under the state lock before every pool
+// operation, so a recovered entry proven safe is freed whichever command runs
+// next. An unreadable state is left for the operation itself to report.
+func recoverQuarantinedEntries(poolDir string) error {
+	state, err := ReadState(poolDir)
+	if err != nil {
+		return nil
 	}
-	if wt.RecoveryError != "" || vcs.WorktreeBackendName(wt.Path) != "git" {
-		return "automatic safety verification is unavailable for this VCS flavor; inspect it and run treehouse return <path>", nil
+	changed := false
+	for i := range state.Worktrees {
+		wt := &state.Worktrees[i]
+		if !wt.Leased || wt.LeaseHolder != RecoveredLeaseHolder {
+			continue
+		}
+		if _, err := os.Stat(wt.Path); err != nil {
+			continue
+		}
+		reason := recoverSafeEntry(poolDir, wt)
+		if reason == "" {
+			releaseEntry(wt)
+			changed = true
+		} else if reason != wt.RecoveryReason {
+			wt.RecoveryReason = reason
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return WriteState(poolDir, state)
+}
+
+// recoverSafeEntry proves a 3.0.0-style recovered slot safe to free: nothing,
+// including the caller and its ancestors, uses it, it has no tracked edits,
+// and its HEAD is safely reachable. Untracked files are moved into a kept
+// backup first. It returns "" when the slot may be freed, and otherwise why it
+// stays quarantined.
+func recoverSafeEntry(poolDir string, wt *WorktreeEntry) string {
+	if wt.RecoveryError != "" {
+		return "its VCS marker could not be read, so it cannot be verified automatically"
+	}
+	if vcs.WorktreeBackendName(wt.Path) != "git" {
+		return "automatic safety verification is only available for Git worktrees"
 	}
 	procs, err := findProcessesInWorktree(wt.Path)
 	if err != nil {
-		return "cannot verify whether a process is using this worktree; inspect it and run treehouse return <path>", nil
-	}
-	if procs, err = dropProtectedProcesses(procs); err != nil {
-		return "cannot verify whether a process is using this worktree; inspect it and run treehouse return <path>", nil
+		return "cannot verify whether a process is using this worktree"
 	}
 	if len(procs) != 0 || ownerAlive(*wt) {
-		return "a process is using this worktree; stop it, inspect the worktree, then run treehouse return <path>", nil
+		return "a process is using this worktree (a shell standing in it counts); stop it or leave the worktree"
 	}
 	tracked, err := gitRaw(wt.Path, "diff", "--name-only", "HEAD", "--")
 	if err != nil {
-		return "cannot verify tracked changes; inspect the worktree and run treehouse return <path>", nil
+		return "cannot verify tracked changes"
 	}
 	if len(bytes.TrimSpace(tracked)) != 0 {
-		return "tracked changes are present; inspect and commit or preserve them, then run treehouse return <path>", nil
+		return "tracked changes are present; commit or preserve them"
 	}
 	untrackedBytes, err := gitRaw(wt.Path, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
-		return "cannot verify untracked files; inspect the worktree and run treehouse return <path>", nil
+		return "cannot verify untracked files"
 	}
 	untracked := splitNUL(untrackedBytes)
 	if !headContained(wt) {
-		return "HEAD is not contained in a remote-tracking ref or the slot's base branch; inspect/push it, then run treehouse return <path>", nil
+		return "HEAD is not contained in a remote-tracking ref or the slot's base branch; push or preserve it"
 	}
 	if len(untracked) > 0 {
 		backup, err := backupUntracked(poolDir, wt, untracked)
 		if err != nil {
-			return fmt.Sprintf("untracked files could not be backed up (%v); inspect and run treehouse return <path>", err), nil
+			return fmt.Sprintf("untracked files could not be backed up (%v)", err)
 		}
 		fmt.Fprintf(os.Stderr, "treehouse: recovered untracked files from %s into retained backup %s\n", wt.Path, backup)
 	}
-	wt.Leased = false
-	wt.LeaseID = ""
-	wt.LeaseHolder = ""
-	wt.LeasedAt = time.Time{}
-	return "", nil
+	return ""
 }
 
 func gitRaw(dir string, args ...string) ([]byte, error) {

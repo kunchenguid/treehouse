@@ -118,8 +118,8 @@ var statusCmd = &cobra.Command{
 			if wt.Status == pool.StatusLeased && wt.LeaseHolder != "" {
 				line += fmt.Sprintf("  (held by %s)", wt.LeaseHolder)
 			}
-			if wt.Status == pool.StatusLeased && wt.LeaseHolder == pool.RecoveredLeaseHolder {
-				line += yellow(fmt.Sprintf("  (recovery held: %s; inspect, then treehouse return %s)", wt.RecoveryReason, quoteReturnPath(wt.Path)))
+			if wt.LeaseHolder == pool.RecoveredLeaseHolder {
+				line += yellow(fmt.Sprintf("  (recovery held: %s; inspect it, then free it with: treehouse return %s)", wt.RecoveryReason, quoteReturnPath(wt.Path)))
 			}
 			if wt.Flavor != "" && wt.Flavor != repoFlavor {
 				line += yellow(fmt.Sprintf("  (%s-flavored; repo selects %s — destroy to migrate)", wt.Flavor, repoFlavor))
