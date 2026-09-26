@@ -31,6 +31,7 @@ type statusJSONWorktree struct {
 	Detached       bool                `json:"detached,omitempty"`
 	BranchErr      string              `json:"branch_error,omitempty"`
 	RecoveryReason string              `json:"recovery_reason,omitempty"`
+	RecoveryBackup string              `json:"recovery_backup,omitempty"`
 	Flavor         string              `json:"flavor,omitempty"`
 	LeaseID        string              `json:"lease_id"`
 	LeaseHolder    string              `json:"lease_holder"`
@@ -121,6 +122,9 @@ var statusCmd = &cobra.Command{
 			if wt.LeaseHolder == pool.RecoveredLeaseHolder {
 				line += yellow(fmt.Sprintf("  (recovery held: %s; inspect it, then free it with: treehouse return %s)", wt.RecoveryReason, quoteReturnPath(wt.Path)))
 			}
+			if wt.RecoveryBackup != "" {
+				line += yellow(fmt.Sprintf("  (recovered untracked files kept in %s)", ui.PrettyPath(wt.RecoveryBackup)))
+			}
 			if wt.Flavor != "" && wt.Flavor != repoFlavor {
 				line += yellow(fmt.Sprintf("  (%s-flavored; repo selects %s — destroy to migrate)", wt.Flavor, repoFlavor))
 			}
@@ -180,6 +184,7 @@ func writeStatusJSON(worktrees []pool.WorktreeStatus) error {
 			Detached:       wt.Detached,
 			BranchErr:      wt.BranchErr,
 			RecoveryReason: wt.RecoveryReason,
+			RecoveryBackup: wt.RecoveryBackup,
 			Flavor:         wt.Flavor,
 			LeaseID:        wt.LeaseID,
 			LeaseHolder:    wt.LeaseHolder,

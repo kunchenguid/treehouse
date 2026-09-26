@@ -64,6 +64,9 @@ type WorktreeStatus struct {
 	BranchErr string
 	// RecoveryReason explains why a recovered lease was kept quarantined.
 	RecoveryReason string
+	// RecoveryBackup is the non-empty folder recovery moved this slot's
+	// untracked files into, or "" when there is none.
+	RecoveryBackup string
 	// HeldOnlyByCwd reports a StatusHere slot that nobody is actually holding:
 	// it is unleased, idle, clean, quiet and undamaged, and the only reason it
 	// is not reported available is that the caller is standing in it. Status
@@ -1179,6 +1182,7 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 				Status:         StatusAvailable,
 				Flavor:         vcs.WorktreeBackendName(wt.Path),
 				RecoveryReason: wt.RecoveryReason,
+				RecoveryBackup: recoveryBackup(poolDir, wt.Name),
 			}
 
 			// The two failure modes get different answers, which is why the

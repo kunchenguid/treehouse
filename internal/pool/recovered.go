@@ -78,12 +78,9 @@ func recoverSafeEntry(poolDir string, wt *WorktreeEntry) string {
 		return "HEAD is not contained in a remote-tracking ref or the slot's base branch; push or preserve it"
 	}
 	if len(untracked) > 0 {
-		backup, err := backupUntracked(poolDir, wt, untracked)
-		if err != nil {
-			if backup == "" {
-				return fmt.Sprintf("untracked files could not be backed up (%v)", err)
-			}
-			return fmt.Sprintf("untracked files could not all be backed up (%v); those already moved are kept in %s", err, backup)
+		backup := recoveryBackupDir(poolDir, wt.Name)
+		if err := backupUntracked(backup, wt.Path, untracked); err != nil {
+			return fmt.Sprintf("untracked files could not all be moved into backup %s (%v)", backup, err)
 		}
 		fmt.Fprintf(os.Stderr, "treehouse: recovered untracked files from %s into retained backup %s\n", wt.Path, backup)
 	}
@@ -152,23 +149,47 @@ func splitLines(data []byte) []string {
 	return lines
 }
 
-// backupUntracked moves, never copies-and-deletes, every reported untracked
-// path into a unique kept directory beside the pool. A failed move leaves the
-// slot quarantined; already moved files remain safely recoverable in the backup.
-func backupUntracked(poolDir string, wt *WorktreeEntry, paths []string) (string, error) {
-	backup, err := os.MkdirTemp(filepath.Dir(poolDir), "treehouse-recovered-backup-"+filepath.Base(poolDir)+"-"+wt.Name+"-")
-	if err != nil {
-		return "", err
+// recoveryBackupDir is the one backup folder a slot's recovery ever uses. It is
+// derived rather than recorded, so every retry reuses it and status finds it
+// even when the state write that followed a move failed.
+func recoveryBackupDir(poolDir, name string) string {
+	return filepath.Join(filepath.Dir(poolDir), "treehouse-recovered-backup-"+filepath.Base(poolDir)+"-"+name)
+}
+
+// recoveryBackup reports the slot's recovery backup folder when it exists and
+// holds anything, and "" otherwise.
+func recoveryBackup(poolDir, name string) string {
+	backup := recoveryBackupDir(poolDir, name)
+	entries, err := os.ReadDir(backup)
+	if err != nil || len(entries) == 0 {
+		return ""
 	}
+	return backup
+}
+
+// backupUntracked moves, never copies-and-deletes, every reported untracked
+// path into backup. A path already taken there by an earlier attempt gets a
+// numeric suffix instead of being overwritten. A failed move leaves the slot
+// quarantined; already moved files stay in the backup.
+func backupUntracked(backup, worktreePath string, paths []string) error {
 	for _, name := range paths {
-		src := filepath.Join(wt.Path, filepath.FromSlash(name))
+		src := filepath.Join(worktreePath, filepath.FromSlash(name))
 		dst := filepath.Join(backup, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-			return backup, err
+			return err
 		}
-		if err := os.Rename(src, dst); err != nil {
-			return backup, err
+		free := dst
+		for n := 1; ; n++ {
+			if _, err := os.Lstat(free); os.IsNotExist(err) {
+				break
+			} else if err != nil {
+				return err
+			}
+			free = fmt.Sprintf("%s.%d", dst, n)
+		}
+		if err := os.Rename(src, free); err != nil {
+			return err
 		}
 	}
-	return backup, nil
+	return nil
 }

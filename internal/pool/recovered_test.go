@@ -169,12 +169,12 @@ func TestRecoveredSubmoduleChangesRemainLeased(t *testing.T) {
 	}
 }
 
-func TestRecoveredPartialBackupNamesBackup(t *testing.T) {
+func TestRecoveredPartialBackupRetriesIntoSameBackup(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("needs a directory whose entries cannot be renamed")
 	}
 	_, poolDir, path := recoveredFixture(t)
-	if err := os.WriteFile(filepath.Join(path, "a.txt"), []byte("moved\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(path, "a.txt"), []byte("first\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	locked := filepath.Join(path, "locked")
@@ -190,12 +190,54 @@ func TestRecoveredPartialBackupNamesBackup(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 
 	st := statusOf(t, poolDir, path)
-	matches, err := filepath.Glob(filepath.Join(filepath.Dir(poolDir), "treehouse-recovered-backup-*", "a.txt"))
-	if err != nil || len(matches) != 1 {
-		t.Fatalf("backup matches %v, err %v", matches, err)
+	backup := st.RecoveryBackup
+	if st.Status != StatusLeased || backup == "" || !strings.Contains(st.RecoveryReason, backup) {
+		t.Fatalf("status after partial backup = %+v", st)
 	}
-	backup := filepath.Dir(matches[0])
-	if st.Status != StatusLeased || !strings.Contains(st.RecoveryReason, "already moved are kept in "+backup) {
-		t.Fatalf("status = %+v, want a hold naming backup %s", st, backup)
+	assertFileContents(t, filepath.Join(backup, "a.txt"), "first\n")
+
+	if err := os.WriteFile(filepath.Join(path, "a.txt"), []byte("second\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	if err := os.Chmod(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st = statusOf(t, poolDir, path)
+	if st.Status != StatusAvailable || st.RecoveryBackup != backup {
+		t.Fatalf("status after retry = %+v, want available reporting backup %s", st, backup)
+	}
+	assertFileContents(t, filepath.Join(backup, "a.txt"), "first\n")
+	assertFileContents(t, filepath.Join(backup, "a.txt.1"), "second\n")
+	assertFileContents(t, filepath.Join(backup, "locked", "b.txt"), "stuck\n")
+	if dirs, _ := filepath.Glob(filepath.Join(filepath.Dir(poolDir), "treehouse-recovered-backup-*")); len(dirs) != 1 {
+		t.Fatalf("backup folders = %v, want only %s", dirs, backup)
+	}
+}
+
+func TestRecoveredBackupReportedAfterFailedStateWrite(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a pool directory the state cannot be written into")
+	}
+	_, poolDir, path := recoveredFixture(t)
+	if err := os.WriteFile(filepath.Join(path, "notes.txt"), []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(poolDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(poolDir, 0o755) })
+	if _, err := List(poolDir); err == nil {
+		t.Fatal("List succeeded although the state could not be written")
+	}
+	if wt := entryFor(t, poolDir, path); !wt.Leased {
+		t.Fatalf("entry was persisted as freed: %#v", wt)
+	}
+	if err := os.Chmod(poolDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st := statusOf(t, poolDir, path)
+	if st.Status != StatusAvailable || st.RecoveryBackup == "" {
+		t.Fatalf("status = %+v, want available reporting the backup", st)
+	}
+	assertFileContents(t, filepath.Join(st.RecoveryBackup, "notes.txt"), "keep\n")
 }
