@@ -898,6 +898,10 @@ func markAcquired(wt *WorktreeEntry, opts acquireOptions) error {
 // identifies the worktree's current lease.
 var ErrLeasePreconditionFailed = errors.New("lease precondition failed")
 
+// ErrRecoveredEntry reports that a release refusing recovered entries found the
+// worktree carrying RecoveredLeaseHolder. Only a return naming it may clear it.
+var ErrRecoveredEntry = errors.New("recovered entry")
+
 // ErrOwnerPreconditionFailed reports that a release no longer identifies the
 // calling process's own short-lived owner reservation.
 var ErrOwnerPreconditionFailed = errors.New("owner precondition failed")
@@ -908,13 +912,6 @@ var ErrOwnerPreconditionFailed = errors.New("owner precondition failed")
 // programming error to surface loudly rather than one of the states a release
 // classifies and skips.
 var ErrInvalidReleasePreconditions = errors.New("invalid release preconditions")
-
-// ErrSeedInventoryUntrusted reports that a worktree is quarantined: its seed
-// inventory could not be authenticated, so no release may clear it. A state
-// version bump or a rotated state key puts a whole pool in this state at once,
-// which is why callers classify it with errors.Is: a bulk return has to report
-// such a slot as skipped rather than as a failure it should retry forever.
-var ErrSeedInventoryUntrusted = errors.New("untrusted seed inventory")
 
 // ReleasePreconditions optionally constrain a release to the current lease.
 // Pointer fields distinguish an omitted condition from an expected empty value.
@@ -948,6 +945,10 @@ type ReleasePreconditions struct {
 	// live agent home, or a later acquisition - would still reset the worktree
 	// and clear that reservation when its subshell exits.
 	RequireOwnedByCaller bool
+	// RefuseRecovered refuses a worktree carrying RecoveredLeaseHolder. A bulk
+	// release sets it so an entry recovered after the listing, under the same
+	// state lock as the release, is left for a return that names it.
+	RefuseRecovered bool
 }
 
 // Release resets a managed worktree, clears its short-lived owner reservation or
@@ -988,8 +989,8 @@ func ValidateReleasePreconditions(poolDir, worktreePath string, preconditions Re
 	})
 }
 
-// ReleaseConditional verifies any lease preconditions and the quarantine state
-// (both through releasableWorktree, under the lock), runs beforeReset, resets
+// ReleaseConditional verifies any release preconditions (through
+// releasableWorktree, under the lock), runs beforeReset, resets
 // the worktree, and clears its reservation while holding one state lock. The
 // callback is invoked only after all preconditions match and runs under that
 // lock so caller-side termination or detachment cannot race a later acquisition.
@@ -1042,6 +1043,9 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 				return err
 			}
 		}
+		if !wt.SeedInventoryKnown {
+			fmt.Fprintf(os.Stderr, "🌳 Warning: %s was recovered without a trusted record of the ignored files treehouse seeded into it; any such files are not cleaned up and remain in the worktree.\n", worktreePath)
+		}
 		if !markerless {
 			seededPaths := wt.SeededPaths
 			if !wt.SeedInventoryKnown {
@@ -1084,17 +1088,6 @@ func releasableWorktree(state *State, worktreePath string, preconditions Release
 		if err := validateReleasePreconditions(*wt, preconditions); err != nil {
 			return nil, err
 		}
-		// Clearing a safety quarantine without a trusted seed inventory could
-		// expose ignored files hidden by a mutable manifest. It is judged here,
-		// with the preconditions, so that every caller learns a release is
-		// impossible BEFORE it prepares one: `return` would otherwise offer to
-		// discard a worktree's uncommitted changes and then refuse it anyway.
-		// It is judged AFTER the preconditions so a caller that named a lease,
-		// or `get` confirming its own reservation, still gets the answer to the
-		// question it asked.
-		if !wt.SeedInventoryKnown {
-			return nil, fmt.Errorf("%w: worktree %s is quarantined without a trusted seed inventory; inspect it and use destroy --include-leased instead", ErrSeedInventoryUntrusted, worktreePath)
-		}
 		return wt, nil
 	}
 	return nil, fmt.Errorf("worktree %s is not managed by treehouse", worktreePath)
@@ -1120,6 +1113,9 @@ func validateReleasePreconditions(wt WorktreeEntry, preconditions ReleasePrecond
 	}
 	if err := preconditions.check(); err != nil {
 		return err
+	}
+	if preconditions.RefuseRecovered && wt.Leased && wt.LeaseHolder == RecoveredLeaseHolder {
+		return fmt.Errorf("%w: worktree %s was recovered and is only returned by name", ErrRecoveredEntry, wt.Path)
 	}
 	if preconditions.RequireUnleased {
 		if wt.Leased {

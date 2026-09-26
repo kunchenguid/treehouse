@@ -349,9 +349,9 @@ func TestReturnAllSkipsASlotReacquiredMidRun(t *testing.T) {
 
 // TestReturnAllSkipsQuarantinedSlotsWithoutFailing pins the other skip. A
 // rotated state key (a state version bump does the same) quarantines every
-// entry in a pool: no release may clear one, because its seed inventory can no
-// longer be authenticated. Reporting that as a failure made --all exit 1 on
-// every retry forever, so it is reported as a skip that points at destroy.
+// entry in a pool as recovered: nothing proves one idle, so only a return
+// naming it may clear it. Reporting that as a failure made --all exit 1 on
+// every retry forever, so it is reported as a skip that names that return.
 func TestReturnAllSkipsQuarantinedSlotsWithoutFailing(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 
@@ -359,8 +359,8 @@ func TestReturnAllSkipsQuarantinedSlotsWithoutFailing(t *testing.T) {
 	second := acquireLeaseJSON(t, repoDir, homeDir, "agent-b")
 	poolDir := filepath.Dir(filepath.Dir(first.Path))
 
-	// Uncommitted work in one of them. A quarantined slot can never be
-	// released, so the run must refuse it outright rather than first offer to
+	// Uncommitted work in one of them. --all never releases a quarantined
+	// slot, so the run must skip it outright rather than first offer to
 	// discard these changes.
 	dirtyFile := filepath.Join(first.Path, "README.md")
 	if err := os.WriteFile(dirtyFile, []byte("dirty\n"), 0o644); err != nil {
@@ -378,8 +378,10 @@ func TestReturnAllSkipsQuarantinedSlotsWithoutFailing(t *testing.T) {
 	if !strings.Contains(allErr, "Returned 0 of 2 held worktree(s); 2 skipped") {
 		t.Fatalf("expected both slots counted as skipped, got: %s", allErr)
 	}
-	if !strings.Contains(allErr, "destroy --include-leased") {
-		t.Fatalf("expected the skip to point at destroy, got: %s", allErr)
+	for _, path := range []string{first.Path, second.Path} {
+		if want := "treehouse return " + quoteReturnPath(path); !strings.Contains(allErr, want) {
+			t.Fatalf("expected the skip to name %q, got: %s", want, allErr)
+		}
 	}
 	if strings.Contains(allErr, "Clean and return?") {
 		t.Fatalf("a slot that cannot be released must not be offered for cleaning, got: %s", allErr)
@@ -398,6 +400,52 @@ func TestReturnAllSkipsQuarantinedSlotsWithoutFailing(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("quarantined worktree %s was disturbed: %v", path, err)
 		}
+	}
+}
+
+// TestReturnAllSkipsSlotsRecoveredAfterListing covers a pool whose state key
+// is invalidated while --all waits on a confirmation: every entry, including
+// the one being confirmed, is recovered before its release runs, and a bulk
+// return must never release a recovered entry, only name the return that does.
+func TestReturnAllSkipsSlotsRecoveredAfterListing(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+
+	dirty := acquireLeaseJSON(t, repoDir, homeDir, "dirty-agent")
+	later := acquireLeaseJSON(t, repoDir, homeDir, "later-agent")
+	if dirty.Path == later.Path {
+		t.Fatalf("expected two distinct slots, both are %s", dirty.Path)
+	}
+	dirtyFile := filepath.Join(dirty.Path, "README.md")
+	if err := os.WriteFile(dirtyFile, []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	poolDir := filepath.Dir(filepath.Dir(dirty.Path))
+
+	all, stdin, stderr := startReturnAllAtDirtyPrompt(t, repoDir, homeDir)
+
+	if err := os.WriteFile(filepath.Join(poolDir, "treehouse-state.key"), []byte("rotated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	output, waitErr := finishReturnAllAtPrompt(t, all, stdin, stderr, "y\n")
+	if waitErr != nil {
+		t.Fatalf("a skipped slot is not a failure, expected exit 0, got %v: %s", waitErr, output)
+	}
+	if !strings.Contains(output, "Returned 0 of 2 held worktree(s); 2 skipped") {
+		t.Fatalf("expected both slots skipped, got: %s", output)
+	}
+	for _, path := range []string{dirty.Path, later.Path} {
+		if want := "treehouse return " + quoteReturnPath(path); !strings.Contains(output, want) {
+			t.Fatalf("expected the skip to name %q, got: %s", want, output)
+		}
+	}
+	for _, entry := range statusEntries(t, repoDir, homeDir) {
+		if entry.Status != "leased" || !strings.HasPrefix(entry.LeaseHolder, "recovered:") {
+			t.Fatalf("expected a recovered slot to stay leased, got %+v", entry)
+		}
+	}
+	if data, err := os.ReadFile(dirtyFile); err != nil || string(data) != "dirty\n" {
+		t.Fatalf("recovered slot was reset: data=%q err=%v", data, err)
 	}
 }
 

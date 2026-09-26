@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -131,11 +133,20 @@ func ReadState(poolDir string) (State, error) {
 		return State{}, fmt.Errorf("unsupported treehouse state version %d", s.Version)
 	}
 	key, keyErr := readStateKey(poolDir)
+	// Unversioned state was written by a pre-3.0 release, none of which seeded
+	// ignored files. That holds even beside a key: a 2.x binary still running
+	// across the upgrade rewrites 3.0 state unversioned and drops any seed
+	// inventory, which is adopted as empty rather than quarantining the pool.
+	legacy := s.Version == 0 && (keyErr == nil || errors.Is(keyErr, fs.ErrNotExist))
 	for i := range s.Worktrees {
 		wt := &s.Worktrees[i]
+		if legacy && !hasSeedState(*wt) {
+			setSeedInventory(wt, nil, true)
+			continue
+		}
 		if s.Version != stateVersion || keyErr != nil || !validSeedInventoryDigest(key, *wt) {
 			wt.Leased = true
-			wt.LeaseHolder = recoveredLeaseHolder
+			wt.LeaseHolder = RecoveredLeaseHolder
 			wt.SeededPaths = nil
 			wt.SeedInventoryKnown = false
 			wt.SeedInventoryDigest = ""
@@ -148,6 +159,10 @@ func ReadState(poolDir string) (State, error) {
 	}
 	s.Version = stateVersion
 	return recoverMissingStateEntries(poolDir, s)
+}
+
+func hasSeedState(wt WorktreeEntry) bool {
+	return wt.SeedInventoryKnown || len(wt.SeededPaths) > 0 || wt.SeedInventoryDigest != "" || wt.SeedBackend != "" || wt.SeedAuthIdentity != ""
 }
 
 func validSeedInventoryDigest(key []byte, wt WorktreeEntry) bool {
@@ -323,14 +338,18 @@ func recoverMissingStateEntries(poolDir string, s State) (State, error) {
 	return s, nil
 }
 
-// recoveredLeaseHolder marks a WorktreeEntry reconstructed by either recovery
-// scan (recoverMissingStateEntries or recoverCorruptState) so callers (status
-// output, destroy) can explain why it is unexpectedly leased.
-const recoveredLeaseHolder = "recovered: state file was corrupt or truncated; verify before reuse"
+// RecoveredLeaseHolder marks a WorktreeEntry whose reservation and seed
+// inventory could not be trusted: one reconstructed by either recovery scan
+// (recoverMissingStateEntries or recoverCorruptState), or one ReadState
+// quarantined because its inventory failed to authenticate. treehouse 3.0.0
+// also put it on every entry of valid pre-3.0 state. None of these can be told
+// apart, so all stay leased until a `return` naming the slot releases it; bulk
+// `return --all` leaves them alone.
+const RecoveredLeaseHolder = "recovered: state file was corrupt or truncated; verify before reuse"
 
 // quarantineEntry builds the conservative entry both recovery scans write for a
 // worktree whose reservation state was lost. It is leased under
-// recoveredLeaseHolder, so Acquire and prune skip it and destroy removes it only
+// RecoveredLeaseHolder, so Acquire and prune skip it and destroy removes it only
 // via an explicit single-target --include-leased. recoveryError is empty for a
 // worktree whose marker resolved normally, and non-empty for one whose marker
 // exists but could not be read.
@@ -341,7 +360,7 @@ func quarantineEntry(slotName, wtPath, recoveryError string) WorktreeEntry {
 		Path:          wtPath,
 		CreatedAt:     now,
 		Leased:        true,
-		LeaseHolder:   recoveredLeaseHolder,
+		LeaseHolder:   RecoveredLeaseHolder,
 		LeasedAt:      now,
 		RecoveryError: recoveryError,
 	}
@@ -386,8 +405,9 @@ func recoverOneWorktree(slotName, wtPath string) (WorktreeEntry, bool) {
 // evidence alone cannot tell an idle spare from a live, process-independent
 // lease. Every recovered entry is therefore marked leased: Acquire and prune
 // skip it, and destroy only removes it via an explicit, single-target
-// --include-leased. Return cannot safely clear the lease because recovery also
-// loses the trusted inventory of ignored files seeded into the worktree.
+// --include-leased. Only a return naming the slot clears the lease, and it
+// warns that recovery lost the trusted inventory of ignored files seeded into
+// the worktree, so those files are not cleaned up.
 func recoverCorruptState(poolDir string, parseErr error) (State, error) {
 	slots, err := os.ReadDir(poolDir)
 	if err != nil {

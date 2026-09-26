@@ -79,7 +79,9 @@ a slot leased then is skipped unless that same lease is still on it, and a slot
 unleased then is skipped if it has been leased since. A slot handed to another
 plain 'treehouse get' carries no lease to compare, so it is returned like any
 other in-use slot. --all takes no path or name, and cannot be combined with the
---if-lease-* conditions, which target a single lease identity.`,
+--if-lease-* conditions, which target a single lease identity. A slot
+'treehouse status' reports as recovered is never returned by --all; check it
+and return it by name.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("if-lease-id") && returnIfLeaseID == "" {
 			return fmt.Errorf("--if-lease-id cannot be empty")
@@ -147,12 +149,12 @@ func init() {
 // as it was found and every caller has to tell that apart from a failure.
 //
 // The preconditions run first so a slot the release already knows it will
-// refuse - a lease that is no longer the one observed, or a quarantine no
-// return can clear - is never announced as a dirty worktree about to be
-// cleaned. Offering to discard someone's uncommitted changes and then refusing
-// anyway is worse than refusing outright. Both checks reach the same `pool`
-// gate, so the pre-check and the release cannot disagree; the release re-runs
-// them under its own state lock, which is what actually fences the reset.
+// refuse - a lease that is no longer the one observed - is never announced as
+// a dirty worktree about to be cleaned. Offering to discard someone's
+// uncommitted changes and then refusing anyway is worse than refusing
+// outright. Both checks reach the same `pool` gate, so the pre-check and the
+// release cannot disagree; the release re-runs them under its own state lock,
+// which is what actually fences the reset.
 func releaseWorktree(target returnTarget, preconditions pool.ReleasePreconditions) error {
 	if err := pool.ValidateReleasePreconditions(target.poolDir, target.path, preconditions, nil); err != nil {
 		return err
@@ -181,17 +183,21 @@ func releaseWorktree(target returnTarget, preconditions pool.ReleasePrecondition
 // can express: a slot handed to another plain `treehouse get` is still
 // unleased, so its new owner reservation is NOT detected - consistent with
 // `--all` reclaiming in-use slots by design. A leased slot with no ID (a state
-// file predating lease IDs) offers nothing to compare and keeps the
-// unconditional release it has today.
+// file predating lease IDs) offers nothing to compare, so its release carries
+// only the recovered-entry refusal below.
+//
+// Every bulk release also refuses a recovered entry, so a slot recovered after
+// the listing (a state key invalidated mid-run relabels a whole pool) is left
+// for a return that names it, exactly like one recovered before the listing.
 func bulkReturnPreconditions(wt pool.WorktreeStatus) pool.ReleasePreconditions {
 	if wt.Status == pool.StatusLeased {
 		if wt.LeaseID == "" {
-			return pool.ReleasePreconditions{}
+			return pool.ReleasePreconditions{RefuseRecovered: true}
 		}
 		expected := wt.LeaseID
-		return pool.ReleasePreconditions{ExpectedLeaseID: &expected}
+		return pool.ReleasePreconditions{ExpectedLeaseID: &expected, RefuseRecovered: true}
 	}
-	return pool.ReleasePreconditions{RequireUnleased: true}
+	return pool.ReleasePreconditions{RequireUnleased: true, RefuseRecovered: true}
 }
 
 // returnableStatus reports whether `return --all` acts on a slot in this state.
@@ -239,14 +245,16 @@ func returnableStatus(wt pool.WorktreeStatus) bool {
 //
 // A slot is skipped, and the run neither fails nor reports an abort for it,
 // when the lease on it is no longer the one the listing saw (returned or taken
-// over since) or when no release can clear it (quarantined without a trusted
-// seed inventory). Nothing went wrong in either case, and calling them
-// failures made a quarantined pool exit 1 on every retry forever. A run where
-// every slot was skipped still exits 0: nothing it set out to return was still
-// there to return.
+// over since) or when it is a recovered slot (below). Nothing went wrong in
+// either case, and calling them failures made a quarantined pool exit 1 on
+// every retry forever. A run where every slot was skipped still exits 0:
+// nothing it set out to return was still there to return.
 //
 // A slot nobody holds - available, damaged, or one the caller merely stands
-// in - is never a target at all and is counted separately.
+// in - is never a target at all and is counted separately. Neither is a
+// recovered slot (including every slot treehouse 3.0.0 wrongly quarantined
+// while upgrading pre-3.0 state): nothing proves it idle, so it is counted held
+// and skipped, and only a return naming it releases it.
 func returnHeldWorktrees() error {
 	poolDir, err := repositoryPoolDir()
 	if err != nil {
@@ -259,8 +267,13 @@ func returnHeldWorktrees() error {
 	}
 
 	var targets []pool.WorktreeStatus
-	var notHeld int
+	var notHeld, recovered int
 	for _, wt := range worktrees {
+		if wt.Status == pool.StatusLeased && wt.LeaseHolder == pool.RecoveredLeaseHolder {
+			recovered++
+			fmt.Fprintf(os.Stderr, "🌳 Leaving %s at %s leased: it was recovered, so nothing proves it idle and it is only returned by name. Check it, then run: treehouse return %s\n", wt.Name, ui.PrettyPath(wt.Path), quoteReturnPath(wt.Path))
+			continue
+		}
 		if returnableStatus(wt) {
 			targets = append(targets, wt)
 			continue
@@ -271,7 +284,7 @@ func returnHeldWorktrees() error {
 		}
 	}
 
-	if len(targets) == 0 {
+	if len(targets) == 0 && recovered == 0 {
 		fmt.Fprintf(os.Stderr, "🌳 No held worktrees to return (%d in the pool).\n", len(worktrees))
 		return nil
 	}
@@ -284,14 +297,14 @@ func returnHeldWorktrees() error {
 		switch {
 		case err == nil:
 			returned++
-		// Neither skip is a failure: nothing went wrong and nothing was left
+		// A skip is not a failure: nothing went wrong and nothing was left
 		// half-done, so retrying the run would report the same thing forever.
 		case errors.Is(err, pool.ErrLeasePreconditionFailed):
 			skipped = append(skipped, wt.Name)
 			fmt.Fprintf(os.Stderr, "   %s skipped: it is no longer the acquisition this run listed, so it was left alone (%v).\n", wt.Name, err)
-		case errors.Is(err, pool.ErrSeedInventoryUntrusted):
+		case errors.Is(err, pool.ErrRecoveredEntry):
 			skipped = append(skipped, wt.Name)
-			fmt.Fprintf(os.Stderr, "   %s skipped: %v\n", wt.Name, err)
+			fmt.Fprintf(os.Stderr, "   %s skipped: it was recovered since this run listed it, so it is only returned by name. Check it, then run: treehouse return %s\n", wt.Name, quoteReturnPath(wt.Path))
 		case errors.Is(err, errReturnAborted), errors.Is(err, errReturnAbortedNonTTY):
 			aborted = append(aborted, wt.Name)
 			fmt.Fprintf(os.Stderr, "   %s left as found: its uncommitted changes were kept.\n", wt.Name)
@@ -302,7 +315,7 @@ func returnHeldWorktrees() error {
 	}
 
 	fmt.Fprintf(os.Stderr, "🌳 Returned %d of %d held worktree(s); %d skipped; %d not held.\n",
-		returned, len(targets), len(skipped), notHeld)
+		returned, len(targets)+recovered, len(skipped)+recovered, notHeld)
 
 	// A failure outranks an abort: retrying is the right response to a failure
 	// and the wrong one to a worktree deliberately left dirty, so the more

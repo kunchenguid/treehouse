@@ -156,7 +156,7 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 - **In-use detection** — treehouse scans running processes and short-lived owner reservations to determine which worktrees are in-use. Reservations are persisted only while `get`, `destroy`, and `prune` lifecycle work is running.
 - **Durable leases** - `treehouse get --lease` reserves a worktree as a persistent home without keeping a process inside it. Each acquisition gets an immutable random lease identity, and the lease is recorded in treehouse's own state. The worktree is never handed out by a later `get` and never removed by `prune` until you release it with `treehouse return`. Unlike process-based in-use detection, a lease survives with zero processes running inside the worktree.
 - **State recovery** - treehouse writes pool state atomically via a temp file and replacement.
-  If an existing state file is empty, truncated, or omits an on-disk worktree, treehouse rebuilds the missing entries and quarantines them for inspection and explicit destruction. See [Recovering missing pool state](#recovering-missing-pool-state).
+  If an existing state file is empty, truncated, or omits an on-disk worktree, treehouse rebuilds the missing entries and quarantines them until you inspect them and return or destroy each one by name. See [Recovering missing pool state](#recovering-missing-pool-state).
 - **Gitignored file seeding** — commit a `.worktreeinclude` file for the default selection, or pass `get --include-file <path>` for a personal manifest. Selected local files are copied from the main checkout on each acquire. See [Seeding gitignored files](#seeding-gitignored-files).
 - **Dirty detection** - treehouse treats tracked changes and untracked files as dirty, even when repository config hides untracked files from normal `git status` output.
 - **Safe pruning** - By default, `treehouse prune` removes only clean, idle managed worktrees with landed HEAD commits. See [Base branch](#base-branch) for the merge rule.
@@ -276,7 +276,7 @@ Treehouse reads the supplied file once before acquisition. A missing or unreadab
 
 Treehouse refreshes selected files whenever it creates or reuses a worktree. On Unix-like systems, it preserves regular-file permissions, including executable bits. A source symlink becomes a regular file containing the symlink target text; Treehouse never follows it or creates a destination symlink. Rooted filesystem operations prevent selected paths and existing destination symlinks from escaping either checkout.
 
-If seeding fails, acquisition fails too. A newly created worktree is removed; if cleanup fails, or if a reused worktree was only partly refreshed, Treehouse records it as leased and quarantined so a later `get` cannot hand it out silently. Inspect it with `treehouse status`. If Treehouse reports that its seeded-file inventory is unknown, remove it with `treehouse destroy <path> --include-leased --yes`; `treehouse return` refuses to reuse it. Other quarantined worktrees can be returned after they are safe to reuse.
+If seeding fails, acquisition fails too. A newly created worktree is removed; if cleanup fails, or if a reused worktree was only partly refreshed, Treehouse records it as leased and quarantined so a later `get` cannot hand it out silently. Inspect it with `treehouse status`. If Treehouse reports it as recovered, its seeded-file inventory is unknown: remove it with `treehouse destroy <path> --include-leased --yes`, or return it by name as described in [Recovering missing pool state](#recovering-missing-pool-state), knowing that seeded ignored files stay in it. Other quarantined worktrees can be returned after they are safe to reuse.
 
 ### Leasing a worktree (no subshell)
 
@@ -363,7 +363,7 @@ This target set is deliberately wider than the other bulk verbs. `prune` never t
 Two outcomes are reported as **skipped**, count against neither the returns nor the failures, and leave the slot exactly as it was:
 
 - **No longer the acquisition the listing saw.** `--all` lists the pool once and then works through it, so an earlier confirmation can hold the run open while a later slot changes state. Each release is pinned to the lease the listing saw: a slot that was leased is refused unless that same lease is still on it - whether it was handed to someone else or simply returned in the meantime - and a slot that was not leased is refused if it has been leased since. The report says only that the slot is no longer the acquisition the run listed, because the lease identity is all that was compared. That is also the whole guarantee: a slot handed to another plain `treehouse get` carries no lease to compare, so it is returned like any other in-use slot, which is what `--all` does to in-use slots by design.
-- **Quarantined.** A state version bump or a rotated state key leaves an entry whose seed inventory can no longer be authenticated, and no return may clear it. A whole pool can land in this state at once; the run reports each slot and points at `treehouse destroy --include-leased`. Such a slot is refused before the dirty confirmation, so `--all` never offers to discard changes it cannot then discard.
+- **Recovered.** A slot `status` reports as recovered (see [Recovering missing pool state](#recovering-missing-pool-state)) is never released by `--all`, because nothing proves it idle. A missing or invalid state key can relabel a whole pool at once. The check runs again under the state lock at each release, so a slot recovered after the listing is skipped too, before the dirty confirmation. The run names `treehouse return <path>` for each one: after checking that nobody still needs the slot, that named return releases it, confirming first if it has uncommitted changes, and warns that any ignored files treehouse seeded into it are not cleaned up. `treehouse destroy <path> --include-leased --yes` removes it instead.
 
 Each worktree is returned exactly as naming it would be, including the confirmation before uncommitted changes are discarded. Declining one - or failing to return one - never stops the worktrees after it, and the summary names every slot that was left behind. `--all` takes no path or name, and cannot be combined with `--if-lease-id` or `--if-lease-holder`, which identify a single acquisition.
 
@@ -404,9 +404,17 @@ Every restored entry is marked `leased` because treehouse cannot know whether it
 Both routes scan the pool directory, so a worktree that `worktree_path` placed outside it is not rebuilt — see [Worktree path](#worktree-path) for how to remove one.
 
 Run `treehouse status` to inspect recovered entries.
-Treehouse cannot safely return these entries to the pool because recovery cannot reconstruct the trusted inventory of seeded ignored files.
-State written by versions without inventory integrity data, or whose pool-local `treehouse-state.key` is missing or invalid, is handled the same way, including state rewritten after a downgrade.
-After inspecting a recovered worktree, remove it by naming its exact path with `treehouse destroy <path> --include-leased --yes`.
+State from 3.0 or later whose pool-local `treehouse-state.key` is missing, or whose seed inventory fails to verify, is handled the same way, and so is any state beside an invalid key.
+State from a release before 3.0 is the exception: it never seeded ignored files, so treehouse adopts it as is.
+treehouse 3.0.0 got that wrong and quarantined every entry of pre-3.0 state as recovered; those entries read like any other recovered entry, because nothing left in the state file can tell a slot that was idle from one that was durably leased.
+Unversioned state is adopted the same way when a still-running 2.x binary rewrites it after 3.0 has already run in the pool, for example when an agent session outlives the upgrade.
+This is a known limitation: such a rewrite drops the record of ignored files that 3.0 seeded from `.worktreeinclude`, so a later reset of that slot does not remove them and they stay in it when the slot is reused.
+
+A recovered entry stays leased and is never freed automatically.
+`treehouse status` names each one with the command that frees it: check that nobody still needs the slot, then run `treehouse return <path>`.
+Recovery cannot reconstruct the inventory of ignored files treehouse seeded into the worktree, so that return warns that any such files are not cleaned up and remain in it.
+`treehouse return --all` leaves recovered entries leased and names the same command, so each is only ever returned individually.
+To remove a recovered worktree instead, name its exact path with `treehouse destroy <path> --include-leased --yes`.
 Bulk `destroy --all` and prune leave recovered entries alone.
 
 ### Pruning stale worktrees and orphans
