@@ -214,31 +214,6 @@ func TestRecoveredPartialBackupRetriesIntoSameBackup(t *testing.T) {
 	}
 }
 
-func TestRecoveredBackupNamedWhileStateWriteFails(t *testing.T) {
-	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
-		t.Skip("needs a pool directory the state cannot be written into")
-	}
-	_, poolDir, path := recoveredFixture(t)
-	if err := os.WriteFile(filepath.Join(path, "notes.txt"), []byte("keep\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(poolDir, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(poolDir, 0o755) })
-	backup := filepath.Join(filepath.Dir(poolDir), "treehouse-recovered-backup-"+filepath.Base(poolDir)+"-1")
-	for range 2 {
-		_, err := List(poolDir)
-		if err == nil || !strings.Contains(err.Error(), backup) {
-			t.Fatalf("List error = %v, want it to name backup %s", err, backup)
-		}
-	}
-	if wt := entryFor(t, poolDir, path); !wt.Leased {
-		t.Fatalf("entry was persisted as freed: %#v", wt)
-	}
-	assertFileContents(t, filepath.Join(backup, "notes.txt"), "keep\n")
-}
-
 func TestRecoveredBackupRefusesSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks need privileges on Windows")

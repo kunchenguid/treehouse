@@ -41,19 +41,7 @@ func recoverQuarantinedEntries(poolDir string) error {
 	if !changed {
 		return nil
 	}
-	if err := WriteState(poolDir, state); err != nil {
-		var backups []string
-		for _, wt := range state.Worktrees {
-			if backup := recoveryBackup(poolDir, wt.Name); backup != "" {
-				backups = append(backups, backup)
-			}
-		}
-		if len(backups) > 0 {
-			return fmt.Errorf("%w; recovered untracked files are kept in %s", err, strings.Join(backups, ", "))
-		}
-		return err
-	}
-	return nil
+	return WriteState(poolDir, state)
 }
 
 // recoverSafeEntry proves a 3.0.0-style recovered slot safe to free: nothing,
