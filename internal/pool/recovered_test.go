@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -137,5 +138,64 @@ func TestDamagedRecoveredEntryExplainsReason(t *testing.T) {
 	st := statusOf(t, poolDir, path)
 	if st.Status != StatusDamaged || st.LeaseHolder != RecoveredLeaseHolder || !strings.Contains(st.RecoveryReason, "marker could not be read") {
 		t.Fatalf("status = %+v", st)
+	}
+}
+
+func TestRecoveredSubmoduleChangesRemainLeased(t *testing.T) {
+	repo, poolDir := setupLocalRepo(t)
+	sub := filepath.Join(filepath.Dir(repo), "sub")
+	runGit(t, "", "init", "--initial-branch=main", sub)
+	runGit(t, sub, "config", "user.email", "test@test.com")
+	runGit(t, sub, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(sub, "f.txt"), []byte("sub\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, sub, "add", ".")
+	runGit(t, sub, "commit", "-m", "sub")
+	runGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", sub, "sub")
+	runGit(t, repo, "config", "-f", ".gitmodules", "submodule.sub.ignore", "all")
+	runGit(t, repo, "add", ".gitmodules")
+	runGit(t, repo, "commit", "-m", "add ignored submodule")
+
+	path := idleSlots(t, repo, poolDir, 1)[0]
+	runGit(t, path, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
+	if err := os.WriteFile(filepath.Join(path, "sub", "f.txt"), []byte("edited\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeRawState(t, poolDir, State{Version: stateVersion, Worktrees: []WorktreeEntry{{Name: "1", Path: path, Leased: true, LeaseHolder: RecoveredLeaseHolder}}})
+	st := statusOf(t, poolDir, path)
+	if st.Status != StatusLeased || !strings.Contains(st.RecoveryReason, "tracked changes") {
+		t.Fatalf("status = %+v", st)
+	}
+}
+
+func TestRecoveredPartialBackupNamesBackup(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory whose entries cannot be renamed")
+	}
+	_, poolDir, path := recoveredFixture(t)
+	if err := os.WriteFile(filepath.Join(path, "a.txt"), []byte("moved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(path, "locked")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "b.txt"), []byte("stuck\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	st := statusOf(t, poolDir, path)
+	matches, err := filepath.Glob(filepath.Join(filepath.Dir(poolDir), "treehouse-recovered-backup-*", "a.txt"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("backup matches %v, err %v", matches, err)
+	}
+	backup := filepath.Dir(matches[0])
+	if st.Status != StatusLeased || !strings.Contains(st.RecoveryReason, "already moved are kept in "+backup) {
+		t.Fatalf("status = %+v, want a hold naming backup %s", st, backup)
 	}
 }

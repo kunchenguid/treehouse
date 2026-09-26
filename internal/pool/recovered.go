@@ -45,9 +45,9 @@ func recoverQuarantinedEntries(poolDir string) error {
 
 // recoverSafeEntry proves a 3.0.0-style recovered slot safe to free: nothing,
 // including the caller and its ancestors, uses it, it has no tracked edits,
-// and its HEAD is safely reachable. Untracked files are moved into a kept
-// backup first. It returns "" when the slot may be freed, and otherwise why it
-// stays quarantined.
+// including inside submodules, and its HEAD is safely reachable. Untracked
+// files are moved into a kept backup first. It returns "" when the slot may be
+// freed, and otherwise why it stays quarantined.
 func recoverSafeEntry(poolDir string, wt *WorktreeEntry) string {
 	if wt.RecoveryError != "" {
 		return "its VCS marker could not be read, so it cannot be verified automatically"
@@ -62,12 +62,12 @@ func recoverSafeEntry(poolDir string, wt *WorktreeEntry) string {
 	if len(procs) != 0 || ownerAlive(*wt) {
 		return "a process is using this worktree (a shell standing in it counts); stop it or leave the worktree"
 	}
-	tracked, err := gitRaw(wt.Path, "diff", "--name-only", "HEAD", "--")
+	tracked, err := gitRaw(wt.Path, "diff", "--name-only", "--ignore-submodules=none", "HEAD", "--")
 	if err != nil {
 		return "cannot verify tracked changes"
 	}
 	if len(bytes.TrimSpace(tracked)) != 0 {
-		return "tracked changes are present; commit or preserve them"
+		return "tracked changes (including submodule contents) are present; commit or preserve them"
 	}
 	untrackedBytes, err := gitRaw(wt.Path, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
@@ -80,7 +80,10 @@ func recoverSafeEntry(poolDir string, wt *WorktreeEntry) string {
 	if len(untracked) > 0 {
 		backup, err := backupUntracked(poolDir, wt, untracked)
 		if err != nil {
-			return fmt.Sprintf("untracked files could not be backed up (%v)", err)
+			if backup == "" {
+				return fmt.Sprintf("untracked files could not be backed up (%v)", err)
+			}
+			return fmt.Sprintf("untracked files could not all be backed up (%v); those already moved are kept in %s", err, backup)
 		}
 		fmt.Fprintf(os.Stderr, "treehouse: recovered untracked files from %s into retained backup %s\n", wt.Path, backup)
 	}
