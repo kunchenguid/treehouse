@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.1](https://github.com/kunchenguid/treehouse/compare/v3.0.0...v3.0.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* **pool:** adopt pre-3.0 state instead of quarantining it as recovered ([#156](https://github.com/kunchenguid/treehouse/issues/156)) ([706ae59](https://github.com/kunchenguid/treehouse/commit/706ae5932b13a355db5698486042f0b897eea247))
+
 ## [3.0.0](https://github.com/kunchenguid/treehouse/compare/v2.3.0...v3.0.0) (2026-09-25)
 
 
