@@ -64,7 +64,7 @@ func recoverSafeEntry(poolDir string, wt *WorktreeEntry) string {
 	if len(procs) != 0 || ownerAlive(*wt) {
 		return "a process is using this worktree (a shell standing in it counts); stop it or leave the worktree"
 	}
-	flags, err := gitRaw(wt.Path, "ls-files", "-v", "-z")
+	flags, err := gitRaw(wt.Path, "ls-files", "-v", "-z", "--recurse-submodules")
 	if err != nil {
 		return "cannot verify tracked changes"
 	}

@@ -160,30 +160,45 @@ func TestDamagedRecoveredEntryExplainsReason(t *testing.T) {
 }
 
 func TestRecoveredSubmoduleChangesRemainLeased(t *testing.T) {
-	repo, poolDir := setupLocalRepo(t)
-	sub := filepath.Join(filepath.Dir(repo), "sub")
-	runGit(t, "", "init", "--initial-branch=main", sub)
-	runGit(t, sub, "config", "user.email", "test@test.com")
-	runGit(t, sub, "config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(sub, "f.txt"), []byte("sub\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, sub, "add", ".")
-	runGit(t, sub, "commit", "-m", "sub")
-	runGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", sub, "sub")
-	runGit(t, repo, "config", "-f", ".gitmodules", "submodule.sub.ignore", "all")
-	runGit(t, repo, "add", ".gitmodules")
-	runGit(t, repo, "commit", "-m", "add ignored submodule")
+	for name, tc := range map[string]struct {
+		hide   []string
+		reason string
+	}{
+		"ignored by submodule config": {reason: "tracked changes"},
+		"hidden by skip-worktree":     {hide: []string{"update-index", "--skip-worktree", "f.txt"}, reason: "skip-worktree or assume-unchanged"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo, poolDir := setupLocalRepo(t)
+			sub := filepath.Join(filepath.Dir(repo), "sub")
+			runGit(t, "", "init", "--initial-branch=main", sub)
+			runGit(t, sub, "config", "user.email", "test@test.com")
+			runGit(t, sub, "config", "user.name", "Test")
+			if err := os.WriteFile(filepath.Join(sub, "f.txt"), []byte("sub\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, sub, "add", ".")
+			runGit(t, sub, "commit", "-m", "sub")
+			runGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", sub, "sub")
+			runGit(t, repo, "config", "-f", ".gitmodules", "submodule.sub.ignore", "all")
+			runGit(t, repo, "add", ".gitmodules")
+			runGit(t, repo, "commit", "-m", "add ignored submodule")
 
-	path := idleSlots(t, repo, poolDir, 1)[0]
-	runGit(t, path, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
-	if err := os.WriteFile(filepath.Join(path, "sub", "f.txt"), []byte("edited\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	writeRawState(t, poolDir, State{Version: stateVersion, Worktrees: []WorktreeEntry{{Name: "1", Path: path, Leased: true, LeaseHolder: RecoveredLeaseHolder}}})
-	st := statusOf(t, poolDir, path)
-	if st.Status != StatusLeased || !strings.Contains(st.RecoveryReason, "tracked changes") {
-		t.Fatalf("status = %+v", st)
+			path := idleSlots(t, repo, poolDir, 1)[0]
+			runGit(t, path, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
+			if tc.hide != nil {
+				runGit(t, filepath.Join(path, "sub"), tc.hide...)
+			}
+			file := filepath.Join(path, "sub", "f.txt")
+			if err := os.WriteFile(file, []byte("edited\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			writeRawState(t, poolDir, State{Version: stateVersion, Worktrees: []WorktreeEntry{{Name: "1", Path: path, Leased: true, LeaseHolder: RecoveredLeaseHolder}}})
+			st := statusOf(t, poolDir, path)
+			if st.Status != StatusLeased || !strings.Contains(st.RecoveryReason, tc.reason) {
+				t.Fatalf("status = %+v", st)
+			}
+			assertFileContents(t, file, "edited\n")
+		})
 	}
 }
 
