@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.0](https://github.com/kunchenguid/treehouse/compare/v3.0.1...v3.1.0) (2026-09-26)
+
+
+### Features
+
+* **pool:** automatically free safe recovered slots ([#159](https://github.com/kunchenguid/treehouse/issues/159)) ([d1f9167](https://github.com/kunchenguid/treehouse/commit/d1f91675d956e8619d45b102c209fe3e612c007a))
+
 ## [3.0.1](https://github.com/kunchenguid/treehouse/compare/v3.0.0...v3.0.1) (2026-09-26)
 
 
