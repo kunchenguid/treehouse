@@ -164,8 +164,8 @@ func splitLines(data []byte) []string {
 }
 
 // recoveryBackupDir is the one backup folder a slot's recovery ever uses. It is
-// derived rather than recorded, so every retry reuses it and status finds it
-// even when the state write that followed a move failed.
+// derived rather than recorded, so every retry reuses it. Once state writes
+// succeed, status can find it even if an earlier write after a move failed.
 func recoveryBackupDir(poolDir, name string) string {
 	return filepath.Join(filepath.Dir(poolDir), "treehouse-recovered-backup-"+filepath.Base(poolDir)+"-"+name)
 }
