@@ -72,23 +72,20 @@ func recoveryNUL(data []byte) []string {
 }
 
 // RecoveryHeadContained requires commit ancestry, not squash equivalence.
+// It asks for any commit reachable from HEAD but from no remote-tracking ref
+// and not from the base branch; HEAD is contained exactly when there is none.
+// One walk replaces a merge-base per remote ref, which took minutes under the
+// state lock in repositories with thousands of remote refs.
 func RecoveryHeadContained(dir, base string) bool {
-	refs, err := runGitRaw(dir, "for-each-ref", "--format=%(refname)", "refs/remotes")
-	if err != nil {
-		return false
-	}
-	candidates := strings.Fields(string(refs))
+	args := []string{"rev-list", "-n", "1", "HEAD", "--not", "--remotes"}
 	if base != "" {
-		for _, ref := range []string{"refs/heads/" + base, "refs/remotes/origin/" + base} {
-			if _, e := runGitRaw(dir, "show-ref", "--verify", "--quiet", ref); e == nil {
-				candidates = append(candidates, ref)
-			}
+		// rev-list fails on a missing ref, so only a verified base may join the
+		// walk; refs/remotes/origin/<base> is already covered by --remotes.
+		ref := "refs/heads/" + base
+		if _, err := runGitRaw(dir, "show-ref", "--verify", "--quiet", ref); err == nil {
+			args = append(args, ref)
 		}
 	}
-	for _, ref := range candidates {
-		if _, e := runGitRaw(dir, "merge-base", "--is-ancestor", "HEAD", ref); e == nil {
-			return true
-		}
-	}
-	return false
+	out, err := runGitRaw(dir, append(args, "--")...)
+	return err == nil && len(bytes.TrimSpace(out)) == 0
 }
