@@ -1,7 +1,12 @@
 package gitvcs
 
 import (
+	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -130,6 +135,58 @@ func TestRecoveryHeadContainedFailsClosedWhenHeadCannotBeRead(t *testing.T) {
 			t.Fatal("unborn HEAD reported as contained")
 		}
 	})
+}
+
+// Recovery runs under the state lock, so the number of git processes must not
+// scale with the number of remote-tracking refs (#163). Counting processes
+// instead of timing them keeps the check deterministic.
+func TestRecoveryHeadContainedGitCallsDoNotGrowWithRemoteRefs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the counting git wrapper is a POSIX shell script")
+	}
+	few := gitCallsForUnpushedHead(t, 1)
+	many := gitCallsForUnpushedHead(t, 200)
+	if many != few {
+		t.Fatalf("git processes: %d with 1 remote ref, %d with 200; want the same count", few, many)
+	}
+}
+
+// gitCallsForUnpushedHead returns how many git processes RecoveryHeadContained
+// starts when refs remote-tracking refs all sit below an unpushed HEAD.
+func gitCallsForUnpushedHead(t *testing.T, refs int) int {
+	t.Helper()
+	repo := recoveryRepo(t)
+	var stdin bytes.Buffer
+	for i := range refs {
+		fmt.Fprintf(&stdin, "update refs/remotes/origin/branch-%d main\n", i)
+	}
+	update := exec.Command("git", "update-ref", "--stdin")
+	update.Dir = repo
+	update.Stdin = &stdin
+	if out, err := update.CombinedOutput(); err != nil {
+		t.Fatalf("git update-ref --stdin failed: %v\n%s", err, out)
+	}
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "calls.log")
+	script := fmt.Sprintf("#!/bin/sh\necho call >> '%s'\nexec '%s' \"$@\"\n", logPath, realGit)
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if RecoveryHeadContained(repo, "main") {
+		t.Fatalf("unpushed HEAD reported as contained with %d remote refs", refs)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bytes.Count(data, []byte("call\n"))
 }
 
 func recoveryRepo(t *testing.T) string {
