@@ -72,23 +72,27 @@ func recoveryNUL(data []byte) []string {
 }
 
 // RecoveryHeadContained requires commit ancestry, not squash equivalence.
+//
+// It answers the same question the per-ref merge-base loop used to answer —
+// whether HEAD is reachable from a remote-tracking ref or the base branch —
+// with one commit walk instead of one process per ref. rev-list prints the
+// commits reachable from HEAD but not from any exclusion; when a ref contains
+// HEAD it contains all of HEAD's ancestors too, so empty output means HEAD is
+// contained. Any Git failure (no HEAD, unreadable repo, unresolvable
+// exclusion) fails closed to false, as before.
 func RecoveryHeadContained(dir, base string) bool {
-	refs, err := runGitRaw(dir, "for-each-ref", "--format=%(refname)", "refs/remotes")
-	if err != nil {
-		return false
-	}
-	candidates := strings.Fields(string(refs))
+	exclusions := []string{"--remotes"}
 	if base != "" {
 		for _, ref := range []string{"refs/heads/" + base, "refs/remotes/origin/" + base} {
 			if _, e := runGitRaw(dir, "show-ref", "--verify", "--quiet", ref); e == nil {
-				candidates = append(candidates, ref)
+				exclusions = append(exclusions, ref)
 			}
 		}
 	}
-	for _, ref := range candidates {
-		if _, e := runGitRaw(dir, "merge-base", "--is-ancestor", "HEAD", ref); e == nil {
-			return true
-		}
+	args := append([]string{"rev-list", "-n", "1", "HEAD", "--not"}, exclusions...)
+	out, err := runGitRaw(dir, args...)
+	if err != nil {
+		return false
 	}
-	return false
+	return len(bytes.TrimSpace(out)) == 0
 }
