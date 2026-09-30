@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.1](https://github.com/kunchenguid/treehouse/compare/v3.1.0...v3.1.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **vcs:** check recovered HEAD containment with a single rev-list walk ([#164](https://github.com/kunchenguid/treehouse/issues/164)) ([cb7fb26](https://github.com/kunchenguid/treehouse/commit/cb7fb264d138da9e6f0234d7e19aa42239413268))
+
 ## [3.1.0](https://github.com/kunchenguid/treehouse/compare/v3.0.1...v3.1.0) (2026-09-26)
 
 
