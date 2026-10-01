@@ -7,7 +7,7 @@ import (
 	"strconv"
 
 	"github.com/BurntSushi/toml"
-	"github.com/kunchenguid/treehouse/internal/vcs"
+	"github.com/kunchenguid/treehouse/v3/internal/vcs"
 )
 
 type Config struct {

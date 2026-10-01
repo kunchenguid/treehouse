@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kunchenguid/treehouse/internal/fileclone"
+	"github.com/kunchenguid/treehouse/v3/internal/fileclone"
 )
 
 func addSharingAsset(t *testing.T, repo string) []byte {

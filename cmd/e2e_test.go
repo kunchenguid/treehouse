@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kunchenguid/treehouse/internal/config"
+	"github.com/kunchenguid/treehouse/v3/internal/config"
 )
 
 type leaseJSONResult struct {

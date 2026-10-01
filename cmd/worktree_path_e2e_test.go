@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kunchenguid/treehouse/internal/config"
+	"github.com/kunchenguid/treehouse/v3/internal/config"
 )
 
 func TestGetDefaultLayoutPlacesWorktreeInThePool(t *testing.T) {

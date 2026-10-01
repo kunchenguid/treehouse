@@ -1,8 +1,8 @@
 package vcs
 
 import (
-	"github.com/kunchenguid/treehouse/internal/fileclone"
-	"github.com/kunchenguid/treehouse/internal/vcs/gitvcs"
+	"github.com/kunchenguid/treehouse/v3/internal/fileclone"
+	"github.com/kunchenguid/treehouse/v3/internal/vcs/gitvcs"
 )
 
 // ShareWorktreeFiles is an opt-in fresh-slot operation, not a way to mutate an

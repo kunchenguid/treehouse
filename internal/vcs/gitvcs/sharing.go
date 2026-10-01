@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kunchenguid/treehouse/internal/fileclone"
+	"github.com/kunchenguid/treehouse/v3/internal/fileclone"
 )
 
 // ShareWorktreeFiles is only called during creation of a fresh, reserved Git

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kunchenguid/treehouse/internal/pool"
+	"github.com/kunchenguid/treehouse/v3/internal/pool"
 )
 
 // TestDestroySkipHintFramesOtherFlavorAsMigration pins the skip wording: an

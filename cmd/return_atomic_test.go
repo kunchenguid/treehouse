@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kunchenguid/treehouse/internal/pool"
-	"github.com/kunchenguid/treehouse/internal/process"
+	"github.com/kunchenguid/treehouse/v3/internal/pool"
+	"github.com/kunchenguid/treehouse/v3/internal/process"
 )
 
 // setupAtomicFixture builds a real local repo and pool, acquires one worktree,

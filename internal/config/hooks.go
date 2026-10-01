@@ -10,7 +10,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/kunchenguid/treehouse/internal/ui"
+	"github.com/kunchenguid/treehouse/v3/internal/ui"
 )
 
 // hookKeys are the lifecycle hook keys a repo-level treehouse.toml can declare

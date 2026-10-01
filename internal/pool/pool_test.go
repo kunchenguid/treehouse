@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kunchenguid/treehouse/internal/config"
-	"github.com/kunchenguid/treehouse/internal/process"
-	"github.com/kunchenguid/treehouse/internal/vcs"
-	"github.com/kunchenguid/treehouse/internal/vcs/gitvcs"
+	"github.com/kunchenguid/treehouse/v3/internal/config"
+	"github.com/kunchenguid/treehouse/v3/internal/process"
+	"github.com/kunchenguid/treehouse/v3/internal/vcs"
+	"github.com/kunchenguid/treehouse/v3/internal/vcs/gitvcs"
 )
 
 // setupSharedClonePool builds two same-named clones of one origin. Keep real

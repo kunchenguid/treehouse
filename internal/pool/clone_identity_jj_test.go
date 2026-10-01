@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kunchenguid/treehouse/internal/vcs"
+	"github.com/kunchenguid/treehouse/v3/internal/vcs"
 )
 
 func setupJJCloneIdentity(t *testing.T) (origin, poolDir string) {

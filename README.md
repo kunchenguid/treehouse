@@ -81,7 +81,7 @@ The flake exposes `#default` and `#treehouse` package outputs, plus `apps` for `
 **Go**
 
 ```sh
-go install github.com/kunchenguid/treehouse@latest
+go install github.com/kunchenguid/treehouse/v3@latest
 ```
 
 **From source**

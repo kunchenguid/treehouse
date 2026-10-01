@@ -31,8 +31,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/kunchenguid/treehouse/internal/vcs/gitvcs"
-	"github.com/kunchenguid/treehouse/internal/vcs/jjvcs"
+	"github.com/kunchenguid/treehouse/v3/internal/vcs/gitvcs"
+	"github.com/kunchenguid/treehouse/v3/internal/vcs/jjvcs"
 )
 
 // Backend is the set of version-control operations treehouse's lifecycle

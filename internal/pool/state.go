@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kunchenguid/treehouse/internal/vcs"
+	"github.com/kunchenguid/treehouse/v3/internal/vcs"
 )
 
 type WorktreeEntry struct {

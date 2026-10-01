@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kunchenguid/treehouse/internal/fileclone"
+	"github.com/kunchenguid/treehouse/v3/internal/fileclone"
 )
 
 func TestSharingOnlyRunsForOptedInFreshSlotAfterBranch(t *testing.T) {
