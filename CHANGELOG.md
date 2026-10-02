@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.2](https://github.com/kunchenguid/treehouse/compare/v3.1.1...v3.1.2) (2026-10-02)
+
+
+### Bug Fixes
+
+* add /v3 major version suffix to module path ([#167](https://github.com/kunchenguid/treehouse/issues/167)) ([2b481be](https://github.com/kunchenguid/treehouse/commit/2b481beda1bac61669b6435ac8cae2f58be5f36e))
+
 ## [3.1.1](https://github.com/kunchenguid/treehouse/compare/v3.1.0...v3.1.1) (2026-09-30)
 
 
