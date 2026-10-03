@@ -48,8 +48,19 @@ type Config struct {
 	// invalidates a worktree that already exists.
 	// Overridden per invocation by `treehouse get --unique-leaf` and the
 	// TREEHOUSE_UNIQUE_LEAF environment variable.
-	UniqueLeaf bool  `toml:"unique_leaf,omitempty"`
-	Hooks      Hooks `toml:"hooks,omitempty"`
+	UniqueLeaf bool      `toml:"unique_leaf,omitempty"`
+	Hooks      Hooks     `toml:"hooks,omitempty"`
+	Workspace  Workspace `toml:"workspace,omitempty"`
+}
+
+type Workspace struct {
+	Profiles map[string]WorkspaceProfile `toml:"profiles,omitempty"`
+}
+
+// WorkspaceProfile is a user-defined set of repositories acquired together by
+// `treehouse workspace get --profile`. It is loaded only from user config.
+type WorkspaceProfile struct {
+	Repositories []string `toml:"repositories"`
 }
 
 type Hooks struct {

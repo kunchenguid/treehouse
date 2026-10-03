@@ -173,6 +173,9 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `treehouse get`            | Acquire a worktree from the pool                     |
 | `treehouse get --lease`    | Durably lease a worktree without a subshell; print its path |
 | `treehouse lease <name>`   | Durably lease an existing pool worktree in place, without touching its files or git state |
+| `treehouse workspace get [repos...]` | Lease repositories together and open a linked workspace |
+| `treehouse workspace modify <path>` | Add or remove repositories from an existing workspace |
+| `treehouse workspace return <path>` | Return every child lease in a workspace |
 | `treehouse enter <name>`   | Open a subshell in an existing worktree by name (the number from `status`), even if it is in use; pool state is left untouched |
 | `treehouse status`         | Show pool status (highlights leased and current worktrees) |
 | `treehouse return [path\|name]` | Release any lease and return a worktree only after verifying foreign processes stopped; the name is the number from `status` |
@@ -647,6 +650,34 @@ A few things worth knowing:
 - **Only the worktree is deleted.** Under the built-in layout `prune` and `destroy` also remove the numbered slot directory, which exists solely to hold the worktree. A worktree placed elsewhere has a parent Treehouse does not own, so its parent is left alone.
 - **Recovering a lost state file is pool-local.** `ReadState` reconstructs missing entries by scanning the pool directory, so worktrees placed outside it cannot be recovered that way; the pool keeps working — later `get`s skip the names those worktrees occupy — but remove such a worktree with `git worktree remove` (or `jj workspace forget`) to get its slot name back.
 - **Under the jj backend, seeding leaves an empty directory behind.** With a `.worktreeinclude` manifest, a worktree placed outside the pool leaves an empty hidden `.treehouse-jj-seed-auth` directory in the parent the template chose. Its entries are removed with the worktree; the directory itself stays, because removing it safely would need a lock across every pool that shares that parent.
+
+### Multi-repository workspace profiles
+
+`treehouse workspace get` acquires repositories as durable child leases and exposes them as sibling links in one workspace directory. Supply repositories explicitly, or define profiles only in user configuration:
+
+```toml
+[workspace.profiles.default]
+repositories = ["$HOME/dev/cogent-py", "$HOME/dev/cogent-ts"]
+
+[workspace.profiles.sdlc]
+repositories = ["$HOME/dev/pico", "$HOME/dev/cogent-containers"]
+```
+
+```sh
+treehouse workspace get --profile sdlc
+treehouse workspace get # Uses the reserved default profile.
+treehouse workspace get ~/dev/cogent-py ~/dev/cogent-ts
+```
+
+`--profile` cannot be combined with explicit repository paths. Use `--lease --json` for machine-readable allocation and `treehouse workspace return <path>` to release it. Profile paths expand `$HOME` and `~`. Workspace directories contain links to pooled worktrees; on Windows, creating these links requires symlink permission (such as Developer Mode). When a workspace is returned, files other than its managed links and state file are left in place rather than deleted.
+
+Modify a leased workspace in place with repository paths for additions and repository names or paths for removals. Each flag accepts a comma-separated list and can be repeated. The path may be omitted inside a workspace shell. Removed child worktrees go through the normal safe return flow; use `--force` to discard dirty work without prompting. `--no-fetch` applies to additions.
+
+```sh
+treehouse workspace modify ~/.treehouse/workspaces/ws-1234 --add ~/dev/another-repo
+treehouse workspace modify ~/.treehouse/workspaces/ws-1234 --remove cogent-ts
+treehouse workspace modify ~/.treehouse/workspaces/ws-1234 --add ~/dev/new-repo --remove old-repo
+```
 
 ### Version-control backend (git or Jujutsu)
 
