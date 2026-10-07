@@ -32,6 +32,7 @@ var (
 	workspaceForce   bool
 	workspaceAdd     []string
 	workspaceRemove  []string
+	workspaceIsDirty = vcs.IsDirty
 )
 
 type workspaceState struct {
@@ -107,8 +108,8 @@ func workspaceGetRunE(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	rollback := func(cause error) error {
-		if err := returnWorkspaceState(&state, true); err != nil {
-			return fmt.Errorf("%w; rollback failed: %v (recover with treehouse workspace return %s --force)", cause, err, path)
+		if err := returnWorkspaceState(&state, false); err != nil {
+			return fmt.Errorf("%w; rollback failed: %v; inspect remaining child allocations, then recover with %s", cause, err, workspaceRecoveryCommands(state.Repositories))
 		}
 		if err := removeWorkspaceDirectory(path); err != nil {
 			return fmt.Errorf("%w; remove rolled-back workspace: %v", cause, err)
@@ -116,7 +117,7 @@ func workspaceGetRunE(cmd *cobra.Command, args []string) error {
 		return cause
 	}
 	for _, repo := range repos {
-		lease, err := pool.AcquireLeaseInfoWithOptions(repo.root, repo.poolDir, repo.cfg.MaxTrees, repo.cfg.Hooks.PostCreate, "workspace:"+id, pool.AcquireOptions{SkipFetch: workspaceNoFetch})
+		lease, err := pool.AcquireLeaseInfoWithOptions(repo.root, repo.poolDir, repo.cfg.MaxTrees, repo.cfg.Hooks.PostCreate, "workspace:"+id, workspaceAcquireOptions(repo.cfg, workspaceNoFetch))
 		if err != nil {
 			return rollback(fmt.Errorf("acquire %s: %w", repo.name, err))
 		}
@@ -346,8 +347,17 @@ func validateWorkspaceAdditions(state workspaceState, removals map[string]bool, 
 	return nil
 }
 
+func workspaceAcquireOptions(cfg config.Config, noFetch bool) pool.AcquireOptions {
+	return pool.AcquireOptions{
+		SkipFetch:    noFetch,
+		BaseBranch:   cfg.BaseBranch,
+		UniqueLeaf:   config.ResolveUniqueLeaf(nil, cfg),
+		WorktreePath: config.ResolveWorktreePath("", cfg),
+	}
+}
+
 func addWorkspaceRepository(state *workspaceState, repo workspaceRepoConfig, noFetch bool) error {
-	lease, err := pool.AcquireLeaseInfoWithOptions(repo.root, repo.poolDir, repo.cfg.MaxTrees, repo.cfg.Hooks.PostCreate, "workspace:"+state.ID, pool.AcquireOptions{SkipFetch: noFetch})
+	lease, err := pool.AcquireLeaseInfoWithOptions(repo.root, repo.poolDir, repo.cfg.MaxTrees, repo.cfg.Hooks.PostCreate, "workspace:"+state.ID, workspaceAcquireOptions(repo.cfg, noFetch))
 	if err != nil {
 		return err
 	}
@@ -355,15 +365,15 @@ func addWorkspaceRepository(state *workspaceState, repo workspaceRepoConfig, noF
 	state.Repositories = append(state.Repositories, child)
 	if err := writeWorkspaceState(*state); err != nil {
 		state.Repositories = state.Repositories[:len(state.Repositories)-1]
-		if releaseErr := returnWorkspaceChild(child, true); releaseErr != nil {
-			return fmt.Errorf("record allocation: %w; return unrecorded lease: %v", err, releaseErr)
+		if releaseErr := returnWorkspaceChild(child, false); releaseErr != nil {
+			return fmt.Errorf("record allocation: %w; return unrecorded lease: %v; inspect the child, then recover with %s", err, releaseErr, workspaceRecoveryCommands([]workspaceRepository{child}))
 		}
 		return fmt.Errorf("record allocation: %w", err)
 	}
 	if err := os.Symlink(child.Path, filepath.Join(state.Path, child.Name)); err != nil {
 		// A failed link may be occupied by someone else's file; release only our lease.
-		if releaseErr := returnWorkspaceChild(child, true); releaseErr != nil {
-			return fmt.Errorf("link repository: %w; rollback lease: %v", err, releaseErr)
+		if releaseErr := returnWorkspaceChild(child, false); releaseErr != nil {
+			return fmt.Errorf("link repository: %w; rollback lease: %v; inspect the child, then recover with %s", err, releaseErr, workspaceRecoveryCommands([]workspaceRepository{child}))
 		}
 		next := *state
 		next.Repositories = state.Repositories[:len(state.Repositories)-1]
@@ -411,6 +421,9 @@ func resolveWorkspaceRepositories(args []string) ([]workspaceRepoConfig, error) 
 			fmt.Fprintf(os.Stderr, "warning: failed to update git exclude: %v\n", err)
 		}
 		name := filepath.Base(repoRoot)
+		if !validWorkspaceRepositoryName(name) {
+			return nil, fmt.Errorf("repository name %q is not a safe workspace link name", name)
+		}
 		if names[name] {
 			return nil, fmt.Errorf("repositories must have distinct directory names; duplicate %q", name)
 		}
@@ -477,7 +490,24 @@ func readWorkspaceState(path string) (workspaceState, error) {
 	if state.Version != 1 || state.Path != path || state.ID == "" {
 		return workspaceState{}, fmt.Errorf("invalid workspace state in %s", workspaceStatePath(path))
 	}
+	for _, child := range state.Repositories {
+		if !validWorkspaceRepositoryName(child.Name) {
+			return workspaceState{}, fmt.Errorf("invalid repository name %q in %s", child.Name, workspaceStatePath(path))
+		}
+	}
 	return state, nil
+}
+
+func validWorkspaceRepositoryName(name string) bool {
+	return couldBeWorktreeName(name) && !strings.EqualFold(name, workspaceStateFile) && !strings.EqualFold(name, workspaceStateFile+".tmp")
+}
+
+func workspaceRecoveryCommands(children []workspaceRepository) string {
+	commands := make([]string, 0, len(children))
+	for _, child := range children {
+		commands = append(commands, fmt.Sprintf("treehouse return --if-lease-id %s %s", child.LeaseID, quoteReturnPath(child.Path)))
+	}
+	return strings.Join(commands, "; ")
 }
 func returnWorkspaceState(state *workspaceState, force bool) error {
 	var failures []string
@@ -551,11 +581,15 @@ func returnWorkspaceChild(child workspaceRepository, force bool) error {
 		}
 		return err
 	}
-	if !force {
-		if dirty, _ := vcs.IsDirty(child.Path); dirty {
+	if !force && vcs.WorktreeBackendName(child.Path) != "" {
+		dirty, err := workspaceIsDirty(child.Path)
+		if err != nil {
+			return fmt.Errorf("verify dirtiness of %s before return: %w", child.Path, err)
+		}
+		if dirty {
 			ok, err := ui.Confirm(fmt.Sprintf("%s has uncommitted changes. Clean and return?", child.Name), true)
 			if err != nil || !ok {
-				return errReturnAborted
+				return fmt.Errorf("%w: uncommitted changes were not confirmed for discard; child remains leased; preserve or clean the changes before retrying, or use --force to discard them", errReturnAborted)
 			}
 		}
 	}

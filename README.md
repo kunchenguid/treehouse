@@ -613,7 +613,13 @@ treehouse workspace get # Uses the reserved default profile.
 treehouse workspace get ~/dev/cogent-py ~/dev/cogent-ts
 ```
 
-`--profile` cannot be combined with explicit repository paths. Use `--lease --json` for machine-readable allocation and `treehouse workspace return <path>` to release it. Profile paths expand `$HOME` and `~`. Workspace directories contain links to pooled worktrees; on Windows, creating these links requires symlink permission (such as Developer Mode). When a workspace is returned, files other than its managed links and state file are left in place rather than deleted.
+`--profile` cannot be combined with explicit repository paths. Use `--lease --json` for machine-readable allocation and `treehouse workspace return <path>` to release it. Profile paths expand `$HOME` and `~`. Child acquisitions honor each repository's `base_branch`, `unique_leaf`, and `worktree_path` settings. `TREEHOUSE_UNIQUE_LEAF` and `TREEHOUSE_WORKTREE_PATH` override the latter two. Workspace directories contain links to pooled worktrees; on Windows, creating these links requires symlink permission (such as Developer Mode).
+
+If unrelated files remain, `workspace return` releases the child leases and removes managed links, but exits with an error and keeps the workspace directory. Move those files elsewhere, then run `treehouse workspace return <path>` again to finish cleanup.
+
+Workspace membership is stored in `<workspace>/.treehouse-workspace.json`, separately from each repository's pool state. If this file is lost, `workspace return` cannot reconstruct the group. Inspect the workspace links and run `treehouse status` in each affected repository. After identifying and preserving each child's work, return its worktree by path.
+
+Commands that modify or return the same workspace are not serialized. Run them one at a time: concurrent commands can overwrite workspace membership and leave a child lease that `workspace return` no longer lists.
 
 Modify a leased workspace in place with repository paths for additions and repository names or paths for removals. Each flag accepts a comma-separated list and can be repeated. The path may be omitted inside a workspace shell. Removed child worktrees go through the normal safe return flow; use `--force` to discard dirty work without prompting. `--no-fetch` applies to additions.
 
