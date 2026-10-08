@@ -487,6 +487,10 @@ Create a repo config file with `treehouse init`, or add one manually:
 
 **User-level:** `~/.config/treehouse/config.toml`
 
+A missing user config uses defaults. Other read errors, including inaccessible directories or symlink loops, are reported instead of treating the config as absent.
+
+Schema keys must use their documented spelling. Case variants, including Unicode aliases, are rejected before decoding. Dynamic map keys and unknown settings retain their exact spelling.
+
 ```toml
 # Maximum number of worktrees in the pool
 max_trees = 16

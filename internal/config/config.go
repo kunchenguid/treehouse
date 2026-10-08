@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/BurntSushi/toml"
 	"github.com/kunchenguid/treehouse/v3/internal/vcs"
 )
 
@@ -160,7 +159,12 @@ func Load(repoRoot string) (Config, error) {
 	hasRepoConfig := false
 	if _, err := os.Stat(repoPath); err == nil {
 		hasRepoConfig = true
-		md, err := toml.DecodeFile(repoPath, &cfg)
+		data, err := os.ReadFile(repoPath)
+		if err != nil {
+			return cfg, err
+		}
+		loaded, _, md, err := decodeConfig(data)
+		cfg = loaded
 		if err != nil {
 			return cfg, err
 		}
@@ -205,16 +209,20 @@ func loadUser() (Config, bool, error) {
 	cfg := DefaultConfig()
 	userPath := userConfigPath()
 	if userPath == "" {
+		return cfg, false, fmt.Errorf("cannot resolve user config directory")
+	}
+	data, err := os.ReadFile(userPath)
+	if os.IsNotExist(err) {
 		return cfg, false, nil
 	}
-	if _, err := os.Stat(userPath); err == nil {
-		if _, err := toml.DecodeFile(userPath, &cfg); err != nil {
-			return cfg, false, err
-		}
-		return cfg, true, nil
+	if err != nil {
+		return cfg, false, err
 	}
-
-	return cfg, false, nil
+	cfg, _, _, err = decodeConfig(data)
+	if err != nil {
+		return cfg, false, err
+	}
+	return cfg, true, nil
 }
 
 // userConfigPath returns the user-level config file path, or "" when the home
