@@ -52,10 +52,10 @@ func approvalFileHash(root *os.Root, path string) (string, error) {
 	if !filepath.IsLocal(path) {
 		return "", fmt.Errorf("path must be relative and stay inside the repository")
 	}
-	// Check before opening to reject FIFOs/devices without blocking. Rooted
-	// operations reject symlink traversal outside the repository. In-repo
-	// relative symlinks to regular files are supported; directories, absolute
-	// symlinks, and special files are not.
+	// Check before opening to reject FIFOs/devices early. Rooted operations
+	// reject symlink traversal outside the repository. In-repo relative
+	// symlinks to regular files are supported; directories, absolute symlinks,
+	// and special files are not.
 	info, err := root.Stat(path)
 	if err != nil {
 		return "", err
@@ -63,7 +63,15 @@ func approvalFileHash(root *os.Root, path string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("only regular files are supported")
 	}
-	file, err := root.Open(path)
+	return readApprovalFile(root, path, info)
+}
+
+// readApprovalFile hashes path under root, rejecting it unless the opened file
+// is still the regular file the caller saw. The open must not block, because a
+// replacement between the caller's check and this open would otherwise wait for
+// a writer while post_return holds the pool lock.
+func readApprovalFile(root *os.Root, path string, checked os.FileInfo) (string, error) {
+	file, err := openApprovalFile(root, path)
 	if err != nil {
 		return "", err
 	}
@@ -72,7 +80,7 @@ func approvalFileHash(root *os.Root, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+	if !opened.Mode().IsRegular() || !os.SameFile(checked, opened) {
 		return "", fmt.Errorf("file changed while opening")
 	}
 	digest := sha256.New()
