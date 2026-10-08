@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/kunchenguid/treehouse/internal/config"
-	"github.com/kunchenguid/treehouse/internal/pool"
+	"github.com/kunchenguid/treehouse/v3/internal/config"
+	"github.com/kunchenguid/treehouse/v3/internal/pool"
 )
 
 func symlinkReturnTestDirectory(t *testing.T, target, link string) {
