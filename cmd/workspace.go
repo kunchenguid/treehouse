@@ -54,6 +54,7 @@ type workspaceRepository struct {
 type workspaceRepoConfig struct {
 	root, poolDir, name string
 	cfg                 config.Config
+	acquireOptions      pool.AcquireOptions
 }
 
 var workspaceCmd = &cobra.Command{Use: "workspace", Short: "Manage a group of leased worktrees as one workspace"}
@@ -84,7 +85,7 @@ func workspaceGetRunE(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	repos, err := resolveWorkspaceRepositories(args)
+	repos, err := resolveWorkspaceRepositories(args, workspaceNoFetch)
 	if err != nil {
 		return err
 	}
@@ -100,34 +101,39 @@ func workspaceGetRunE(cmd *cobra.Command, args []string) error {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return fmt.Errorf("create workspace root: %w", err)
 	}
-	if err := os.Mkdir(path, 0o755); err != nil {
-		return fmt.Errorf("create workspace: %w", err)
-	}
 	state := workspaceState{Version: 1, ID: id, Path: path, CreatedAt: time.Now(), Repositories: []workspaceRepository{}}
-	if err := writeWorkspaceState(state); err != nil {
-		return err
-	}
-	rollback := func(cause error) error {
-		if err := returnWorkspaceState(&state, false); err != nil {
-			return fmt.Errorf("%w; rollback failed: %v; inspect remaining child allocations, then recover with %s", cause, err, workspaceRecoveryCommands(state.Repositories))
+	if err := withWorkspaceLock(path, func() error {
+		if err := os.Mkdir(path, 0o755); err != nil {
+			return fmt.Errorf("create workspace: %w", err)
 		}
-		if err := removeWorkspaceDirectory(path); err != nil {
-			return fmt.Errorf("%w; remove rolled-back workspace: %v", cause, err)
-		}
-		return cause
-	}
-	for _, repo := range repos {
-		lease, err := pool.AcquireLeaseInfoWithOptions(repo.root, repo.poolDir, repo.cfg.MaxTrees, repo.cfg.Hooks.PostCreate, "workspace:"+id, workspaceAcquireOptions(repo.cfg, workspaceNoFetch))
-		if err != nil {
-			return rollback(fmt.Errorf("acquire %s: %w", repo.name, err))
-		}
-		state.Repositories = append(state.Repositories, workspaceRepository{Name: repo.name, SourceRoot: repo.root, PoolDir: repo.poolDir, Path: lease.Path, LeaseID: lease.LeaseID})
 		if err := writeWorkspaceState(state); err != nil {
-			return rollback(fmt.Errorf("record %s allocation: %w", repo.name, err))
+			return err
 		}
-		if err := os.Symlink(lease.Path, filepath.Join(path, repo.name)); err != nil {
-			return rollback(fmt.Errorf("link %s into workspace: %w", repo.name, err))
+		rollback := func(cause error) error {
+			if err := returnWorkspaceState(&state, false); err != nil {
+				return fmt.Errorf("%w; rollback failed: %v; inspect remaining child allocations, then recover with %s", cause, err, workspaceRecoveryCommands(state.Repositories))
+			}
+			if err := removeWorkspaceDirectory(path); err != nil {
+				return fmt.Errorf("%w; remove rolled-back workspace: %v", cause, err)
+			}
+			return cause
 		}
+		for _, repo := range repos {
+			lease, err := pool.AcquireLeaseInfoWithOptions(repo.root, repo.poolDir, repo.cfg.MaxTrees, repo.cfg.Hooks.PostCreate, "workspace:"+id, repo.acquireOptions)
+			if err != nil {
+				return rollback(fmt.Errorf("acquire %s: %w", repo.name, err))
+			}
+			state.Repositories = append(state.Repositories, workspaceRepository{Name: repo.name, SourceRoot: repo.root, PoolDir: repo.poolDir, Path: lease.Path, LeaseID: lease.LeaseID})
+			if err := writeWorkspaceState(state); err != nil {
+				return rollback(fmt.Errorf("record %s allocation: %w", repo.name, err))
+			}
+			if err := os.Symlink(lease.Path, filepath.Join(path, repo.name)); err != nil {
+				return rollback(fmt.Errorf("link %s into workspace: %w", repo.name, err))
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	if workspaceLease {
 		fmt.Fprintf(os.Stderr, "🌳 Leased workspace at %s. Run 'treehouse workspace return %s' to release it.\n", ui.PrettyPath(path), ui.PrettyPath(path))
@@ -147,19 +153,21 @@ func workspaceGetRunE(cmd *cobra.Command, args []string) error {
 }
 
 func finishWorkspaceShell(path string) error {
-	// Modify can add children while the subshell is open; its initial snapshot is stale.
-	state, err := readWorkspaceState(path)
-	if err != nil {
-		return err
-	}
-	if err := returnWorkspaceState(&state, false); err != nil {
-		return err
-	}
-	if err := removeWorkspaceDirectory(path); err != nil {
-		return fmt.Errorf("remove returned workspace: %w", err)
-	}
-	fmt.Fprintln(os.Stderr, "🌳 Workspace returned to pool.")
-	return nil
+	return withWorkspaceLock(path, func() error {
+		// Modify can add children while the subshell is open; its initial snapshot is stale.
+		state, err := readWorkspaceState(path)
+		if err != nil {
+			return err
+		}
+		if err := returnWorkspaceState(&state, false); err != nil {
+			return err
+		}
+		if err := removeWorkspaceDirectory(path); err != nil {
+			return fmt.Errorf("remove returned workspace: %w", err)
+		}
+		fmt.Fprintln(os.Stderr, "🌳 Workspace returned to pool.")
+		return nil
+	})
 }
 
 func removeWorkspaceDirectory(path string) error {
@@ -199,43 +207,45 @@ func workspaceModifyRunE(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	state, err := readWorkspaceState(path)
-	if err != nil {
-		return err
-	}
-	removals, err := resolveWorkspaceRemovals(state, workspaceRemove)
-	if err != nil {
-		return err
-	}
-	additions, err := resolveWorkspaceRepositories(workspaceAdd)
-	if err != nil {
-		return err
-	}
-	if err := validateWorkspaceAdditions(state, removals, additions); err != nil {
-		return err
-	}
+	return withWorkspaceLock(path, func() error {
+		state, err := readWorkspaceState(path)
+		if err != nil {
+			return err
+		}
+		removals, err := resolveWorkspaceRemovals(state, workspaceRemove)
+		if err != nil {
+			return err
+		}
+		additions, err := resolveWorkspaceRepositories(workspaceAdd, workspaceNoFetch)
+		if err != nil {
+			return err
+		}
+		if err := validateWorkspaceAdditions(state, removals, additions); err != nil {
+			return err
+		}
 
-	for i := 0; i < len(state.Repositories); {
-		if !removals[state.Repositories[i].Name] {
-			i++
-			continue
+		for i := 0; i < len(state.Repositories); {
+			if !removals[state.Repositories[i].Name] {
+				i++
+				continue
+			}
+			name := state.Repositories[i].Name
+			if err := removeWorkspaceRepository(&state, i, workspaceForce); err != nil {
+				return fmt.Errorf("remove %s: %w", name, err)
+			}
 		}
-		name := state.Repositories[i].Name
-		if err := removeWorkspaceRepository(&state, i, workspaceForce); err != nil {
-			return fmt.Errorf("remove %s: %w", name, err)
+		for _, repo := range additions {
+			if err := addWorkspaceRepository(&state, repo); err != nil {
+				return fmt.Errorf("add %s: %w", repo.name, err)
+			}
 		}
-	}
-	for _, repo := range additions {
-		if err := addWorkspaceRepository(&state, repo, workspaceNoFetch); err != nil {
-			return fmt.Errorf("add %s: %w", repo.name, err)
+		sort.Slice(state.Repositories, func(i, j int) bool { return state.Repositories[i].Name < state.Repositories[j].Name })
+		if err := writeWorkspaceState(state); err != nil {
+			return fmt.Errorf("record modified workspace: %w", err)
 		}
-	}
-	sort.Slice(state.Repositories, func(i, j int) bool { return state.Repositories[i].Name < state.Repositories[j].Name })
-	if err := writeWorkspaceState(state); err != nil {
-		return fmt.Errorf("record modified workspace: %w", err)
-	}
-	fmt.Fprintf(os.Stderr, "🌳 Workspace now contains %d repositories.\n", len(state.Repositories))
-	return nil
+		fmt.Fprintf(os.Stderr, "🌳 Workspace now contains %d repositories.\n", len(state.Repositories))
+		return nil
+	})
 }
 
 func returnWorkspace(path string, force bool) error {
@@ -243,21 +253,23 @@ func returnWorkspace(path string, force bool) error {
 	if err != nil {
 		return err
 	}
-	state, err := readWorkspaceState(path)
-	if err != nil {
-		return err
-	}
-	if err := returnWorkspaceState(&state, force); err != nil {
-		return err
-	}
-	// The parent removes the empty directory on shell exit, so its state stays readable.
-	if os.Getenv("TREEHOUSE_WORKSPACE") != path || os.Getenv("TREEHOUSE_WORKSPACE_ID") != state.ID {
-		if err := removeWorkspaceDirectory(path); err != nil {
-			return fmt.Errorf("remove returned workspace: %w", err)
+	return withWorkspaceLock(path, func() error {
+		state, err := readWorkspaceState(path)
+		if err != nil {
+			return err
 		}
-	}
-	fmt.Fprintln(os.Stderr, "🌳 Workspace returned to pool.")
-	return nil
+		if err := returnWorkspaceState(&state, force); err != nil {
+			return err
+		}
+		// The parent removes the empty directory on shell exit, so its state stays readable.
+		if os.Getenv("TREEHOUSE_WORKSPACE") != path || os.Getenv("TREEHOUSE_WORKSPACE_ID") != state.ID {
+			if err := removeWorkspaceDirectory(path); err != nil {
+				return fmt.Errorf("remove returned workspace: %w", err)
+			}
+		}
+		fmt.Fprintln(os.Stderr, "🌳 Workspace returned to pool.")
+		return nil
+	})
 }
 
 func workspaceRepositoryArgs(args []string) ([]string, error) {
@@ -347,17 +359,22 @@ func validateWorkspaceAdditions(state workspaceState, removals map[string]bool, 
 	return nil
 }
 
-func workspaceAcquireOptions(cfg config.Config, noFetch bool) pool.AcquireOptions {
+func workspaceAcquireOptions(cfg config.Config, noFetch bool) (pool.AcquireOptions, error) {
+	apfsSharing, err := config.ResolveAPFSSharing("", cfg)
+	if err != nil {
+		return pool.AcquireOptions{}, err
+	}
 	return pool.AcquireOptions{
 		SkipFetch:    noFetch,
 		BaseBranch:   cfg.BaseBranch,
 		UniqueLeaf:   config.ResolveUniqueLeaf(nil, cfg),
 		WorktreePath: config.ResolveWorktreePath("", cfg),
-	}
+		APFSSharing:  apfsSharing,
+	}, nil
 }
 
-func addWorkspaceRepository(state *workspaceState, repo workspaceRepoConfig, noFetch bool) error {
-	lease, err := pool.AcquireLeaseInfoWithOptions(repo.root, repo.poolDir, repo.cfg.MaxTrees, repo.cfg.Hooks.PostCreate, "workspace:"+state.ID, workspaceAcquireOptions(repo.cfg, noFetch))
+func addWorkspaceRepository(state *workspaceState, repo workspaceRepoConfig) error {
+	lease, err := pool.AcquireLeaseInfoWithOptions(repo.root, repo.poolDir, repo.cfg.MaxTrees, repo.cfg.Hooks.PostCreate, "workspace:"+state.ID, repo.acquireOptions)
 	if err != nil {
 		return err
 	}
@@ -386,7 +403,7 @@ func addWorkspaceRepository(state *workspaceState, repo workspaceRepoConfig, noF
 	return nil
 }
 
-func resolveWorkspaceRepositories(args []string) ([]workspaceRepoConfig, error) {
+func resolveWorkspaceRepositories(args []string, noFetch bool) ([]workspaceRepoConfig, error) {
 	repos := make([]workspaceRepoConfig, 0, len(args))
 	names, roots := map[string]bool{}, map[string]bool{}
 	for _, arg := range args {
@@ -413,6 +430,10 @@ func resolveWorkspaceRepositories(args []string) ([]workspaceRepoConfig, error) 
 		if err != nil {
 			return nil, fmt.Errorf("load config for %s: %w", repoRoot, err)
 		}
+		options, err := workspaceAcquireOptions(cfg, noFetch)
+		if err != nil {
+			return nil, fmt.Errorf("resolve acquisition options for %s: %w", repoRoot, err)
+		}
 		poolDir, err := config.ResolvePoolDir(repoRoot, config.ResolveRoot(rootFlag, cfg))
 		if err != nil {
 			return nil, fmt.Errorf("resolve pool for %s: %w", repoRoot, err)
@@ -428,7 +449,7 @@ func resolveWorkspaceRepositories(args []string) ([]workspaceRepoConfig, error) 
 			return nil, fmt.Errorf("repositories must have distinct directory names; duplicate %q", name)
 		}
 		names[name], roots[repoRoot] = true, true
-		repos = append(repos, workspaceRepoConfig{root: repoRoot, poolDir: poolDir, cfg: cfg, name: name})
+		repos = append(repos, workspaceRepoConfig{root: repoRoot, poolDir: poolDir, cfg: cfg, name: name, acquireOptions: options})
 	}
 	sort.Slice(repos, func(i, j int) bool { return repos[i].name < repos[j].name })
 	return repos, nil

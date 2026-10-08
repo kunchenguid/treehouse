@@ -120,6 +120,145 @@ func TestWorkspaceRepositoryProfileIsIgnored(t *testing.T) {
 	}
 }
 
+func TestWorkspaceAcquireOptionsHonorsAPFSSharing(t *testing.T) {
+	for _, tc := range []struct {
+		name, configured, env string
+		enabled               bool
+	}{
+		{name: "default off"},
+		{name: "config opt in", configured: "fresh", enabled: true},
+		{name: "environment opt in", configured: "off", env: "fresh", enabled: true},
+		{name: "environment opt out", configured: "fresh", env: "off"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(config.APFSSharingEnvVar, tc.env)
+			options, err := workspaceAcquireOptions(config.Config{APFSSharing: tc.configured}, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if options.APFSSharing != tc.enabled {
+				t.Fatalf("APFS sharing = %t, want %t", options.APFSSharing, tc.enabled)
+			}
+			if !options.SkipFetch {
+				t.Fatal("acquisition lost the no-fetch setting")
+			}
+		})
+	}
+}
+
+func TestWorkspaceAcquisitionRejectsInvalidAPFSSharing(t *testing.T) {
+	for _, operation := range []string{"get", "modify"} {
+		for _, setting := range []string{"config", "environment"} {
+			t.Run(operation+"/"+setting, func(t *testing.T) {
+				t.Setenv(config.APFSSharingEnvVar, "")
+				repo, homeDir := setupTestRepo(t)
+				target := setupTestRepoWithHome(t, homeDir, "second-repo")
+				var workspace workspaceState
+				var before []byte
+				if operation == "modify" {
+					workspace = createLeasedWorkspace(t, repo, homeDir)
+					var err error
+					before, err = os.ReadFile(filepath.Join(workspace.Path, workspaceStateFile))
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				var extraEnv []string
+				if setting == "config" {
+					writeRepoConfig(t, target, "apfs_sharing = \"invalid\"\n")
+				} else {
+					extraEnv = []string{config.APFSSharingEnvVar + "=invalid"}
+				}
+				args := []string{"workspace", "get", "--lease", "--no-fetch", "--workspace-root", filepath.Join(t.TempDir(), "workspaces"), target}
+				if operation == "modify" {
+					args = []string{"workspace", "modify", "--add", target, "--no-fetch", workspace.Path}
+				}
+				if _, stderr, code := runTreehouse(t, repo, homeDir, extraEnv, args...); code == 0 || !strings.Contains(stderr, "invalid apfs_sharing") {
+					t.Fatalf("invalid APFS setting was not refused (code %d): %s", code, stderr)
+				}
+				poolDir, err := config.ResolvePoolDir(target, filepath.Join(homeDir, ".treehouse"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				state, err := pool.ReadState(poolDir)
+				if err != nil || len(state.Worktrees) != 0 {
+					t.Fatalf("invalid setting allocated a child: %+v, %v", state.Worktrees, err)
+				}
+				if operation == "modify" {
+					after, err := os.ReadFile(filepath.Join(workspace.Path, workspaceStateFile))
+					if err != nil || !bytes.Equal(before, after) {
+						t.Fatalf("invalid setting changed workspace membership: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestWorkspaceRejectsInvalidAdditionSettingsBeforeMutations(t *testing.T) {
+	for _, operation := range []string{"get", "modify"} {
+		t.Run(operation, func(t *testing.T) {
+			repo, home := setupTestRepo(t)
+			invalid := setupTestRepoWithHome(t, home, "zz-invalid")
+			writeRepoConfig(t, invalid, "apfs_sharing = \"invalid\"\n")
+			marker := filepath.Join(t.TempDir(), "acquired")
+			if operation == "get" {
+				cfg := config.DefaultConfig()
+				cfg.Hooks.PostCreate = []string{"echo acquired>" + quoteReturnPath(marker)}
+				var data bytes.Buffer
+				if err := toml.NewEncoder(&data).Encode(cfg); err != nil {
+					t.Fatal(err)
+				}
+				dir := filepath.Join(home, ".config", "treehouse")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "config.toml"), data.Bytes(), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var original workspaceState
+			var before []byte
+			if operation == "modify" {
+				original = createLeasedWorkspace(t, repo, home)
+				var err error
+				before, err = os.ReadFile(workspaceStatePath(original.Path))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			var stderr string
+			var code int
+			if operation == "get" {
+				_, stderr, code = runTreehouse(t, repo, home, nil, "workspace", "get", "--lease", "--no-fetch", "--workspace-root", t.TempDir(), repo, invalid)
+			} else {
+				_, stderr, code = runTreehouse(t, repo, home, nil, "workspace", "modify", "--remove", filepath.Base(repo), "--add", invalid, "--no-fetch", original.Path)
+			}
+			if code == 0 || !strings.Contains(stderr, "invalid apfs_sharing") {
+				t.Fatalf("invalid addition settings were accepted: %s", stderr)
+			}
+			if operation == "modify" {
+				after, err := os.ReadFile(workspaceStatePath(original.Path))
+				if err != nil || !bytes.Equal(before, after) {
+					t.Fatalf("invalid settings removed an existing child: %v", err)
+				}
+				assertWorkspaceLeases(t, original, 1)
+			} else {
+				if _, err := os.Stat(marker); !os.IsNotExist(err) {
+					t.Fatalf("invalid later settings ran an earlier acquisition hook: %v", err)
+				}
+				poolDir, err := config.ResolvePoolDir(repo, filepath.Join(home, ".treehouse"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := os.Stat(poolDir); !os.IsNotExist(err) {
+					t.Fatalf("invalid later settings allocated the earlier child pool: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestWorkspaceAcquisitionHonorsRepositoryOptions(t *testing.T) {
 	for _, operation := range []string{"get", "modify"} {
 		for _, tc := range []struct {
@@ -219,10 +358,27 @@ func TestWorkspaceAcquisitionRollbackPreservesDirtyChild(t *testing.T) {
 					t.Fatalf("acquisition unexpectedly succeeded: %s", stderr)
 				}
 				entries, err := os.ReadDir(workspaceRoot)
-				if err != nil || len(entries) != 1 {
-					t.Fatalf("rollback did not keep recoverable workspace state: %v, %v", entries, err)
+				if err != nil || len(entries) != 2 {
+					t.Fatalf("rollback did not keep workspace and coordination file: %v, %v", entries, err)
 				}
-				workspace.Path = filepath.Join(workspaceRoot, entries[0].Name())
+				for _, entry := range entries {
+					if entry.IsDir() {
+						if workspace.Path != "" {
+							t.Fatal("rollback kept multiple workspace directories")
+						}
+						workspace.Path = filepath.Join(workspaceRoot, entry.Name())
+					}
+				}
+				if workspace.Path == "" {
+					t.Fatal("rollback lost the recoverable workspace directory")
+				}
+				key, err := workspaceLockPath(workspace.Path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info, err := os.Lstat(key); err != nil || !info.Mode().IsRegular() {
+					t.Fatalf("rollback lost the regular coordination file: %v", err)
+				}
 			} else {
 				if _, stderr, code := runTreehouse(t, repo, homeDir, nil, "workspace", "modify", "--no-fetch", "--add", other, workspace.Path); code == 0 {
 					t.Fatalf("addition unexpectedly succeeded: %s", stderr)
@@ -525,7 +681,7 @@ func TestWorkspaceRejectsReservedRepositoryNames(t *testing.T) {
 	for _, name := range []string{workspaceStateFile, workspaceStateFile + ".tmp"} {
 		t.Run(name, func(t *testing.T) {
 			repo := setupTestRepoWithHome(t, homeDir, name)
-			if _, err := resolveWorkspaceRepositories([]string{repo}); err == nil {
+			if _, err := resolveWorkspaceRepositories([]string{repo}, false); err == nil {
 				t.Fatalf("accepted repository name %q that overlaps workspace state", name)
 			}
 		})
