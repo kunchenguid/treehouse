@@ -34,6 +34,9 @@ func writeApprovalHooks(t *testing.T, repo, marker string, paths *[]string) {
 func setupApprovalFilesRepo(t *testing.T) (repo, home, marker string) {
 	t.Helper()
 	repo, home = setupTestRepo(t)
+	// Approval compares dependency bytes between the main and execution
+	// worktrees, so keep checkouts free of the host's line-ending conversion.
+	gitCmd(t, repo, "config", "core.autocrlf", "false")
 	prepareHookLog(t, repo)
 	for _, path := range []string{"setup.sh", "package.json"} {
 		if err := os.WriteFile(filepath.Join(repo, path), []byte("approved\n"), 0o644); err != nil {
