@@ -24,8 +24,9 @@ func (h Hooks) commands(event hooks.Event) []string {
 }
 
 // RunWorktreeHooks resolves configuration at the lifecycle point, after any
-// checkout/reset. User hooks run first. Repository commands require matching
-// user-owned approval, rechecked before each command.
+// checkout/reset. User hooks run first. Repository dependencies are checked
+// after user hooks and before each repository command, in both the main checkout
+// and the actual execution directory. These checks do not lock file writers.
 func RunWorktreeHooks(event hooks.Event, worktree string, stdout, stderr io.Writer) {
 	user, _, err := loadUser()
 	if err != nil {
@@ -51,7 +52,7 @@ func RunWorktreeHooks(event hooks.Event, worktree string, stdout, stderr io.Writ
 			fmt.Fprintf(stderr, "🌳 Warning: skipping repository hooks for %s: %v\n", worktree, err)
 			return
 		}
-		if !repoHooksApproved(repoRoot, md, tableHash, user, stderr) {
+		if !repoHooksApproved(repoRoot, worktree, repo.Hooks, md, tableHash, user, stderr) {
 			return
 		}
 		hooks.Run([]string{command}, worktree, stdout, stderr)

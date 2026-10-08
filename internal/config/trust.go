@@ -43,14 +43,15 @@ func readRepoConfig(repoRoot string) (Config, toml.MetaData, string, error) {
 }
 
 func effectiveHooks(repoRoot string, repo Hooks, md toml.MetaData, hash string, user Config, w io.Writer) Hooks {
-	if !repoHooksApproved(repoRoot, md, hash, user, w) {
+	if !repoHooksApproved(repoRoot, repoRoot, repo, md, hash, user, w) {
 		return user.Hooks
 	}
 	return Hooks{
-		PostCreate: appendCommands(user.Hooks.PostCreate, repo.PostCreate),
-		PreDestroy: appendCommands(user.Hooks.PreDestroy, repo.PreDestroy),
-		PostGet:    appendCommands(user.Hooks.PostGet, repo.PostGet),
-		PostReturn: appendCommands(user.Hooks.PostReturn, repo.PostReturn),
+		ApprovalFiles: append([]string(nil), repo.ApprovalFiles...),
+		PostCreate:    appendCommands(user.Hooks.PostCreate, repo.PostCreate),
+		PreDestroy:    appendCommands(user.Hooks.PreDestroy, repo.PreDestroy),
+		PostGet:       appendCommands(user.Hooks.PostGet, repo.PostGet),
+		PostReturn:    appendCommands(user.Hooks.PostReturn, repo.PostReturn),
 	}
 }
 
@@ -58,12 +59,34 @@ func appendCommands(user, repo []string) []string {
 	return append(append([]string(nil), user...), repo...)
 }
 
-// repoHooksApproved matches the immutable command-table snapshot against the
-// user-owned approval for the target's owning repository.
-func repoHooksApproved(repoRoot string, md toml.MetaData, tableHash string, user Config, w io.Writer) bool {
-	if user.TrustedRepos[RepoIdentity(repoRoot)] != tableHash {
+// repoHooksApproved verifies both the owning repository and the directory where
+// commands will execute against the same user-owned approval. Never fall back to
+// a table-only comparison when a required file cannot be checked.
+func repoHooksApproved(repoRoot, worktree string, repo Hooks, md toml.MetaData, tableHash string, user Config, w io.Writer) bool {
+	approved := user.TrustedRepos[RepoIdentity(repoRoot)]
+	if approved == "" {
 		warnRepoHooks(w, filepath.Join(repoRoot, "treehouse.toml"), md)
 		return false
+	}
+	fingerprint, err := hookFingerprint(tableHash, repo.ApprovalFiles, repoRoot)
+	if err != nil {
+		fmt.Fprintf(w, "🌳 Warning: ignoring repository hooks in %s: %v\n", repoRoot, err)
+		return false
+	}
+	if approved != fingerprint {
+		warnRepoHooks(w, filepath.Join(repoRoot, "treehouse.toml"), md)
+		return false
+	}
+	if worktree != repoRoot && len(repo.ApprovalFiles) != 0 {
+		fingerprint, err = hookFingerprint(tableHash, repo.ApprovalFiles, worktree)
+		if err != nil {
+			fmt.Fprintf(w, "🌳 Warning: ignoring repository hooks in %s: %v\n", worktree, err)
+			return false
+		}
+		if approved != fingerprint {
+			fmt.Fprintf(w, "🌳 Warning: ignoring repository hooks in %s: approval_files contents do not match the approved repository files.\n", worktree)
+			return false
+		}
 	}
 	return true
 }
@@ -71,12 +94,16 @@ func repoHooksApproved(repoRoot string, md toml.MetaData, tableHash string, user
 // Trust records approval for the current hooks table without running commands.
 // An already matching approval is an error because no state changed.
 func Trust(repoRoot string) (string, string, error) {
-	_, md, hash, err := readRepoConfig(repoRoot)
+	repo, md, hash, err := readRepoConfig(repoRoot)
 	if err != nil {
 		return "", "", err
 	}
 	if len(declaredHookKeys(md)) == 0 {
 		return "", "", fmt.Errorf("no lifecycle hooks declared in %s", filepath.Join(repoRoot, "treehouse.toml"))
+	}
+	hash, err = hookFingerprint(hash, repo.Hooks.ApprovalFiles, repoRoot)
+	if err != nil {
+		return "", "", err
 	}
 	identity := RepoIdentity(repoRoot)
 	err = updateTrust(identity, hash)

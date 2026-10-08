@@ -12,23 +12,24 @@ import (
 
 func TestSchemaAliasesRejectedBeforeReadsHashesAndWrites(t *testing.T) {
 	cases := map[string]string{
-		"max_trees":     "Max_Trees=7\n",
-		"root":          "Root='.'\n",
-		"base_branch":   "Base_Branch='main'\n",
-		"worktree_path": "Worktree_Path='{pool}/{slot}/{repo}'\n",
-		"apfs_sharing":  "APFS_Sharing='off'\n",
-		"vcs":           "VCS='git'\n",
-		"unique_leaf":   "Unique_Leaf=true\n",
-		"hooks":         "[Hooks]\npost_get=['echo repo']\n",
-		"trusted_repos": "[Trusted_Repos]\nrepo='sha256:test'\n",
-		"post_create":   "[hooks]\nPost_Create=['echo repo']\n",
-		"post_get":      "[hooks]\nPost_Get=['echo repo']\n",
-		"post_return":   "[hooks]\nPost_Return=['echo repo']\n",
-		"pre_destroy":   "[hooks]\nPre_Destroy=['echo repo']\n",
-		"Unicode table": "[\"truſted_repoſ\"]\nrepo='sha256:test'\n",
-		"Unicode field": "[hooks]\n\"poſt_get\"=['echo repo']\n",
-		"dotted":        "Trusted_Repos.repo='sha256:test'\n",
-		"inline":        "Trusted_Repos={repo='sha256:test'}\n",
+		"max_trees":      "Max_Trees=7\n",
+		"root":           "Root='.'\n",
+		"base_branch":    "Base_Branch='main'\n",
+		"worktree_path":  "Worktree_Path='{pool}/{slot}/{repo}'\n",
+		"apfs_sharing":   "APFS_Sharing='off'\n",
+		"vcs":            "VCS='git'\n",
+		"unique_leaf":    "Unique_Leaf=true\n",
+		"hooks":          "[Hooks]\npost_get=['echo repo']\n",
+		"trusted_repos":  "[Trusted_Repos]\nrepo='sha256:test'\n",
+		"approval_files": "[hooks]\nApproval_Files=[]\n",
+		"post_create":    "[hooks]\nPost_Create=['echo repo']\n",
+		"post_get":       "[hooks]\nPost_Get=['echo repo']\n",
+		"post_return":    "[hooks]\nPost_Return=['echo repo']\n",
+		"pre_destroy":    "[hooks]\nPre_Destroy=['echo repo']\n",
+		"Unicode table":  "[\"truſted_repoſ\"]\nrepo='sha256:test'\n",
+		"Unicode field":  "[hooks]\n\"poſt_get\"=['echo repo']\n",
+		"dotted":         "Trusted_Repos.repo='sha256:test'\n",
+		"inline":         "Trusted_Repos={repo='sha256:test'}\n",
 	}
 	for name, contents := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -79,6 +80,7 @@ func TestSchemaRejectsDuplicateSpellingsEvenWithIdenticalValues(t *testing.T) {
 		"Unicode alias": "[trusted_repos]\nrepo='hash'\n[\"truſted_repoſ\"]\nrepo='hash'\n",
 		"hook tables":   "[hooks]\npost_get=['echo repo']\n[Hooks]\npost_get=['echo repo']\n",
 		"hook fields":   "[hooks]\npost_get=['echo repo']\nPost_Get=['echo repo']\n",
+		"file lists":    "[hooks]\napproval_files=[]\nApproval_Files=[]\n",
 		"scalar fields": "max_trees=7\nMax_Trees=7\n",
 	} {
 		t.Run(name, func(t *testing.T) {

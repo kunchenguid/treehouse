@@ -54,10 +54,12 @@ type Config struct {
 }
 
 type Hooks struct {
-	PostCreate []string `toml:"post_create,omitempty"`
-	PreDestroy []string `toml:"pre_destroy,omitempty"`
-	PostGet    []string `toml:"post_get,omitempty"`
-	PostReturn []string `toml:"post_return,omitempty"`
+	// ApprovalFiles binds explicitly listed repository files into hook approval.
+	ApprovalFiles []string `toml:"approval_files,omitempty"`
+	PostCreate    []string `toml:"post_create,omitempty"`
+	PreDestroy    []string `toml:"pre_destroy,omitempty"`
+	PostGet       []string `toml:"post_get,omitempty"`
+	PostReturn    []string `toml:"post_return,omitempty"`
 }
 
 // RootEnvVar is the environment variable that overrides the configured

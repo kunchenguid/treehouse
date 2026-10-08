@@ -15,7 +15,8 @@ func init() {
 		Long: `Approve the [hooks] table in the main repository's treehouse.toml.
 Review those commands before running this command. Approval is stored in the
 user config and applies only while the repository identity and hooks hash match.
-Changing hook contents requires running trust again. This command runs no hooks.`,
+Changing hooks or the contents/list of approval_files requires running trust
+again. This command runs no hooks.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := vcs.FindMainRepoRoot()

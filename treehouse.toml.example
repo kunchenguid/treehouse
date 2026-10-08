@@ -76,6 +76,10 @@ max_trees = 16
 # User hooks in ~/.config/treehouse/config.toml always run first for each event.
 # All commands run in the worktree directory. See README.md#hooks.
 # [hooks]
+# Optional: require approval of explicitly listed dependency contents too.
+# Removing entries or this key requires explicit reapproval with treehouse trust.
+# Files must be readable regular files within both main and execution worktrees.
+# approval_files = ["scripts/setup-venv.sh", "scripts/cleanup-worktree.sh", "scripts/teardown.sh"]
 # post_create = ["./scripts/setup-venv.sh"]
 # post_get = ["git submodule update --init --recursive"]
 # post_return = ["./scripts/cleanup-worktree.sh"]

@@ -738,11 +738,25 @@ treehouse trust     # approve the current [hooks] table, without running it
 treehouse untrust   # revoke this repository's approval
 ```
 
-Approval is stored under `[trusted_repos]` in the user config, keyed by the origin URL (or the main repository's absolute path when there is no origin), with a `sha256:` fingerprint of the parsed `[hooks]` table. Changing a command, its order, or a hook key invalidates approval. Comments, formatting, and unrelated settings do not. Untrusted or changed hooks produce a warning naming the file and suggesting `treehouse trust`. Running `trust` when already approved, or `untrust` when no approval exists, exits nonzero without rewriting the config. Schema keys in both repository and user config must use their documented spelling. Case variants such as `[Trusted_Repos]`, Unicode case aliases, and multiple spellings of a field are rejected before decoding, approval hashing, or updates, even if their values are identical. Correct the keys explicitly before running `trust` or `untrust`; a rejected update leaves the config unchanged. Repository URLs and other dynamic map keys keep their exact spelling.
+Approval is stored under `[trusted_repos]` in the user config, keyed by the origin URL (or the main repository's absolute path when there is no origin), with a `sha256:` fingerprint of the parsed `[hooks]` table and any explicitly listed approval files. Changing a command, its order, or a hook key invalidates approval. Comments, formatting, and unrelated settings do not. Untrusted or changed hooks produce a warning naming the file and suggesting `treehouse trust`. Running `trust` when already approved, or `untrust` when no approval exists, exits nonzero without rewriting the config. Schema keys in both repository and user config must use their documented spelling. Case variants such as `[Trusted_Repos]`, Unicode case aliases, and multiple spellings of a field are rejected before decoding, approval hashing, or updates, even if their values are identical. Correct the keys explicitly before running `trust` or `untrust`; a rejected update leaves the config unchanged. Repository URLs and other dynamic map keys keep their exact spelling.
 
 Clones with the same origin share approval only when their hook fingerprints match. Repository config cannot grant itself trust. The hook table must be spelled exactly `[hooks]`; case variants such as `[Hooks]` are rejected. Both commands use the main checkout's config, including when invoked from a pooled worktree. Deletion and return also resolve hooks from each target's owning main repository, even when invoked outside it or across a shared pool. Missing or malformed repository config disables its hooks during cleanup; user hooks still run.
 
-Approval covers the declared commands, including unknown hook keys. Referenced scripts and their dependencies are not hashed. Approve commands only for repositories whose code you trust.
+To include files that repository hooks depend on in the approval, list them explicitly:
+
+```toml
+[hooks]
+approval_files = ["scripts/setup.sh", "package.json", "package-lock.json"]
+post_create = ["./scripts/setup.sh"]
+```
+
+The approval fingerprint binds the entire hook table, the declared file list, and each listed file's contents. Changing a listed file invalidates approval even when the commands stay unchanged. Removing an entry, emptying the list, or deleting `approval_files` also invalidates approval. Only an explicit `treehouse trust` can approve the reduced list. Existing approvals from versions that treated `approval_files` as an unknown key require reapproval with file contents.
+
+Paths are relative to the owning main repository when approving, and to the execution worktree when running hooks. They must stay inside those roots. Only regular files are supported, including relative symlinks that stay inside the same root; absolute paths, absolute symlinks, escaping symlinks, directories, and special files are rejected. Missing or unreadable files prevent approval and disable repository hooks. `approval_files` uses exact paths, without glob expansion, and the key must use this exact spelling.
+
+Before each repository command, Treehouse checks both the owning main checkout and the execution worktree against the approved contents. Checks run after user hooks and any acquisition or return reset, and apply to all four lifecycle events, including prune and destroy. A mismatch skips repository hooks with a warning; user hooks and the lifecycle operation can still proceed.
+
+Dependencies must be listed explicitly, including scripts, sourced files, manifests, or lockfiles whose changes should require approval. Treehouse does not discover transitive dependencies. Without `approval_files`, only the hook table is approved. These checks do not sandbox hooks or eliminate concurrent file-change races: another process can change a file after verification, so approve commands only for repositories whose code you trust.
 
 ## Development
 
