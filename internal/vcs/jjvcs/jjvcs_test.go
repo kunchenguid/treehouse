@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kunchenguid/treehouse/internal/vcs/gitvcs"
+	"github.com/kunchenguid/treehouse/v3/internal/vcs/gitvcs"
 )
 
 // requireJJ skips the test when jj is not installed, so the suite stays green

@@ -8,8 +8,8 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
 
-	"github.com/kunchenguid/treehouse/internal/config"
-	"github.com/kunchenguid/treehouse/internal/vcs"
+	"github.com/kunchenguid/treehouse/v3/internal/config"
+	"github.com/kunchenguid/treehouse/v3/internal/vcs"
 )
 
 var initCmd = &cobra.Command{
@@ -51,6 +51,10 @@ var initCmd = &cobra.Command{
 		}
 
 		if _, err := f.WriteString("\n# Where a newly created pool slot is placed.\n# Unset (default) uses {pool}/{slot}/{repo}. Placeholders: {pool}, {slot}\n# (required), {repo}, {repo_parent}; one of {pool} or {repo} is required as\n# well, to scope the template to this repository. {repo_parent} does not count:\n# two repositories side by side expand it identically. {repo} alone can still\n# collide between two repositories whose directories share a name.\n# Worktrees already in the pool keep their recorded paths.\n# Override per-command with the --worktree-path flag or the\n# TREEHOUSE_WORKTREE_PATH env var.\n# Example: worktree_path = \"{repo_parent}/{repo}-{slot}\"\n"); err != nil {
+			return fmt.Errorf("failed to write config: %w", err)
+		}
+
+		if _, err := f.WriteString("\n# Opt-in tracked-file copy-on-write sharing for fresh Git slots on macOS/APFS.\n# Values: off (default), fresh. Existing slots and ignored output are untouched.\n# Requires no concurrent destination writers during setup; see README.\n# Override with --apfs-sharing or TREEHOUSE_APFS_SHARING.\n# Example: apfs_sharing = \"fresh\"\n"); err != nil {
 			return fmt.Errorf("failed to write config: %w", err)
 		}
 

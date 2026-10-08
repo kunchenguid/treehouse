@@ -33,7 +33,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kunchenguid/treehouse/internal/vcs/gitvcs"
+	"github.com/kunchenguid/treehouse/v3/internal/vcs/gitvcs"
 )
 
 // Backend implements the vcs.Backend interface for jj repositories.

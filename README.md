@@ -81,7 +81,7 @@ The flake exposes `#default` and `#treehouse` package outputs, plus `apps` for `
 **Go**
 
 ```sh
-go install github.com/kunchenguid/treehouse@latest
+go install github.com/kunchenguid/treehouse/v3@latest
 ```
 
 **From source**
@@ -110,8 +110,9 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
       ▼
   ┌──────────────────────────────────────────────────────┐
   │  Scan pool for a safely reusable worktree            │
-  │  (idle, unleased, clean, and HEAD merged into the    │
-  │  exact reset target; skip if safety is unprovable)   │
+  │  (this clone's, idle, unleased, clean, and HEAD      │
+  │  merged into the exact reset target; skip if safety  │
+  │  or clone ownership is unprovable)                   │
   └──────────┬───────────────────────────────────────────┘
              │
         ┌────┴────┐
@@ -143,20 +144,22 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
   (ready for next agent)
 ```
 
-- **Detached HEAD** — worktrees use detached HEAD mode, reset to whichever of the local or remote default branch is further ahead, avoiding branch name conflicts entirely.
-- **Choosable base branch** — set `base_branch` in `treehouse.toml`, or pass `treehouse get --base <branch>`, to cut worktrees from a branch other than the repository default. Opt-in; unset keeps today's inference. Worktrees stay in detached HEAD — this selects the commit they start at, it does not create or check out a branch.
+- **Detached HEAD by default** — without `-b` / `--branch`, worktrees use detached HEAD mode and reset to whichever of the local or remote default branch is further ahead. Pass `treehouse get -b <name>` to create and check out a new local Git branch at the acquired commit. See [Base branch](#base-branch) for base selection and branch-creation details.
+- **Choosable base branch** — set `base_branch` in `treehouse.toml`, or pass `treehouse get --base <branch>`, to cut worktrees from a branch other than the repository default. Opt-in; unset keeps today's inference. This composes with `--branch`: the new branch starts at the selected base.
 - **Unique worktree directory names** — pass `treehouse get --unique-leaf` (or set `unique_leaf` in `treehouse.toml`) to name new slots `<repo>-<slot>` instead of `<repo>`, so tooling that derives per-checkout identity from the directory name tells the slots apart. Opt-in; off keeps today's layout, and existing worktrees are never moved.
 - **Choosable worktree path** — set `worktree_path` in `treehouse.toml`, or pass `treehouse get --worktree-path '<template>'`, to place new worktrees somewhere a tool requires instead of `{pool}/{slot}/{repo}`. Opt-in, and creation-only: worktrees already in the pool keep their recorded paths. See [Worktree path](#worktree-path).
+- **Clone-correct reuse** — two local clones of the same remote share one pool, but a worktree is only ever reused by the clone it belongs to, judged by its physical Git common directory (symlinked or, on a case-insensitive filesystem, differently cased paths to one clone count as that clone). Another clone's idle worktree is skipped and left intact; if nothing reusable is left, `get` creates a new worktree up to `max_trees` and otherwise fails with a message counting the foreign and unverifiable worktrees. A worktree whose owning clone cannot be proven is never reused, and neither is any worktree when the requesting clone's own identity cannot be proven. Non-colocated jj repositories have no Git common directory, so their worktrees are never reused; `get` creates a new one each time until `max_trees` is reached.
+- **Opt-in APFS sharing** - share identical large tracked files with the main checkout using independent copy-on-write clones. Default off, macOS/APFS and fresh Git slots only; existing slots and ignored output are never swept. See [APFS copy-on-write sharing](#apfs-copy-on-write-sharing).
 - **No daemon** - all operations are inline CLI commands.
   Pool state is a small on-disk file, written under a lock by each command.
 - **Interactive shell setup** — when opening a subshell on macOS or Linux, `treehouse`, `treehouse get`, and `treehouse enter` start `$SHELL` as an interactive login shell when it resolves to `bash`, `fish`, or `zsh`. Other shells, fallback shells, and Windows use their default invocation. A regular executable that is merely named like a supported shell but does not accept `-i -l` (for example a wrapper script at `/opt/tools/bash`) is an accepted limitation: the resolved basename is the contract, and PATH-identity probing would reject genuine second installs of the same shell.
 - **In-use detection** — treehouse scans running processes and short-lived owner reservations to determine which worktrees are in-use. Reservations are persisted only while `get`, `destroy`, and `prune` lifecycle work is running.
-- **Durable leases** - `treehouse get --lease` reserves a worktree as a persistent home without keeping a process inside it. Each acquisition gets an immutable random lease identity, and the lease is recorded in treehouse's own state. The worktree is never handed out by a later `get` and never removed by `prune` until you release it with `treehouse return`. Unlike process-based in-use detection, a lease survives with zero processes running inside the worktree.
+- **Durable leases** - `treehouse get --lease` reserves a worktree as a persistent home without keeping a process inside it. Each acquisition gets an immutable random lease identity, and the lease is recorded in treehouse's own state. An ordinary lease keeps the worktree out of later `get` and `prune` until you release it with `treehouse return`. Unlike process-based in-use detection, it survives with zero processes running inside the worktree; recovered leases follow the [state recovery policy](#recovering-missing-pool-state).
 - **State recovery** - treehouse writes pool state atomically via a temp file and replacement.
-  If an existing state file is empty, truncated, or omits an on-disk worktree, treehouse rebuilds the missing entries and quarantines them for inspection and explicit destruction. See [Recovering missing pool state](#recovering-missing-pool-state).
+  If an existing state file is empty, truncated, or omits an on-disk worktree, treehouse rebuilds the missing entries. See [Recovering missing pool state](#recovering-missing-pool-state) for automatic recovery and handling slots that remain quarantined.
 - **Gitignored file seeding** — commit a `.worktreeinclude` file for the default selection, or pass `get --include-file <path>` for a personal manifest. Selected local files are copied from the main checkout on each acquire. See [Seeding gitignored files](#seeding-gitignored-files).
 - **Dirty detection** - treehouse treats tracked changes and untracked files as dirty, even when repository config hides untracked files from normal `git status` output.
-- **Safe pruning** - By default, `treehouse prune` removes only idle managed worktrees whose HEAD is already merged into the default branch and whose working tree is clean.
+- **Safe pruning** - By default, `treehouse prune` removes only clean, idle managed worktrees with landed HEAD commits. See [Base branch](#base-branch) for the merge rule.
   `treehouse prune --all` applies the same safety checks across every managed pool under the user-level treehouse root.
   Backing-repository-missing orphans are reported by default; `--prune-orphans` includes them as unverified prune candidates, and `--yes` is required before deletion.
   It is a dry run unless you pass `--yes`.
@@ -191,10 +194,12 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `get`     | `--lease` | Durably lease the worktree without opening a subshell; print only its path to stdout |
 | `get`     | `--lease-holder` | Optional label recorded as the lease holder (defaults to `$TREEHOUSE_LEASE_HOLDER`) |
 | `get`     | `--json` | Print `path`, `lease_id`, `lease_holder`, `leased_at`, and `base_branch` as JSON (requires `--lease`) |
+| `get`     | `-b`, `--branch` | Create and check out a new Git branch at the acquired commit; fails if it already exists or its name is invalid |
 | `get`     | `--base` | Branch to cut this worktree from, overriding `base_branch` in config |
 | `get`     | `--include-file` | Replace committed `.worktreeinclude` for this acquisition with the supplied manifest |
 | `get`     | `--unique-leaf` | Name a newly created worktree directory `<repo>-<slot>` instead of `<repo>`, overriding `unique_leaf` in config |
 | `get`     | `--worktree-path` | Template for a newly created worktree's directory, overriding `worktree_path` in config |
+| `get`     | `--apfs-sharing` | `fresh` opts in to tracked-file sharing for new Git slots on macOS/APFS; `off` opts out (default) |
 | `lease`   | `--lease-holder` | Optional label recorded as the lease holder (defaults to `$TREEHOUSE_LEASE_HOLDER`) |
 | `lease`   | `--json` | Print `path`, `lease_id`, `lease_holder`, `leased_at`, and `base_branch` as JSON (`base_branch` is best-effort: empty when the slot records no explicit base and its own worktree cannot resolve a default) |
 | `enter`   | `--print-path` | Print only the worktree's absolute path to stdout instead of opening a subshell (for `cd "$(treehouse enter --print-path 1)"`) |
@@ -213,6 +218,41 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `destroy` | `--include-unlanded` | Also remove dirty, unmerged, or unverified worktrees (irreversible data loss) |
 | `destroy` | `--include-in-use` | Also remove worktrees with a running process or owner reservation (processes are terminated cleanly first) |
 | `destroy` | `--include-leased` | Also remove a leased worktree; only when the exact path is named, never via `--all` |
+
+### APFS copy-on-write sharing
+
+Git worktrees already share Git's object database, but checked-out file data can still occupy separate blocks. On macOS/APFS, Treehouse can replace identical tracked files with independent copy-on-write clones of the same path in the owning main checkout. Editing either file does not change the other; deleting the source does not invalidate the clone. These are **not hardlinks**.
+
+Opt in for one acquisition:
+
+```sh
+treehouse get --lease --apfs-sharing fresh
+```
+
+Or set `apfs_sharing = "fresh"` in `treehouse.toml` or `~/.config/treehouse/config.toml`. Precedence is `--apfs-sharing` > `TREEHOUSE_APFS_SHARING` > repo/user config > `off`. The only values are `off` and `fresh`; invalid values fail before allocation. Override a configured opt-in with `--apfs-sharing off` or `TREEHOUSE_APFS_SHARING=off`.
+
+**Fresh Git slots only.** The pass runs after normal checkout, seeding and optional branch creation, before the slot is marked acquired, Treehouse's `post_create` hooks run, or its path is published. Reused slots, `return`, existing worktrees, and jj workspaces are never swept. Only tracked regular files at least **64 KiB** are candidates. It does not copy or share ignored `node_modules`, build directories, caches, Git metadata, or seeded files. Different source bytes are left alone; different branches are fine. Files rewritten by later builds or resets may lose sharing.
+
+**Exclusive destination ownership is required.** Do not enable this when another editor, build, Git operation, or external watcher can write into the destination during setup. Pool leases and final stat checks are not filesystem writer locks. Treehouse conservatively skips sharing when Git `post-checkout`/`reference-transaction` hooks, custom fsmonitor hooks, or checkout filter attributes could already have started a writer. This also skips LFS-filtered checkouts. Treehouse's own hooks still run afterward as usual. The pass does not write source file content or metadata, though reading may update source access times.
+
+The native implementation hashes the original destination and source, clones into destination-local staging, verifies the staged bytes, restores destination permissions/timestamps/xattrs and verifies them along with owner/group, hashes again, and atomically replaces the destination. Inode and ctime change; creation time is not preserved. Symlinked paths, ACLs, hardlinks, special mode/flag bits, sparse/compressed representations, different owners, and unsupported metadata are skipped. Other operating systems, non-APFS filesystems and cross-volume pairs keep ordinary copies, with the reason on stderr. No Python helper or daemon is required.
+
+Diagnostics stay on **stderr**, including for `get --lease --json`; stdout retains its path/lease contract. `logical_bytes` is the payload cloned. `private_data_reduced_bytes` is a separate before/after APFS allocation measurement, **not** an immediate increase in volume free space: snapshots, shared extents and filesystem metadata matter. The initial checkout still needs its full allocation, and later writes need free space for private blocks. The pass adds synchronous hashing/metadata work while the pool is locked; opt-in does not guarantee a speedup.
+
+A safe per-file clone, metadata or ENOSPC failure leaves the original in place and reports a skip/error. Detected destination/status/index/HEAD changes, cancellation, or incomplete staging cleanup fail acquisition and retain the provisional lease as quarantine, without publishing a path. Inspect the slot before returning or destroying it. SIGINT/SIGTERM unwind staging; SIGKILL can leave `.treehouse-sharing-*` directories, but the unpublished slot remains leased. Do not treat such a slot as ready for use or delete similarly named files in other worktrees.
+
+#### Measured benefit
+
+The pre-implementation scout measured real APFS private data on an arm64 Mac running macOS 26.6.2, using the [reference algorithm](https://gist.github.com/philippb/ad3d81d33fe4e752fd014cf16ee5ae56) on two independently created Git worktrees per public repository:
+
+| Public corpus | Pre-pass tracked private data | Private data removed per worktree | Reduction |
+|---|---:|---:|---:|
+| [Godot demo projects](https://github.com/godotengine/godot-demo-projects/tree/15d4fcd70a429dfd455d6fce9d0cd004abd07373) | 324.57 MB | 301.39 MB | **92.86%** |
+| [Google Fonts](https://github.com/google/fonts/tree/23e54b51ddffbc7713c583748e3bd86f62b1fa4a) | 3,059.27 MB | 2,919.83 MB | **95.44%** |
+
+MB are decimal. The denominator includes **all tracked regular-file private data**, not just candidates; shared Git administration and inode/directory metadata are excluded. These fresh worktrees had no build/dependency output, so their whole-worktree regular-file denominators were the same. Benefits can be much smaller as a fraction of a populated worktree: another measured corpus fell from **87.97% of tracked data to 6.78% of whole regular-file data** when its installed dependencies and build output were included. Multiply per-worktree savings by your retained slot count, but account for branch differences, writes and existing sharing.
+
+The reference pass added 7.95-8.55 seconds for Godot and 96.58-98.92 seconds for Fonts. A single native-metadata prototype trial reduced these to 2.28 and 19.18 seconds. Those are **scout prototype timings, not benchmarks or promises for the shipped Go implementation**; cold caches, metadata and workload shape matter. Default-on behavior and automatic ignored-file sharing are intentionally out of scope.
 
 ### Seeding gitignored files
 
@@ -239,7 +279,7 @@ Treehouse reads the supplied file once before acquisition. A missing or unreadab
 
 Treehouse refreshes selected files whenever it creates or reuses a worktree. On Unix-like systems, it preserves regular-file permissions, including executable bits. A source symlink becomes a regular file containing the symlink target text; Treehouse never follows it or creates a destination symlink. Rooted filesystem operations prevent selected paths and existing destination symlinks from escaping either checkout.
 
-If seeding fails, acquisition fails too. A newly created worktree is removed; if cleanup fails, or if a reused worktree was only partly refreshed, Treehouse records it as leased and quarantined so a later `get` cannot hand it out silently. Inspect it with `treehouse status`. If Treehouse reports that its seeded-file inventory is unknown, remove it with `treehouse destroy <path> --include-leased --yes`; `treehouse return` refuses to reuse it. Other quarantined worktrees can be returned after they are safe to reuse.
+If seeding fails, acquisition fails too. A newly created worktree is removed; if cleanup fails, or if a reused worktree was only partly refreshed, Treehouse records it as leased and quarantined so a later `get` cannot hand it out silently. Inspect it with `treehouse status`. If Treehouse reports it as recovered, its seeded-file inventory is unknown: remove it with `treehouse destroy <path> --include-leased --yes`, or return it by name as described in [Recovering missing pool state](#recovering-missing-pool-state), knowing that seeded ignored files stay in it. Other quarantined worktrees can be returned after they are safe to reuse.
 
 ### Leasing a worktree (no subshell)
 
@@ -255,7 +295,7 @@ path=$(treehouse get --lease)
 
 It acquires a worktree exactly like `get`, but instead of opening a subshell it marks the worktree **leased** in treehouse's persistent state. By default it prints only the worktree's absolute path to stdout; `--json` prints the lease allocation instead. Every human-facing message goes to stderr, so either output mode stays clean.
 
-A leased worktree is never handed out by a later `get` and never removed by `prune`, regardless of whether any process runs inside it, until the lease is explicitly released.
+An ordinary lease keeps a worktree out of later `get` and `prune`, regardless of whether any process runs inside it, until the lease is explicitly released. Recovered leases have a separate, conservative automatic release path described in [Recovering missing pool state](#recovering-missing-pool-state).
 A bulk `treehouse destroy <pool> --all` never removes it either; only naming its exact path with `treehouse destroy <path> --include-leased --yes` will.
 
 Pass `--lease-holder <label>` (or set `$TREEHOUSE_LEASE_HOLDER`) to record who holds the lease; `treehouse status` then shows it next to the `leased` state.
@@ -284,7 +324,7 @@ treehouse get --lease --no-fetch --json
 
 With `--no-fetch`, Treehouse resets or creates the worktree from existing local refs and never contacts `origin`. The caller is responsible for ensuring those refs and objects are current.
 
-`treehouse status --json` returns an array with `name`, `path`, `status`, `branch`, `detached`, `branch_error`, `flavor`, `lease_id`, `lease_holder`, `leased_at`, and `processes`. `branch` names the checked-out branch of a git slot on a branch; it is empty for a detached HEAD, a jj slot, and a markerless (damaged) slot. `detached` is `true` only for a git slot on a detached HEAD (the state `treehouse get` leaves by default) and is omitted when false; `branch_error` is set when a slot's branch could not be read, so a read failure is never mistaken for a detached HEAD or an empty branch. `processes` is what `treehouse return` would terminate in that worktree, not every process whose working directory is inside it: the calling process and its ancestors are excluded, so running `status` from inside a pooled worktree reports what is resident in the slot instead of the shell you typed the command into. When the process table itself cannot be read, `status` is `unverified` and `processes` is empty: whether anything is running there is unknown, so the slot is not reported `available`, `dirty`, or `in-use`, and the error is printed as a warning on stderr. A lease, an owner reservation, or the slot you are standing in is still reported as such, because those facts do not depend on the scan. `flavor` is the backend the worktree's own marker identifies (`"git"` or `"jj"`) and is omitted when no marker is found. Non-leased entries use empty lease strings and a `null` timestamp. State files written before lease identities remain readable; their existing leases have an empty `lease_id` until released and acquired again.
+`treehouse status --json` returns an array with `name`, `path`, `status`, `branch`, `detached`, `branch_error`, `recovery_reason`, `recovery_backup`, `flavor`, `lease_id`, `lease_holder`, `leased_at`, and `processes`. `recovery_reason` is set when an unsafe recovered lease remains quarantined. `recovery_backup` is the slot's recovery backup folder, set while that folder holds anything. `branch` names the checked-out branch of a git slot on a branch; it is empty for a detached HEAD, a jj slot, and a markerless (damaged) slot. `detached` is `true` only for a git slot on a detached HEAD (the state `treehouse get` leaves by default) and is omitted when false; `branch_error` is set when a slot's branch could not be read, so a read failure is never mistaken for a detached HEAD or an empty branch. `processes` is what `treehouse return` would terminate in that worktree, not every process whose working directory is inside it: the calling process and its ancestors are excluded, so running `status` from inside a pooled worktree reports what is resident in the slot instead of the shell you typed the command into. When the process table itself cannot be read, `status` is `unverified` and `processes` is empty: whether anything is running there is unknown, so the slot is not reported `available`, `dirty`, or `in-use`, and the error is printed as a warning on stderr. A lease, an owner reservation, or the slot you are standing in is still reported as such, because those facts do not depend on the scan. `flavor` is the backend the worktree's own marker identifies (`"git"` or `"jj"`) and is omitted when no marker is found. Non-leased entries use empty lease strings and a `null` timestamp. State files written before lease identities remain readable; their existing leases have an empty `lease_id` until released and acquired again.
 
 Release a lease with `treehouse return <path>`, which terminates lingering processes and verifies that no foreign process remains before it resets the worktree, clears the lease, and returns the worktree to the pool.
 If process termination or that verification fails, the command exits nonzero and leaves the worktree and lease in place instead of recycling a slot that may still be in use.
@@ -326,7 +366,7 @@ This target set is deliberately wider than the other bulk verbs. `prune` never t
 Two outcomes are reported as **skipped**, count against neither the returns nor the failures, and leave the slot exactly as it was:
 
 - **No longer the acquisition the listing saw.** `--all` lists the pool once and then works through it, so an earlier confirmation can hold the run open while a later slot changes state. Each release is pinned to the lease the listing saw: a slot that was leased is refused unless that same lease is still on it - whether it was handed to someone else or simply returned in the meantime - and a slot that was not leased is refused if it has been leased since. The report says only that the slot is no longer the acquisition the run listed, because the lease identity is all that was compared. That is also the whole guarantee: a slot handed to another plain `treehouse get` carries no lease to compare, so it is returned like any other in-use slot, which is what `--all` does to in-use slots by design.
-- **Quarantined.** A state version bump or a rotated state key leaves an entry whose seed inventory can no longer be authenticated, and no return may clear it. A whole pool can land in this state at once; the run reports each slot and points at `treehouse destroy --include-leased`. Such a slot is refused before the dirty confirmation, so `--all` never offers to discard changes it cannot then discard.
+- **Still recovered.** A slot that remains quarantined after the [automatic recovery check](#recovering-missing-pool-state) is skipped by `--all`. A missing or invalid state key can relabel a whole pool at once. The check runs again under the state lock at each release, so a slot recovered after the listing is skipped too, before the dirty confirmation. The run names `treehouse return <path>` for each remaining slot: after inspecting it, that named return releases it, confirming first if it has uncommitted changes, and warns that any ignored files treehouse seeded into it are not cleaned up. `treehouse destroy <path> --include-leased --yes` removes it instead.
 
 Each worktree is returned exactly as naming it would be, including the confirmation before uncommitted changes are discarded. Declining one - or failing to return one - never stops the worktrees after it, and the summary names every slot that was left behind. `--all` takes no path or name, and cannot be combined with `--if-lease-id` or `--if-lease-holder`, which identify a single acquisition.
 
@@ -367,10 +407,17 @@ Every restored entry is marked `leased` because treehouse cannot know whether it
 Both routes scan the pool directory, so a worktree that `worktree_path` placed outside it is not rebuilt — see [Worktree path](#worktree-path) for how to remove one.
 
 Run `treehouse status` to inspect recovered entries.
-Treehouse cannot safely return these entries to the pool because recovery cannot reconstruct the trusted inventory of seeded ignored files.
-State written by versions without inventory integrity data, or whose pool-local `treehouse-state.key` is missing or invalid, is handled the same way, including state rewritten after a downgrade.
-After inspecting a recovered worktree, remove it by naming its exact path with `treehouse destroy <path> --include-leased --yes`.
-Bulk `destroy --all` and prune leave recovered entries alone.
+State from 3.0 or later whose pool-local `treehouse-state.key` is missing, or whose seed inventory fails to verify, is handled the same way, and so is any state beside an invalid key.
+State from a release before 3.0 is the exception: it never seeded ignored files, so treehouse adopts it as is.
+treehouse 3.0.0 got that wrong and quarantined every entry of pre-3.0 state as recovered; those entries read like any other recovered entry, because nothing left in the state file can tell a slot that was idle from one that was durably leased.
+Unversioned state is adopted the same way when a still-running 2.x binary rewrites it after 3.0 has already run in the pool, for example when an agent session outlives the upgrade.
+This is a known limitation: such a rewrite drops the record of ignored files that 3.0 seeded from `.worktreeinclude`, so a later reset of that slot does not remove them and they stay in it when the slot is reused.
+
+Treehouse 3.0.2 automatically frees a recovered Git slot on the next command that examines pool state only when it proves no process is using it, tracked files are unchanged, and HEAD is contained in a remote-tracking ref or the slot's base branch. On Unix, untracked files do not block recovery: treehouse moves them, without deleting them, into that slot's fixed backup folder before freeing the slot. The folder sits beside the pool, in the treehouse root, and is named `treehouse-recovered-backup-<pool>-<slot>`: slot `1` of the pool `~/.treehouse/myrepo-a1b2c3` is backed up to `~/.treehouse/treehouse-recovered-backup-myrepo-a1b2c3-1`. Treehouse keeps that folder owner-only (`0700`), tightening an existing folder you own; it refuses to move files into the folder if it belongs to another user, cannot be tightened, or it or a destination folder inside it is a symlink, and keeps the slot leased instead. On Windows, where a new folder inherits its parent's access rules, treehouse never moves untracked files: a recovered slot with untracked files stays leased. Preserve them and return the slot by name, or remove them and let the next pool command recheck it; a recovered slot without untracked files can still be freed automatically. A retry after a failed move reuses the same folder and never overwrites a file already there (a name taken by an earlier attempt gets a numeric suffix such as `notes.txt.1`). While the folder holds anything, `treehouse status` shows it next to the slot. Keep and inspect that backup folder; it is never automatically removed.
+
+Recovered jj slots cannot be automatically verified and stay leased until returned by name. Any slot that fails a check stays leased. `treehouse status` reports the specific reason and tells you to inspect the slot, resolve the issue, and run `treehouse return <path>` by name. This includes active processes, tracked edits, an unpushed HEAD, and anything treehouse cannot verify. `treehouse return --all` continues to skip slots that remain recovered after the automatic check. To remove one instead, name its exact path with `treehouse destroy <path> --include-leased --yes`; bulk `destroy --all` and prune leave recovered entries alone.
+
+Recovery cannot reconstruct the inventory of ignored files treehouse seeded into the worktree. Such files are not included in the untracked-file backup and can remain in the slot when it is reused; inspect and preserve any seeded ignored files yourself before returning or reusing a recovered slot. This known limitation is unchanged.
 
 ### Pruning stale worktrees and orphans
 
@@ -380,14 +427,15 @@ Pass `treehouse prune --yes` to delete those worktrees.
 
 By default, prune only inspects the current repository's pool and must be run inside a repository.
 Pass `treehouse prune --all` or `treehouse prune --global` to inspect every managed pool under the user-level treehouse root from any directory.
-Global prune reads the user-level config and hooks, derives each worktree's owning repository from version-control metadata, then fetches and checks merge safety against that repository.
+Global prune reads the user-level config and hooks.
+Both forms derive each worktree's owning repository from its own version-control metadata, then fetch and check merge safety against that repository, so a pool shared by two clones of the same remote is pruned from either clone.
 Without `--prune-orphans`, pass `treehouse prune --all --yes` to delete only the globally safe stale candidates.
 
 Prune ignores worktrees that are currently in use, leased, or reserved by another lifecycle operation.
-It skips idle worktrees that are unsafe to remove and prints the skip reason, such as uncommitted tracked or untracked changes, or a HEAD commit that is not merged into the default branch.
+It skips idle worktrees that are unsafe to remove and prints the skip reason, such as uncommitted tracked or untracked changes, or an unlanded HEAD commit (see [Base branch](#base-branch) for the merge rule).
 Skip output is grouped by reason so large global sweeps stay scannable.
-When `origin` exists, prune fetches it and proves each HEAD against the current remote default branch tracking ref.
-Without `origin`, prune uses the local default branch ref.
+When `origin` exists, prune fetches it and checks the current remote default branch tracking ref first.
+Without `origin`, prune checks the local default branch ref first.
 If `origin` cannot be reached, prune reports `origin unreachable (cannot verify)` and leaves the worktree untouched, even when `--prune-orphans` is set.
 If a linked worktree points at a missing backing repository, prune reports `orphaned (backing repository missing)`.
 Plain `treehouse prune` and `treehouse prune --all` never delete those orphans.
@@ -403,6 +451,8 @@ Targets are narrow and explicit:
 
 - `treehouse destroy <worktree-path>` targets exactly one worktree.
 - `treehouse destroy <pool-path> --all` targets worktrees in THAT pool only. The pool path can be the pool directory, a worktree inside it, or the repository (`.` works from inside a repo).
+
+Like prune, destroy judges and removes each worktree through its own owning repository, so either clone sharing a pool can destroy the other clone's worktrees.
 
 There is no cross-pool or global destroy: `--all` without a pool path is an error, so a stray command can never reach beyond the pool you named.
 
@@ -463,6 +513,9 @@ max_trees = 16
 # Unset uses {pool}/{slot}/{repo} (see "Worktree path" below).
 # worktree_path = "{repo_parent}/{repo}-{slot}"
 
+# Optional tracked-file sharing (see "APFS copy-on-write sharing" above).
+# apfs_sharing = "fresh"
+
 # Optional version-control backend. Git is the default everywhere; set "jj"
 # to opt in to the experimental Jujutsu backend
 # (see "Version-control backend" below).
@@ -495,10 +548,13 @@ treehouse get --lease --base release/2.x --json
 
 A few things worth knowing:
 
-- **Worktrees stay in detached HEAD.** This selects the commit a worktree starts at; it does not create or check out a branch. There is no `-b` shorthand, because `-b` means branch *creation* in git and this flag creates nothing.
-- **Branch names only.** `develop`, not `origin/develop`, a tag, or a commit SHA. Whichever of `develop` and `origin/develop` is further ahead wins, preferring `origin` when they have diverged — exactly how the inferred default behaves. A tag sharing a branch's name never wins: refs are resolved fully qualified.
+- **Worktrees stay in detached HEAD by default.** `--base` selects only the starting commit; it does not itself create or check out a branch. Add `-b <name>` / `--branch <name>` to create and check out a new local Git branch at that commit, including with `get --lease` for non-interactive use. `--branch` does not change base selection; existing or invalid branch names fail instead of selecting another name or commit. The jj backend rejects `--branch`.
+- **Returning a worktree leaves its named branch intact.** `treehouse return` detaches and resets the slot for reuse; it does not delete the branch.
+- **Failed branch checkout keeps the branch and worktree.** If Git creates the branch but checkout fails or a checkout hook moves it away from the acquired commit, `get` fails without handing off the slot. Treehouse quarantines the worktree for inspection, preserving files the hook may have written; the slot remains unavailable until you resolve it. The branch is also left in place because another worktree may have checked it out. If a checkout hook exits nonzero but leaves the requested branch at the acquired commit, acquisition succeeds and its diagnostic goes to stderr, not `--lease` stdout.
+- **A concurrent branch-name collision can leave a slot quarantined.** Known collisions fail before a slot is reset or created. If the name is taken after that check and a reference-transaction hook could have written files, or the new worktree contains files beyond Treehouse's known seed copies, Treehouse preserves the worktree for inspection rather than deleting its contents. A post-checkout hook alone does not cause quarantine when checkout never ran.
+- **Base branch names only.** For `--base`, use `develop`, not `origin/develop`, a tag, or a commit SHA. Whichever of `develop` and `origin/develop` is further ahead wins, preferring `origin` when they have diverged — exactly how the inferred default behaves. A tag sharing a branch's name never wins: refs are resolved fully qualified.
 - **It fails closed.** A base that resolves to neither a local branch nor `origin/<branch>` is an error; Treehouse never falls back to the inferred default, which would hand you a worktree cut from the wrong branch and report success. `treehouse status` shows the resolved base, and flags a configured one it cannot resolve.
-- **Returned worktrees are parked on the base they were cut from**, so the pool keeps recycling. `base_branch` wins when it is set; otherwise a slot acquired with `--base` is parked back on that branch. A slot parked elsewhere could not be reused whenever the base is not a descendant of it.
+- **Returned worktrees are parked on the base they were cut from**, so the pool keeps recycling. `base_branch` wins when it is set; otherwise a slot acquired with `--base` is parked back on that branch. A slot parked elsewhere could not be reused whenever the base is not a descendant of it. Prune and destroy also accept a clean slot whose HEAD is merged into its recorded explicit base even when it is not merged into the default branch; slots without an explicit base must pass the default-branch check.
 - **Existing pools migrate on their own.** A slot is recycled onto a newly requested base as long as it carries nothing beyond the base it was cut from; the two bases need no ancestry relation, so a `develop` slot rejoins a plain `treehouse get` and vice versa. A slot holding commits the new base does not contain is still refused, as always.
 - **Git backend only for now.** Under the jj backend an explicit base fails with a clear error rather than silently using the default bookmark.
 

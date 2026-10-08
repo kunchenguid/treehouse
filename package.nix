@@ -2,7 +2,7 @@
 , buildGoModule
 , git
 , python3
-, version ? "2.3.0" # x-release-please-version
+, version ? "3.1.2" # x-release-please-version
 }:
 
 buildGoModule {

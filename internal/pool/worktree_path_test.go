@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kunchenguid/treehouse/internal/vcs/gitvcs"
+	"github.com/kunchenguid/treehouse/v3/internal/vcs/gitvcs"
 )
 
 // quotedPath renders a path the way the errors below name it. The messages quote
@@ -1088,7 +1088,7 @@ func TestRemoveManagedWorktree_DropsJJSeedAuthOnPlainRoute(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(worktree, ".jj")); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeManagedWorktree(poolDir, "", entry); err != nil {
+	if err := removeManagedWorktree(poolDir, entry); err != nil {
 		t.Fatalf("removeManagedWorktree failed: %v", err)
 	}
 	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
@@ -1122,7 +1122,7 @@ func TestRemoveManagedWorktree_LeavesUnownedJJSeedAuthOnPlainRoute(t *testing.T)
 		t.Fatal(err)
 	}
 
-	if err := removeManagedWorktree(poolDir, "", entry); err != nil {
+	if err := removeManagedWorktree(poolDir, entry); err != nil {
 		t.Fatalf("removeManagedWorktree failed: %v", err)
 	}
 	if _, err := os.Stat(worktree); !os.IsNotExist(err) {

@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/kunchenguid/treehouse/internal/hooks"
-	"github.com/kunchenguid/treehouse/internal/process"
-	"github.com/kunchenguid/treehouse/internal/vcs"
+	"github.com/kunchenguid/treehouse/v3/internal/hooks"
+	"github.com/kunchenguid/treehouse/v3/internal/process"
+	"github.com/kunchenguid/treehouse/v3/internal/vcs"
 )
 
 const (
@@ -62,6 +62,11 @@ type WorktreeStatus struct {
 	// instead of leaving Branch empty, so a read failure is never mistaken for
 	// a detached HEAD.
 	BranchErr string
+	// RecoveryReason explains why a recovered lease was kept quarantined.
+	RecoveryReason string
+	// RecoveryBackup is the non-empty folder recovery moved this slot's
+	// untracked files into, or "" when there is none.
+	RecoveryBackup string
 	// HeldOnlyByCwd reports a StatusHere slot that nobody is actually holding:
 	// it is unleased, idle, clean, quiet and undamaged, and the only reason it
 	// is not reported available is that the caller is standing in it. Status
@@ -96,6 +101,9 @@ type AcquireOptions struct {
 	// branch inferred from the repository. A non-empty value that cannot be
 	// resolved fails the acquisition rather than falling back.
 	BaseBranch string
+	// Branch creates and checks out a new Git branch at the acquired commit.
+	// Empty preserves the default detached-HEAD behavior.
+	Branch string
 	// UniqueLeaf gives a newly created worktree a directory name unique within
 	// the pool ("<repo>-<slot>") instead of the repository name every slot
 	// shares. It only affects creation: a recycled slot keeps the path already
@@ -110,6 +118,9 @@ type AcquireOptions struct {
 	// IncludeManifest replaces the committed manifest; nil keeps the default,
 	// while a non-nil empty slice explicitly disables seeding.
 	IncludeManifest []byte
+	// APFSSharing opts in to tracked-file copy-on-write sharing for fresh Git
+	// slots only, before hooks and publication. Reuse and return never run it.
+	APFSSharing bool
 }
 
 // acquireOptions controls how Acquire reserves the worktree it hands out.
@@ -118,10 +129,13 @@ type acquireOptions struct {
 	skipFetch bool
 	// baseBranch is the explicitly requested base branch, or empty to infer it.
 	baseBranch string
+	// branch is the opt-in Git branch to create at the acquired commit.
+	branch string
 	// worktreePath templates where a newly created slot is placed, or empty for
 	// the built-in layout.
 	worktreePath    string
 	includeManifest []byte
+	apfsSharing     bool
 	// uniqueLeaf makes a newly created worktree's own directory name unique
 	// within the pool instead of the repository name every slot shares.
 	uniqueLeaf bool
@@ -148,8 +162,10 @@ func AcquireWithOptions(repoRoot, poolDir string, poolSize int, postCreate []str
 	acquired, err := acquire(repoRoot, poolDir, poolSize, postCreate, acquireOptions{
 		skipFetch:       options.SkipFetch,
 		baseBranch:      options.BaseBranch,
+		branch:          options.Branch,
 		worktreePath:    options.WorktreePath,
 		includeManifest: options.IncludeManifest,
+		apfsSharing:     options.APFSSharing,
 		uniqueLeaf:      options.UniqueLeaf,
 		hookStdout:      os.Stdout,
 		hookStderr:      os.Stderr,
@@ -178,8 +194,10 @@ func AcquireLeaseInfoWithOptions(repoRoot, poolDir string, poolSize int, postCre
 	return acquire(repoRoot, poolDir, poolSize, postCreate, acquireOptions{
 		skipFetch:       options.SkipFetch,
 		baseBranch:      options.BaseBranch,
+		branch:          options.Branch,
 		worktreePath:    options.WorktreePath,
 		includeManifest: options.IncludeManifest,
+		apfsSharing:     options.APFSSharing,
 		uniqueLeaf:      options.UniqueLeaf,
 		lease:           true,
 		leaseHolder:     holder,
@@ -189,9 +207,11 @@ func AcquireLeaseInfoWithOptions(repoRoot, poolDir string, poolSize int, postCre
 }
 
 var (
-	seedWorktree   = vcs.SeedWorktree
-	removeWorktree = vcs.RemoveWorktree
-	writeState     = WriteState
+	seedWorktree       = vcs.SeedWorktree
+	removeWorktree     = vcs.RemoveWorktree
+	createBranch       = vcs.CreateBranch
+	writeState         = WriteState
+	shareWorktreeFiles = vcs.ShareWorktreeFiles
 )
 
 const acquisitionIncompleteLeaseHolder = "quarantined: acquisition state incomplete"
@@ -336,12 +356,34 @@ func freeTemplatedSlot(repoRoot, poolDir string, state State, poolSize int, opts
 		len(occupied), occupied[0], occupied[len(occupied)-1], repoRoot)
 }
 
+// acquisitionCommonGitDir returns a physical clone identity: the file the
+// common Git dir resolves to after symlinks, compared with os.SameFile so
+// neither a symlink alias nor letter case on a case-insensitive filesystem
+// splits one clone. A clone without one (including non-colocated jj, which
+// has no common Git dir) is an error: ownership that cannot be proven is
+// never treated as a match.
+func acquisitionCommonGitDir(dir string) (os.FileInfo, error) {
+	commonDir, err := vcs.CommonGitDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	return os.Stat(commonDir)
+}
+
 func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts acquireOptions) (LeaseInfo, error) {
 	// Before the fetch and before any slot is inspected, so a template that is
 	// wrong on its own text costs nothing. The placement rules need a slot name
 	// and run under the state lock below.
 	if _, err := validateWorktreePathTemplate(opts.worktreePath); err != nil {
 		return LeaseInfo{}, err
+	}
+	if opts.branch != "" && vcs.BackendNameFor(repoRoot) != "git" {
+		return LeaseInfo{}, fmt.Errorf("cannot create branch %q: --branch is only supported by the git backend; remove --branch to acquire a jj workspace", opts.branch)
+	}
+	if opts.branch != "" {
+		if err := vcs.ValidateBranchName(repoRoot, opts.branch); err != nil {
+			return LeaseInfo{}, fmt.Errorf("invalid branch %q: %w", opts.branch, err)
+		}
 	}
 
 	// Said out loud rather than resolved silently: a template names the leaf
@@ -363,6 +405,18 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 	branch, err := resolveBaseBranch(repoRoot, opts.baseBranch)
 	if err != nil {
 		return LeaseInfo{}, err
+	}
+	// An unverifiable requester identity disables reuse, not allocation.
+	commonDir, identityErr := acquisitionCommonGitDir(repoRoot)
+
+	if opts.branch != "" {
+		exists, err := vcs.LocalBranchExists(repoRoot, opts.branch)
+		if err != nil {
+			return LeaseInfo{}, fmt.Errorf("failed to check branch %q: %w", opts.branch, err)
+		}
+		if exists {
+			return LeaseInfo{}, fmt.Errorf("branch %q already exists", opts.branch)
+		}
 	}
 
 	var acquired LeaseInfo
@@ -405,6 +459,8 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		// re-acquire).
 		wantFlavor := vcs.BackendNameFor(repoRoot)
 		otherFlavor := 0
+		otherClone := 0
+		unverifiedClone := 0
 		for i, wt := range state.Worktrees {
 			if wt.Destroying || wt.Leased || ownerAlive(wt) {
 				continue
@@ -424,6 +480,23 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			}
 			if flavor != wantFlavor {
 				otherFlavor++
+				continue
+			}
+			// Pools are shared by origin URL, but a linked worktree still
+			// belongs to one physical clone. Never reset or acquire another
+			// clone's slot, even when both clones have identical refs, and
+			// never one whose owner (or our own identity) cannot be proven.
+			if identityErr != nil {
+				unverifiedClone++
+				continue
+			}
+			candidateDir, err := acquisitionCommonGitDir(wt.Path)
+			if err != nil {
+				unverifiedClone++
+				continue
+			}
+			if !os.SameFile(candidateDir, commonDir) {
+				otherClone++
 				continue
 			}
 			inUse, _ := process.IsWorktreeInUse(wt.Path)
@@ -491,6 +564,43 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 				return fmt.Errorf("failed to seed .worktreeinclude into %s: %w", wt.Path, err)
 			}
 			setSeedInventory(&state.Worktrees[i], seededPaths, true)
+			if opts.branch != "" {
+				if branchErr := createBranch(wt.Path, opts.branch); branchErr != nil {
+					created := errors.Is(branchErr, vcs.ErrBranchCreated)
+					// Branch creation failures normally leave HEAD detached. A
+					// redundant detach runs post-checkout hooks and may create
+					// ignored output in a slot about to be reused.
+					_, detached, headErr := vcs.CheckedOutBranch(wt.Path)
+					// A rejecting reference-transaction hook can write ignored
+					// files while leaving HEAD detached and the tree clean.
+					unknown, inspectErr := vcs.HasUnseededBranchCreationOutput(wt.Path, seededPaths)
+					state.Worktrees[i].OwnerPID = 0
+					state.Worktrees[i].OwnerStartedAt = 0
+					if created || headErr != nil || !detached || inspectErr != nil || unknown {
+						state.Worktrees[i].Leased = true
+						state.Worktrees[i].LeaseHolder = "quarantined: branch creation cleanup failed"
+						if created {
+							state.Worktrees[i].LeaseHolder = "quarantined: branch checkout failed"
+						}
+						state.Worktrees[i].LeasedAt = time.Now()
+					} else {
+						clearLease(&state.Worktrees[i])
+					}
+					if writeErr := WriteState(poolDir, state); writeErr != nil {
+						return fmt.Errorf("failed to create branch %q in %s: %w (state cleanup failed: %v)", opts.branch, wt.Path, branchErr, writeErr)
+					}
+					if inspectErr != nil {
+						return fmt.Errorf("failed to create branch %q in %s: %w (worktree inspection failed: %v; worktree quarantined for inspection)", opts.branch, wt.Path, branchErr, inspectErr)
+					}
+					if headErr != nil {
+						return fmt.Errorf("failed to create branch %q in %s: %w (HEAD inspection failed: %v; worktree quarantined for inspection)", opts.branch, wt.Path, branchErr, headErr)
+					}
+					if created || !detached || unknown {
+						return fmt.Errorf("failed to create branch %q in %s: %w (worktree quarantined for inspection)", opts.branch, wt.Path, branchErr)
+					}
+					return fmt.Errorf("failed to create branch %q in %s: %w", opts.branch, wt.Path, branchErr)
+				}
+			}
 			clearLease(&state.Worktrees[i])
 			if err := markAcquired(&state.Worktrees[i], opts); err != nil {
 				return err
@@ -518,6 +628,13 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		if len(state.Worktrees) >= poolSize {
 			if otherFlavor > 0 {
 				return fmt.Errorf("all %d worktrees are in use, dirty, or hold the other backend's worktrees (%d %s-flavored; the repository selects %s). Run 'treehouse status' to see details, destroy old-flavor worktrees to migrate the pool, or increase max_trees in treehouse.toml", len(state.Worktrees), otherFlavor, map[string]string{"git": "jj", "jj": "git"}[wantFlavor], wantFlavor)
+			}
+			if otherClone > 0 || unverifiedClone > 0 {
+				msg := fmt.Sprintf("all %d worktrees are in use, dirty, or not provably this clone's (%d belong to another clone; %d whose clone identity cannot be verified; max_trees = %d). A worktree is reused only by the clone it belongs to", len(state.Worktrees), otherClone, unverifiedClone, poolSize)
+				if identityErr != nil {
+					msg += fmt.Sprintf(", and this repository's clone identity cannot be verified: %v", identityErr)
+				}
+				return fmt.Errorf("%s. Run 'treehouse status' to see details, or increase max_trees in treehouse.toml", msg)
 			}
 			return fmt.Errorf("all %d worktrees are in use or dirty (max_trees = %d). Run 'treehouse status' to see details, or increase max_trees in treehouse.toml", len(state.Worktrees), poolSize)
 		}
@@ -551,6 +668,14 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		// real error if one exists.
 		if err := vcs.PruneWorktrees(repoRoot); err != nil {
 			fmt.Fprintf(os.Stderr, "🌳 Warning: failed to prune stale worktrees: %v\n", err)
+		}
+
+		var expectedCommit string
+		if opts.branch != "" {
+			expectedCommit, err = vcs.BranchCommit(repoRoot, branch)
+			if err != nil {
+				return fmt.Errorf("failed to resolve base commit for branch %q: %w", opts.branch, err)
+			}
 		}
 
 		if err := vcs.AddWorktree(repoRoot, wtPath, branch); err != nil {
@@ -592,6 +717,78 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		state.Worktrees = append(state.Worktrees, entry)
 		if err := persistState(poolDir, state); err != nil {
 			return err
+		}
+		if opts.branch != "" {
+			matches, verifyErr := vcs.WorktreeAtCommit(wtPath, expectedCommit)
+			if verifyErr != nil || !matches {
+				entry := &state.Worktrees[len(state.Worktrees)-1]
+				entry.LeaseHolder = "quarantined: worktree-add checkout changed HEAD"
+				entry.LeasedAt = time.Now()
+				if writeErr := WriteState(poolDir, state); writeErr != nil {
+					return fmt.Errorf("cannot create branch %q in %s: worktree is not detached at selected base commit %s (verification: %v; quarantine failed: %v)", opts.branch, wtPath, expectedCommit, verifyErr, writeErr)
+				}
+				return fmt.Errorf("cannot create branch %q in %s: worktree is not detached at selected base commit %s (verification: %v; worktree quarantined for inspection)", opts.branch, wtPath, expectedCommit, verifyErr)
+			}
+			if branchErr := createBranch(wtPath, opts.branch); branchErr != nil {
+				if errors.Is(branchErr, vcs.ErrBranchCreated) {
+					entry := &state.Worktrees[len(state.Worktrees)-1]
+					entry.Leased = true
+					entry.LeaseHolder = "quarantined: branch checkout failed"
+					entry.LeasedAt = time.Now()
+					if writeErr := WriteState(poolDir, state); writeErr != nil {
+						return fmt.Errorf("failed to create branch %q in %s: %w (quarantine failed: %v)", opts.branch, wtPath, branchErr, writeErr)
+					}
+					return fmt.Errorf("failed to create branch %q in %s: %w (worktree quarantined for inspection)", opts.branch, wtPath, branchErr)
+				}
+				// Git removes untracked and ignored files even without --force.
+				// Only the authenticated seed inventory may be discarded here.
+				unknown, inspectErr := vcs.HasUnseededBranchCreationOutput(wtPath, seededPaths)
+				if inspectErr != nil || unknown {
+					entry := &state.Worktrees[len(state.Worktrees)-1]
+					entry.Leased = true
+					entry.LeaseHolder = "quarantined: branch creation cleanup failed"
+					entry.LeasedAt = time.Now()
+					if writeErr := WriteState(poolDir, state); writeErr != nil {
+						return fmt.Errorf("failed to create branch %q in %s: %w (quarantine failed: %v)", opts.branch, wtPath, branchErr, writeErr)
+					}
+					if inspectErr != nil {
+						return fmt.Errorf("failed to create branch %q in %s: %w (worktree inspection failed: %v; worktree quarantined for inspection)", opts.branch, wtPath, branchErr, inspectErr)
+					}
+					return fmt.Errorf("failed to create branch %q in %s: %w (worktree quarantined for inspection)", opts.branch, wtPath, branchErr)
+				}
+				if cleanupErr := removeWorktree(repoRoot, wtPath); cleanupErr != nil {
+					entry := &state.Worktrees[len(state.Worktrees)-1]
+					clearLease(entry)
+					entry.Leased = true
+					entry.LeaseHolder = "quarantined: branch creation cleanup failed"
+					entry.LeasedAt = time.Now()
+					if writeErr := WriteState(poolDir, state); writeErr != nil {
+						return fmt.Errorf("failed to create branch %q in %s: %w (cleanup failed: %v; quarantine failed: %v)", opts.branch, wtPath, branchErr, cleanupErr, writeErr)
+					}
+					return fmt.Errorf("failed to create branch %q in %s: %w (cleanup failed: %v)", opts.branch, wtPath, branchErr, cleanupErr)
+				}
+				state.Worktrees = state.Worktrees[:len(state.Worktrees)-1]
+				if writeErr := WriteState(poolDir, state); writeErr != nil {
+					return fmt.Errorf("failed to create branch %q in %s: %w (worktree removed but state cleanup failed: %v)", opts.branch, wtPath, branchErr, writeErr)
+				}
+				return fmt.Errorf("failed to create branch %q in %s: %w", opts.branch, wtPath, branchErr)
+			}
+		}
+
+		// This is deliberately only in the fresh-allocation branch. A reused
+		// slot may still have external writers; neither return nor reuse is an
+		// invitation to sweep it. The provisional lease remains durable until
+		// the pass finishes, before markAcquired, hooks, or path publication.
+		if opts.apfsSharing {
+			report, shareErr := shareWorktreeFiles(repoRoot, wtPath)
+			fmt.Fprintln(opts.hookStderr, report.String())
+			if shareErr != nil {
+				state.Worktrees[len(state.Worktrees)-1].LeaseHolder = "quarantined: APFS sharing interrupted or changed worktree"
+				if writeErr := persistState(poolDir, state); writeErr != nil {
+					return fmt.Errorf("APFS sharing failed: %w (quarantine failed: %v)", shareErr, writeErr)
+				}
+				return fmt.Errorf("APFS sharing failed; worktree quarantined for inspection: %w", shareErr)
+			}
 		}
 
 		entry = state.Worktrees[len(state.Worktrees)-1]
@@ -706,6 +903,11 @@ func markAcquired(wt *WorktreeEntry, opts acquireOptions) error {
 // identifies the worktree's current lease.
 var ErrLeasePreconditionFailed = errors.New("lease precondition failed")
 
+// ErrRecoveredEntry reports that a release refusing recovered entries found the
+// worktree carrying RecoveredLeaseHolder. If automatic recovery cannot prove it
+// safe, bulk return refuses it; an operator may release it by naming the slot.
+var ErrRecoveredEntry = errors.New("recovered entry")
+
 // ErrOwnerPreconditionFailed reports that a release no longer identifies the
 // calling process's own short-lived owner reservation.
 var ErrOwnerPreconditionFailed = errors.New("owner precondition failed")
@@ -716,13 +918,6 @@ var ErrOwnerPreconditionFailed = errors.New("owner precondition failed")
 // programming error to surface loudly rather than one of the states a release
 // classifies and skips.
 var ErrInvalidReleasePreconditions = errors.New("invalid release preconditions")
-
-// ErrSeedInventoryUntrusted reports that a worktree is quarantined: its seed
-// inventory could not be authenticated, so no release may clear it. A state
-// version bump or a rotated state key puts a whole pool in this state at once,
-// which is why callers classify it with errors.Is: a bulk return has to report
-// such a slot as skipped rather than as a failure it should retry forever.
-var ErrSeedInventoryUntrusted = errors.New("untrusted seed inventory")
 
 // ReleasePreconditions optionally constrain a release to the current lease.
 // Pointer fields distinguish an omitted condition from an expected empty value.
@@ -756,6 +951,10 @@ type ReleasePreconditions struct {
 	// live agent home, or a later acquisition - would still reset the worktree
 	// and clear that reservation when its subshell exits.
 	RequireOwnedByCaller bool
+	// RefuseRecovered refuses a worktree carrying RecoveredLeaseHolder. A bulk
+	// release sets it so an entry recovered after the listing, under the same
+	// state lock as the release, is left for a return that names it.
+	RefuseRecovered bool
 }
 
 // Release resets a managed worktree, clears its short-lived owner reservation or
@@ -796,8 +995,8 @@ func ValidateReleasePreconditions(poolDir, worktreePath string, preconditions Re
 	})
 }
 
-// ReleaseConditional verifies any lease preconditions and the quarantine state
-// (both through releasableWorktree, under the lock), runs beforeReset, resets
+// ReleaseConditional verifies any release preconditions (through
+// releasableWorktree, under the lock), runs beforeReset, resets
 // the worktree, and clears its reservation while holding one state lock. The
 // callback is invoked only after all preconditions match and runs under that
 // lock so caller-side termination or detachment cannot race a later acquisition.
@@ -850,6 +1049,9 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 				return err
 			}
 		}
+		if !wt.SeedInventoryKnown {
+			fmt.Fprintf(os.Stderr, "🌳 Warning: %s was recovered without a trusted record of the ignored files treehouse seeded into it; any such files are not cleaned up and remain in the worktree.\n", worktreePath)
+		}
 		if !markerless {
 			seededPaths := wt.SeededPaths
 			if !wt.SeedInventoryKnown {
@@ -872,10 +1074,7 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 			wt.BaseBranch = requested
 		}
 
-		wt.OwnerPID = 0
-		wt.OwnerStartedAt = 0
-		clearLease(wt)
-		setSeedInventory(wt, nil, true)
+		releaseEntry(wt)
 		return WriteState(poolDir, state)
 	})
 }
@@ -891,17 +1090,6 @@ func releasableWorktree(state *State, worktreePath string, preconditions Release
 		}
 		if err := validateReleasePreconditions(*wt, preconditions); err != nil {
 			return nil, err
-		}
-		// Clearing a safety quarantine without a trusted seed inventory could
-		// expose ignored files hidden by a mutable manifest. It is judged here,
-		// with the preconditions, so that every caller learns a release is
-		// impossible BEFORE it prepares one: `return` would otherwise offer to
-		// discard a worktree's uncommitted changes and then refuse it anyway.
-		// It is judged AFTER the preconditions so a caller that named a lease,
-		// or `get` confirming its own reservation, still gets the answer to the
-		// question it asked.
-		if !wt.SeedInventoryKnown {
-			return nil, fmt.Errorf("%w: worktree %s is quarantined without a trusted seed inventory; inspect it and use destroy --include-leased instead", ErrSeedInventoryUntrusted, worktreePath)
 		}
 		return wt, nil
 	}
@@ -928,6 +1116,9 @@ func validateReleasePreconditions(wt WorktreeEntry, preconditions ReleasePrecond
 	}
 	if err := preconditions.check(); err != nil {
 		return err
+	}
+	if preconditions.RefuseRecovered && wt.Leased && wt.LeaseHolder == RecoveredLeaseHolder {
+		return fmt.Errorf("%w: worktree %s was recovered and is only returned by name", ErrRecoveredEntry, wt.Path)
 	}
 	if preconditions.RequireUnleased {
 		if wt.Leased {
@@ -987,10 +1178,12 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 				continue
 			}
 			ws := WorktreeStatus{
-				Name:   wt.Name,
-				Path:   wt.Path,
-				Status: StatusAvailable,
-				Flavor: vcs.WorktreeBackendName(wt.Path),
+				Name:           wt.Name,
+				Path:           wt.Path,
+				Status:         StatusAvailable,
+				Flavor:         vcs.WorktreeBackendName(wt.Path),
+				RecoveryReason: wt.RecoveryReason,
+				RecoveryBackup: recoveryBackup(poolDir, wt.Name),
 			}
 
 			// The two failure modes get different answers, which is why the
@@ -1260,6 +1453,17 @@ func clearLease(wt *WorktreeEntry) {
 	wt.LeaseID = ""
 	wt.LeaseHolder = ""
 	wt.LeasedAt = time.Time{}
+	wt.RecoveryReason = ""
+}
+
+// releaseEntry returns a slot to the pool in state: no reservation, no lease,
+// and an empty trusted seed inventory. Ignored files seeded before an unknown
+// inventory are not recorded, so they stay in the worktree.
+func releaseEntry(wt *WorktreeEntry) {
+	wt.OwnerPID = 0
+	wt.OwnerStartedAt = 0
+	clearLease(wt)
+	setSeedInventory(wt, nil, true)
 }
 
 func sameDestroyReservation(current, reserved WorktreeEntry) bool {

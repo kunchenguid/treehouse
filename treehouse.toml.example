@@ -61,6 +61,10 @@ max_trees = 16
 # TREEHOUSE_WORKTREE_PATH > this file > user config > default).
 # worktree_path = "{repo_parent}/{repo}-{slot}"
 
+# Optional tracked-file sharing: "off" (default) or "fresh".
+# See README: APFS copy-on-write sharing for safety requirements and precedence.
+# apfs_sharing = "fresh"
+
 # Version-control backend selection. Git is the default everywhere. Set
 # "jj" to opt in to the experimental Jujutsu backend for this repository
 # (or per-command with TREEHOUSE_VCS=jj). Pooled jj workspaces inherit this

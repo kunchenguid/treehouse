@@ -1,4 +1,4 @@
-module github.com/kunchenguid/treehouse
+module github.com/kunchenguid/treehouse/v3
 
 go 1.25.5
 

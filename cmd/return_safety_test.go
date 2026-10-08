@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kunchenguid/treehouse/internal/process"
+	"github.com/kunchenguid/treehouse/v3/internal/process"
 )
 
 // A worktree that still has a foreign live writer after termination must not be
