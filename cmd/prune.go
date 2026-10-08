@@ -57,6 +57,7 @@ absolute.`,
 				DryRun:       !pruneYes,
 				PruneOrphans: pruneOrphans,
 				PreDestroy:   cfg.Hooks.PreDestroy,
+				RunHooks:     config.RunWorktreeHooks,
 			})
 			if err != nil {
 				return err
@@ -85,6 +86,7 @@ absolute.`,
 			DryRun:       !pruneYes,
 			PruneOrphans: pruneOrphans,
 			PreDestroy:   cfg.Hooks.PreDestroy,
+			RunHooks:     config.RunWorktreeHooks,
 		})
 		if err != nil {
 			return err

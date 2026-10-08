@@ -15,7 +15,7 @@ import (
 
 // hookKeys are the lifecycle hook keys a repo-level treehouse.toml can declare
 // and that Load discards. Order fixes the order they are named in the warning.
-var hookKeys = []string{"post_create", "pre_destroy"}
+var hookKeys = []string{"post_create", "pre_destroy", "post_get", "post_return"}
 
 // warnedRepoHooks dedupes the ignored-hooks warning per config file: a single
 // command loads config repeatedly, and the warning is for a human, once. It

@@ -714,24 +714,24 @@ This is **opt-in**; the default global store is unchanged. In-project mode:
 
 ### Hooks
 
-You can run commands automatically at worktree lifecycle points by adding a `[hooks]` section to the user-level config at `~/.config/treehouse/config.toml`.
-Hooks in repo-level `treehouse.toml` are ignored for safety, so that running treehouse in an untrusted clone cannot execute checked-in shell.
-During a command, treehouse warns once per repo-level `treehouse.toml` on stderr, naming the file and any ignored lifecycle hook keys declared under `[hooks]` rather than dropping them silently.
-`treehouse destroy` always reads `pre_destroy` from the user-level config because it can target a pool by path.
+Declare lifecycle commands in the user config at `~/.config/treehouse/config.toml`.
+Repository hooks remain ignored for safety.
 
 ```toml
 [hooks]
 post_create = ["./scripts/setup-venv.sh"]
+post_get = ["git submodule update --init --recursive"]
+post_return = ["./scripts/cleanup-worktree.sh"]
 pre_destroy = ["./scripts/teardown.sh"]
 ```
 
-- `post_create` runs after a worktree is provisioned or reset and right before `treehouse get` hands it to you.
-  For `treehouse get --lease`, stdout from `post_create` is routed to stderr so stdout remains the leased path.
-- `pre_destroy` runs before a worktree is removed by `treehouse destroy <path> --yes`, `treehouse destroy <pool> --all --yes`, or prune deletion commands such as `treehouse prune --yes` and `treehouse prune --prune-orphans --yes`.
-
-Commands in each list run sequentially in the worktree directory, via the OS shell (`/bin/sh -c` on Linux/macOS, `%COMSPEC% /c` on Windows).
-If a command exits non-zero, treehouse logs the command, exit code, and stderr, then continues with the remaining commands.
-A failing hook does not fail the overall `get`, `destroy`, or `prune` operation.
+`post_create` and then `post_get` run on every acquisition, including reuse.
+`post_return` runs after reset and release for explicit returns, bulk returns,
+and an exiting get subshell. Refused returns and damaged slots skip it.
+It holds the pool lock until cleanup finishes, so return hooks must not call
+Treehouse commands for that pool. `pre_destroy` runs before actual deletion.
+Commands run sequentially in the worktree through the OS shell. Failures log
+and continue. Lease acquisition routes all hook output to stderr.
 
 ## Development
 
