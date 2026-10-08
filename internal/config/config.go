@@ -49,6 +49,8 @@ type Config struct {
 	// TREEHOUSE_UNIQUE_LEAF environment variable.
 	UniqueLeaf bool  `toml:"unique_leaf,omitempty"`
 	Hooks      Hooks `toml:"hooks,omitempty"`
+	// TrustedRepos is honored only from the user-level config.
+	TrustedRepos map[string]string `toml:"trusted_repos,omitempty"`
 }
 
 type Hooks struct {
@@ -155,41 +157,21 @@ func ResolveWorktreePath(flagTemplate string, cfg Config) string {
 }
 
 func Load(repoRoot string) (Config, error) {
-	cfg := DefaultConfig()
-
-	repoPath := filepath.Join(repoRoot, "treehouse.toml")
-	hasRepoConfig := false
-	if _, err := os.Stat(repoPath); err == nil {
-		hasRepoConfig = true
-		data, err := os.ReadFile(repoPath)
-		if err != nil {
-			return cfg, err
-		}
-		loaded, _, md, err := decodeConfig(data)
-		cfg = loaded
-		if err != nil {
-			return cfg, err
-		}
-		// Repo-level hooks are discarded so that a command run in an
-		// untrusted clone cannot execute checked-in shell. Say so, once,
-		// instead of dropping them silently.
-		warnRepoHooks(os.Stderr, repoPath, md)
-		cfg.Hooks = Hooks{}
-	}
-
-	userCfg, hasUserConfig, err := loadUser()
+	userCfg, _, err := loadUser()
 	if err != nil {
-		return cfg, err
+		return userCfg, err
 	}
-	if hasUserConfig {
-		if !hasRepoConfig {
-			cfg = userCfg
-		} else {
-			cfg.Hooks = userCfg.Hooks
-		}
+	repoCfg, md, hash, err := readRepoConfig(repoRoot)
+	if os.IsNotExist(err) {
+		return userCfg, nil
 	}
-
-	return cfg, nil
+	if err != nil {
+		return DefaultConfig(), err
+	}
+	// A repository cannot grant itself trust. Keep all trust state user-owned.
+	repoCfg.TrustedRepos = userCfg.TrustedRepos
+	repoCfg.Hooks = effectiveHooks(repoRoot, repoCfg.Hooks, md, hash, userCfg, os.Stderr)
+	return repoCfg, nil
 }
 
 // LoadGlobal returns the default configuration merged with user-level config.
@@ -238,12 +220,7 @@ func userConfigPath() string {
 }
 
 func ResolvePoolDir(repoRoot string, root string) (string, error) {
-	// Use remote URL for the hash when available; fall back to the
-	// absolute repo path for purely-local repositories.
-	hashInput, err := vcs.GetRemoteURL(repoRoot)
-	if err != nil {
-		hashInput = repoRoot
-	}
+	hashInput := RepoIdentity(repoRoot)
 
 	repoName := filepath.Base(repoRoot)
 	shortHash := vcs.ShortHash(hashInput)

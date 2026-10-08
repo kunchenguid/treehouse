@@ -26,7 +26,7 @@ User-facing behavior: [README.md](README.md). Settings and precedence: [treehous
 - A command that leaves the world unchanged must not exit 0 (see `cmd/exit.go` and docs/design.md for the two exceptions).
 - `WriteState` stays atomic; a corrupt state file recovers every entry as leased and quarantined.
 - Config reads, approval hashing, and updates share `decodeConfig` in `internal/config/schema.go`: reject schema-key aliases before decoding while preserving dynamic map keys exactly.
-- Lifecycle hooks are read from user-level config only; repo-level hooks are ignored for safety.
+- Repository hooks require user-owned approval of the repo identity and current hook table; resolve hooks from each target's owning repository. See `internal/config/trust.go` and README hooks. Never honor repo-declared trust entries.
 
 ## Windows compatibility
 

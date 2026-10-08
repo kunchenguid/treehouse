@@ -181,6 +181,8 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `treehouse prune --all`    | Dry-run removal of stale idle worktrees across every managed pool |
 | `treehouse destroy <path>` | Dry-run removal of one worktree (safe by default; `--yes` to execute) |
 | `treehouse destroy <pool> --all` | Dry-run removal of every disposable worktree in that pool |
+| `treehouse trust`          | Approve the current repository lifecycle hooks     |
+| `treehouse untrust`        | Revoke approval for repository lifecycle hooks      |
 | `treehouse init`           | Create a default `treehouse.toml` config file        |
 | `treehouse update`         | Update treehouse to the latest version               |
 
@@ -424,7 +426,7 @@ Pass `treehouse prune --yes` to delete those worktrees.
 
 By default, prune only inspects the current repository's pool and must be run inside a repository.
 Pass `treehouse prune --all` or `treehouse prune --global` to inspect every managed pool under the user-level treehouse root from any directory.
-Global prune reads the user-level config and hooks.
+Global prune reads user-level settings and resolves trusted hooks separately for each target repository.
 Both forms derive each worktree's owning repository from its own version-control metadata, then fetch and check merge safety against that repository, so a pool shared by two clones of the same remote is pruned from either clone.
 Without `--prune-orphans`, pass `treehouse prune --all --yes` to delete only the globally safe stale candidates.
 
@@ -488,8 +490,6 @@ Create a repo config file with `treehouse init`, or add one manually:
 **User-level:** `~/.config/treehouse/config.toml`
 
 A missing user config uses defaults. Other read errors, including inaccessible directories or symlink loops, are reported instead of treating the config as absent.
-
-Schema keys must use their documented spelling. Case variants, including Unicode aliases, are rejected before decoding. Dynamic map keys and unknown settings retain their exact spelling.
 
 ```toml
 # Maximum number of worktrees in the pool
@@ -714,8 +714,7 @@ This is **opt-in**; the default global store is unchanged. In-project mode:
 
 ### Hooks
 
-Declare lifecycle commands in the user config at `~/.config/treehouse/config.toml`.
-Repository hooks remain ignored for safety.
+You can declare lifecycle commands in your user config at `~/.config/treehouse/config.toml`, or in the main repository's `treehouse.toml` after explicitly approving them.
 
 ```toml
 [hooks]
@@ -725,13 +724,25 @@ post_return = ["./scripts/cleanup-worktree.sh"]
 pre_destroy = ["./scripts/teardown.sh"]
 ```
 
-`post_create` and then `post_get` run on every acquisition, including reuse.
-`post_return` runs after reset and release for explicit returns, bulk returns,
-and an exiting get subshell. Refused returns and damaged slots skip it.
-It holds the pool lock until cleanup finishes, so return hooks must not call
-Treehouse commands for that pool. `pre_destroy` runs before actual deletion.
-Commands run sequentially in the worktree through the OS shell. Failures log
-and continue. Lease acquisition routes all hook output to stderr.
+- `post_create` runs after a worktree is provisioned or reset.
+- `post_get` runs after `post_create` on every successful acquisition, including reuse, before the path is printed or a subshell opens.
+- `post_return` runs after a successful reset and release by `return`, `return --all`, or an exiting `get` subshell. Refused returns and damaged slots do not run it. Cleanup finishes before another caller can acquire the slot. It holds the pool lock, so these commands must not call Treehouse commands that access the same pool.
+- `pre_destroy` runs before removal by `destroy --yes` or `prune --yes`, including bulk operations. Dry runs do not execute hooks.
+
+Commands run sequentially in the worktree directory, via the OS shell (`/bin/sh -c` on Linux/macOS, `%COMSPEC% /d /s /c` on Windows). User commands run before trusted repository commands for each event. A failing command is logged and later commands continue; hook failures do not fail the lifecycle operation. `get --lease` sends all hook output to stderr, keeping stdout as the path or requested JSON.
+
+Repository hooks are ignored until you review and approve them:
+
+```sh
+treehouse trust     # approve the current [hooks] table, without running it
+treehouse untrust   # revoke this repository's approval
+```
+
+Approval is stored under `[trusted_repos]` in the user config, keyed by the origin URL (or the main repository's absolute path when there is no origin), with a `sha256:` fingerprint of the parsed `[hooks]` table. Changing a command, its order, or a hook key invalidates approval. Comments, formatting, and unrelated settings do not. Untrusted or changed hooks produce a warning naming the file and suggesting `treehouse trust`. Running `trust` when already approved, or `untrust` when no approval exists, exits nonzero without rewriting the config. Schema keys in both repository and user config must use their documented spelling. Case variants such as `[Trusted_Repos]`, Unicode case aliases, and multiple spellings of a field are rejected before decoding, approval hashing, or updates, even if their values are identical. Correct the keys explicitly before running `trust` or `untrust`; a rejected update leaves the config unchanged. Repository URLs and other dynamic map keys keep their exact spelling.
+
+Clones with the same origin share approval only when their hook fingerprints match. Repository config cannot grant itself trust. The hook table must be spelled exactly `[hooks]`; case variants such as `[Hooks]` are rejected. Both commands use the main checkout's config, including when invoked from a pooled worktree. Deletion and return also resolve hooks from each target's owning main repository, even when invoked outside it or across a shared pool. Missing or malformed repository config disables its hooks during cleanup; user hooks still run.
+
+Approval covers the declared commands, including unknown hook keys. Referenced scripts and their dependencies are not hashed. Approve commands only for repositories whose code you trust.
 
 ## Development
 

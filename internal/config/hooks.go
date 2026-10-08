@@ -14,7 +14,7 @@ import (
 )
 
 // hookKeys are the lifecycle hook keys a repo-level treehouse.toml can declare
-// and that Load discards. Order fixes the order they are named in the warning.
+// and that Load gates on explicit trust. Order fixes their warning order.
 var hookKeys = []string{"post_create", "pre_destroy", "post_get", "post_return"}
 
 // warnedRepoHooks dedupes the ignored-hooks warning per config file: a single
@@ -22,32 +22,24 @@ var hookKeys = []string{"post_create", "pre_destroy", "post_get", "post_return"}
 // mirrors warnedVCSValues in internal/vcs.
 var warnedRepoHooks sync.Map
 
-// WarnIfRepoHooksIgnored warns on stderr, once per repo config file, when the
-// repo-level treehouse.toml declares lifecycle hooks. Load deliberately
-// discards those hooks so that `treehouse get` on an untrusted clone cannot
-// execute checked-in shell; this only makes the discard audible, and changes no
-// behavior.
-//
-// It is a standalone helper rather than a step inside Load because
-// `treehouse destroy <path>` reads hooks through LoadGlobal and never opens the
-// repo config at all, so a warning wired only into Load would stay silent for
-// exactly the command that surfaced the defect.
-//
-// It is best-effort and never fails: a missing, unreadable, or malformed repo
-// config produces no warning and no error, because destroy has to keep working
-// against a pool whose repository config is broken or whose repository is gone.
+// WarnIfRepoHooksIgnored warns once per file when declared hooks lack a matching
+// user approval. Cleanup commands use this best-effort helper while inspecting
+// their targets, including dry runs. Missing or malformed repo config stays
+// silent so damaged repositories can still be removed.
 func WarnIfRepoHooksIgnored(repoRoot string) {
 	warnIfRepoHooksIgnored(os.Stderr, repoRoot)
 }
 
 func warnIfRepoHooksIgnored(w io.Writer, repoRoot string) {
-	path := filepath.Join(repoRoot, "treehouse.toml")
-	var cfg Config
-	md, err := toml.DecodeFile(path, &cfg)
+	repoCfg, md, hash, err := readRepoConfig(repoRoot)
 	if err != nil {
 		return
 	}
-	warnRepoHooks(w, path, md)
+	userCfg, _, err := loadUser()
+	if err != nil {
+		return
+	}
+	_ = effectiveHooks(repoRoot, repoCfg.Hooks, md, hash, userCfg, w)
 }
 
 // warnRepoHooks emits the warning from metadata the caller already decoded, so
@@ -61,7 +53,7 @@ func warnRepoHooks(w io.Writer, path string, md toml.MetaData) {
 		return
 	}
 	fmt.Fprintf(w, "🌳 Warning: ignoring [hooks] in %s: %s\n", ui.PrettyPath(path), strings.Join(ignored, ", "))
-	fmt.Fprintf(w, "   Lifecycle hooks run only from %s; hooks in repo-level config are ignored for safety.\n", userConfigPathForDisplay())
+	fmt.Fprintf(w, "   Review the hooks and run treehouse trust to approve them, or put user hooks in %s.\n", userConfigPathForDisplay())
 }
 
 // userConfigPathForDisplay names the user-level config file for humans, falling
