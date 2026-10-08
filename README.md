@@ -524,7 +524,7 @@ max_trees = 16
 ```
 
 The repo-level config takes precedence for repo-safe settings.
-`treehouse prune --all` can run without a repository, so it uses only the user-level config and does not read per-repo `treehouse.toml` files while sweeping.
+`treehouse prune --all` can run without a repository, so its settings come from the user-level config only and it does not read per-repo `treehouse.toml` settings while sweeping; repository [hooks](#hooks) are still resolved from each target worktree's own repository.
 If no config is found, the default pool size is 16.
 
 ### Base branch
@@ -738,7 +738,7 @@ treehouse trust     # approve the current [hooks] table, without running it
 treehouse untrust   # revoke this repository's approval
 ```
 
-Approval is stored under `[trusted_repos]` in the user config, keyed by the origin URL (or the main repository's absolute path when there is no origin), with a `sha256:` fingerprint of the parsed `[hooks]` table and any explicitly listed approval files. Changing a command, its order, or a hook key invalidates approval. Comments, formatting, and unrelated settings do not. Untrusted or changed hooks produce a warning naming the file and suggesting `treehouse trust`. Running `trust` when already approved, or `untrust` when no approval exists, exits nonzero without rewriting the config. Schema keys in both repository and user config must use their documented spelling. Case variants such as `[Trusted_Repos]`, Unicode case aliases, and multiple spellings of a field are rejected before decoding, approval hashing, or updates, even if their values are identical. Correct the keys explicitly before running `trust` or `untrust`; a rejected update leaves the config unchanged. Repository URLs and other dynamic map keys keep their exact spelling.
+Approval is stored under `[trusted_repos]` in the user config, keyed by the origin URL (or the main repository's absolute path when there is no origin), with a `sha256:` fingerprint of the parsed `[hooks]` table and any explicitly listed approval files. Changing a command, its order, or a hook key invalidates approval. Comments, formatting, and unrelated settings do not. Untrusted or changed hooks produce a warning naming the file and suggesting `treehouse trust`. Running `trust` when already approved or when the repository declares no hooks, or `untrust` when no approval exists, exits nonzero without rewriting the config. Schema keys in both repository and user config must use their documented spelling. Case variants such as `[Trusted_Repos]`, Unicode case aliases, and multiple spellings of a field are rejected before decoding, approval hashing, or updates, even if their values are identical. Correct the keys explicitly before running `trust` or `untrust`; a rejected update leaves the config unchanged. Repository URLs and other dynamic map keys keep their exact spelling.
 
 Clones with the same origin share approval only when their hook fingerprints match. Repository config cannot grant itself trust. The hook table must be spelled exactly `[hooks]`; case variants such as `[Hooks]` are rejected. Both commands use the main checkout's config, including when invoked from a pooled worktree. Deletion and return also resolve hooks from each target's owning main repository, even when invoked outside it or across a shared pool. Missing or malformed repository config disables its hooks during cleanup; user hooks still run.
 
