@@ -37,15 +37,12 @@ func setupApprovalFilesRepo(t *testing.T) (repo, home, marker string) {
 	// Approval compares dependency bytes between the main and execution
 	// worktrees, so keep checkouts free of the host's line-ending conversion.
 	gitCmd(t, repo, "config", "core.autocrlf", "false")
-	prepareHookLog(t, repo)
 	for _, path := range []string{"setup.sh", "package.json"} {
 		if err := os.WriteFile(filepath.Join(repo, path), []byte("approved\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	gitCmd(t, repo, "add", "setup.sh", "package.json")
-	gitCmd(t, repo, "commit", "-m", "Add hook dependencies")
-	gitCmd(t, repo, "push", "origin", "main")
+	prepareHookLog(t, repo, "setup.sh", "package.json")
 	marker = filepath.Join(t.TempDir(), "destroy-ran")
 	paths := []string{"setup.sh", "package.json"}
 	writeApprovalHooks(t, repo, marker, &paths)
@@ -66,9 +63,11 @@ func assertNoApprovalEvents(t *testing.T, worktree string) {
 }
 
 func TestApprovalFileDowngradesDisableEveryLifecycleUntilTrust(t *testing.T) {
+	t.Parallel()
 	one, empty := []string{"setup.sh"}, []string{}
 	for name, paths := range map[string]*[]string{"remove one": &one, "empty list": &empty, "delete key": nil} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			repo, home, marker := setupApprovalFilesRepo(t)
 			requireTreehouseOK(t, repo, home, "trust")
 			wt := getApprovalLease(t, repo, home)
@@ -103,9 +102,11 @@ func TestApprovalFileDowngradesDisableEveryLifecycleUntilTrust(t *testing.T) {
 }
 
 func TestApprovalFilesCheckedInExecutionWorktree(t *testing.T) {
+	t.Parallel()
 	for _, difference := range []string{"changed", "missing"} {
 		for _, deletion := range []string{"destroy", "prune"} {
 			t.Run(difference+"/"+deletion, func(t *testing.T) {
+				t.Parallel()
 				repo, home, marker := setupApprovalFilesRepo(t)
 				gitCmd(t, repo, "checkout", "-b", "alternate")
 				if difference == "changed" {
@@ -147,6 +148,7 @@ func TestApprovalFilesCheckedInExecutionWorktree(t *testing.T) {
 }
 
 func TestApprovalFilesRequireMainAndWorktreeContents(t *testing.T) {
+	t.Parallel()
 	repo, home, _ := setupApprovalFilesRepo(t)
 	requireTreehouseOK(t, repo, home, "trust")
 	// Main changes while a new worktree still checks out the approved commit.
@@ -170,8 +172,10 @@ func TestApprovalFilesRequireMainAndWorktreeContents(t *testing.T) {
 }
 
 func TestApprovalFilesCheckedAfterEarlierHooks(t *testing.T) {
+	t.Parallel()
 	for _, earlier := range []string{"user", "repository"} {
 		t.Run(earlier, func(t *testing.T) {
+			t.Parallel()
 			repo, home, _ := setupApprovalFilesRepo(t)
 			mutation := "echo changed > setup.sh"
 			if earlier == "user" {

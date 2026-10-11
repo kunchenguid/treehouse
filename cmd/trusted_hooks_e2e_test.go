@@ -31,12 +31,15 @@ func writeLifecycleConfig(t *testing.T, path string, hooks config.Hooks) {
 	}
 }
 
-func prepareHookLog(t *testing.T, repo string) {
+// prepareHookLog keeps the hook event log untracked. Any extra paths are
+// committed in the same round trip, so a caller that also needs seeded files
+// does not pay for a second commit and push.
+func prepareHookLog(t *testing.T, repo string, extra ...string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("hook-events.txt\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitCmd(t, repo, "add", ".gitignore")
+	gitCmd(t, repo, append([]string{"add", ".gitignore"}, extra...)...)
 	gitCmd(t, repo, "commit", "-m", "Ignore hook event log")
 	gitCmd(t, repo, "push", "origin", "main")
 }
@@ -66,12 +69,14 @@ func requireTreehouseOK(t *testing.T, repo, home string, args ...string) (string
 }
 
 func TestLifecycleHooksFreshReuseAndReturn(t *testing.T) {
+	t.Parallel()
 	for _, trusted := range []bool{false, true} {
 		name := "user"
 		if trusted {
 			name = "trusted repo"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			repo, home := setupTestRepo(t)
 			prepareHookLog(t, repo)
 			path := filepath.Join(home, ".config", "treehouse", "config.toml")
@@ -131,8 +136,10 @@ func TestLifecycleHooksFreshReuseAndReturn(t *testing.T) {
 }
 
 func TestTrustedHooksReturnAllAndSubshell(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"all", "subshell"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			repo, home := setupTestRepo(t)
 			prepareHookLog(t, repo)
 			writeLifecycleConfig(t, filepath.Join(repo, "treehouse.toml"), config.Hooks{
@@ -162,6 +169,7 @@ func TestTrustedHooksReturnAllAndSubshell(t *testing.T) {
 }
 
 func TestPostReturnDoesNotRunWhenReturnRefused(t *testing.T) {
+	t.Parallel()
 	repo, home := setupTestRepo(t)
 	prepareHookLog(t, repo)
 	writeLifecycleConfig(t, filepath.Join(home, ".config", "treehouse", "config.toml"), config.Hooks{
@@ -184,6 +192,7 @@ func TestPostReturnDoesNotRunWhenReturnRefused(t *testing.T) {
 }
 
 func TestTrustCommandsAndHookDrift(t *testing.T) {
+	t.Parallel()
 	repo, home := setupTestRepo(t)
 	prepareHookLog(t, repo)
 	path := filepath.Join(repo, "treehouse.toml")
@@ -217,8 +226,10 @@ func TestTrustCommandsAndHookDrift(t *testing.T) {
 }
 
 func TestTrustedPreDestroyTargetsOwningClone(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"destroy", "destroy all", "prune", "prune all"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			repoA, home := setupTestRepo(t)
 			repoB := filepath.Join(t.TempDir(), "myrepo")
 			gitCmd(t, "", "clone", gitCmd(t, repoA, "config", "--get", "remote.origin.url"), repoB)
@@ -265,6 +276,7 @@ func TestTrustedPreDestroyTargetsOwningClone(t *testing.T) {
 }
 
 func TestHookTableAliasCannotBypassTrust(t *testing.T) {
+	t.Parallel()
 	repo, home := setupTestRepo(t)
 	prepareHookLog(t, repo)
 	marker := filepath.Join(t.TempDir(), "unapproved-destroy")
@@ -307,6 +319,7 @@ func TestHookTableAliasCannotBypassTrust(t *testing.T) {
 }
 
 func TestUntrustAliasPreventsSubsequentHookExecution(t *testing.T) {
+	t.Parallel()
 	repo, home := setupTestRepo(t)
 	prepareHookLog(t, repo)
 	writeLifecycleConfig(t, filepath.Join(repo, "treehouse.toml"), config.Hooks{
