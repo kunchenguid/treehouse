@@ -1420,7 +1420,7 @@ func runGit(dir string, args ...string) (string, error) {
 }
 
 func runGitRaw(dir string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", append([]string{"-c", "submodule.recurse=false"}, args...)...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -1510,7 +1510,7 @@ func gitOutput(dir string, stdin []byte, args ...string) ([]byte, error) {
 }
 
 func gitOutputEnv(dir string, env []string, stdin []byte, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", append([]string{"-c", "submodule.recurse=false"}, args...)...)
 	cmd.Dir = dir
 	if env != nil {
 		cmd.Env = env
