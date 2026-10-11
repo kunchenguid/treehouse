@@ -11,16 +11,14 @@ import (
 	"github.com/kunchenguid/treehouse/v3/internal/config"
 )
 
-func writeApprovalHooks(t *testing.T, repo, marker string, paths *[]string) {
+func writeApprovalHooks(t *testing.T, repo, marker string, paths []string) {
 	t.Helper()
 	table := map[string]any{
-		"post_create": []string{"echo create >> hook-events.txt"},
-		"post_get":    []string{"echo get >> hook-events.txt"},
-		"post_return": []string{"echo return >> hook-events.txt"},
-		"pre_destroy": []string{"echo destroy > " + quoteReturnPath(marker)},
-	}
-	if paths != nil {
-		table["approval_files"] = *paths
+		"approval_files": paths,
+		"post_create":    []string{"echo create >> hook-events.txt"},
+		"post_get":       []string{"echo get >> hook-events.txt"},
+		"post_return":    []string{"echo return >> hook-events.txt"},
+		"pre_destroy":    []string{"echo destroy > " + quoteReturnPath(marker)},
 	}
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(map[string]any{"hooks": table}); err != nil {
@@ -44,8 +42,7 @@ func setupApprovalFilesRepo(t *testing.T) (repo, home, marker string) {
 	}
 	prepareHookLog(t, repo, "setup.sh", "package.json")
 	marker = filepath.Join(t.TempDir(), "destroy-ran")
-	paths := []string{"setup.sh", "package.json"}
-	writeApprovalHooks(t, repo, marker, &paths)
+	writeApprovalHooks(t, repo, marker, []string{"setup.sh", "package.json"})
 	return repo, home, marker
 }
 
@@ -62,88 +59,75 @@ func assertNoApprovalEvents(t *testing.T, worktree string) {
 	}
 }
 
+// Every way of reducing the declared list (removing an entry, emptying it,
+// deleting the key) is covered by internal/config's
+// TestApprovalFileListCannotBeDowngradedWithoutTrust. This is the command-level
+// slice: one representative downgrade must disable every lifecycle entry point
+// until an explicit trust re-approves it.
 func TestApprovalFileDowngradesDisableEveryLifecycleUntilTrust(t *testing.T) {
 	t.Parallel()
-	one, empty := []string{"setup.sh"}, []string{}
-	for name, paths := range map[string]*[]string{"remove one": &one, "empty list": &empty, "delete key": nil} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			repo, home, marker := setupApprovalFilesRepo(t)
-			requireTreehouseOK(t, repo, home, "trust")
-			wt := getApprovalLease(t, repo, home)
-			assertHookEvents(t, wt, "create", "get")
-			requireTreehouseOK(t, repo, home, "return", wt, "--force")
-			assertHookEvents(t, wt, "create", "get", "return")
+	repo, home, marker := setupApprovalFilesRepo(t)
+	requireTreehouseOK(t, repo, home, "trust")
+	wt := getApprovalLease(t, repo, home)
+	assertHookEvents(t, wt, "create", "get")
+	requireTreehouseOK(t, repo, home, "return", wt, "--force")
+	assertHookEvents(t, wt, "create", "get", "return")
 
-			writeApprovalHooks(t, repo, marker, paths)
-			reused := getApprovalLease(t, repo, home)
-			if reused != wt {
-				t.Fatal("expected slot reuse")
-			}
-			assertHookEvents(t, wt, "create", "get", "return")
-			requireTreehouseOK(t, repo, home, "return", wt, "--force")
-			assertHookEvents(t, wt, "create", "get", "return")
-			requireTreehouseOK(t, repo, home, "destroy", wt, "--yes")
-			if _, err := os.Stat(marker); !os.IsNotExist(err) {
-				t.Fatal("downgraded approval ran deletion hook")
-			}
+	writeApprovalHooks(t, repo, marker, []string{"setup.sh"})
+	reused := getApprovalLease(t, repo, home)
+	if reused != wt {
+		t.Fatal("expected slot reuse")
+	}
+	assertHookEvents(t, wt, "create", "get", "return")
+	requireTreehouseOK(t, repo, home, "return", wt, "--force")
+	assertHookEvents(t, wt, "create", "get", "return")
+	requireTreehouseOK(t, repo, home, "destroy", wt, "--yes")
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("downgraded approval ran deletion hook")
+	}
 
-			requireTreehouseOK(t, repo, home, "trust")
-			wt = getApprovalLease(t, repo, home)
-			assertHookEvents(t, wt, "create", "get")
-			requireTreehouseOK(t, repo, home, "return", wt, "--force")
-			assertHookEvents(t, wt, "create", "get", "return")
-			requireTreehouseOK(t, repo, home, "destroy", wt, "--yes")
-			if _, err := os.Stat(marker); err != nil {
-				t.Fatalf("reapproved deletion hook did not run: %v", err)
-			}
-		})
+	requireTreehouseOK(t, repo, home, "trust")
+	wt = getApprovalLease(t, repo, home)
+	assertHookEvents(t, wt, "create", "get")
+	requireTreehouseOK(t, repo, home, "return", wt, "--force")
+	assertHookEvents(t, wt, "create", "get", "return")
+	requireTreehouseOK(t, repo, home, "destroy", wt, "--yes")
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("reapproved deletion hook did not run: %v", err)
 	}
 }
 
+// Changed and missing dependencies in the execution directory are covered by
+// internal/config's TestRunWorktreeHooksChecksExecutionWorktreeContents, and
+// the deletion entry points by TestTrustedPreDestroyTargetsOwningClone. What
+// only the command level can show is that the check happens after the return
+// reset has replaced the worktree's contents.
 func TestApprovalFilesCheckedInExecutionWorktree(t *testing.T) {
 	t.Parallel()
-	for _, difference := range []string{"changed", "missing"} {
-		for _, deletion := range []string{"destroy", "prune"} {
-			t.Run(difference+"/"+deletion, func(t *testing.T) {
-				t.Parallel()
-				repo, home, marker := setupApprovalFilesRepo(t)
-				gitCmd(t, repo, "checkout", "-b", "alternate")
-				if difference == "changed" {
-					if err := os.WriteFile(filepath.Join(repo, "setup.sh"), []byte("different\n"), 0o644); err != nil {
-						t.Fatal(err)
-					}
-				} else {
-					if err := os.Remove(filepath.Join(repo, "setup.sh")); err != nil {
-						t.Fatal(err)
-					}
-				}
-				gitCmd(t, repo, "add", "setup.sh")
-				gitCmd(t, repo, "commit", "-m", "Change hook dependency on alternate base")
-				gitCmd(t, repo, "checkout", "main")
-				requireTreehouseOK(t, repo, home, "trust")
-				wt := getApprovalLease(t, repo, home, "--base", "alternate")
-				assertNoApprovalEvents(t, wt)
-				// Before return the file matches approval, but the reset restores the
-				// alternate base. Verification must occur AFTER that reset.
-				if err := os.WriteFile(filepath.Join(wt, "setup.sh"), []byte("approved\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				requireTreehouseOK(t, repo, home, "return", wt, "--force")
-				assertNoApprovalEvents(t, wt)
-				if deletion == "destroy" {
-					requireTreehouseOK(t, repo, home, "destroy", wt, "--yes")
-				} else {
-					requireTreehouseOK(t, repo, home, "prune", "--yes")
-				}
-				if _, err := os.Stat(wt); !os.IsNotExist(err) {
-					t.Fatal("expected deletion to complete")
-				}
-				if _, err := os.Stat(marker); !os.IsNotExist(err) {
-					t.Fatal("mismatched execution files ran deletion hook")
-				}
-			})
-		}
+	repo, home, marker := setupApprovalFilesRepo(t)
+	gitCmd(t, repo, "checkout", "-b", "alternate")
+	if err := os.WriteFile(filepath.Join(repo, "setup.sh"), []byte("different\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo, "add", "setup.sh")
+	gitCmd(t, repo, "commit", "-m", "Change hook dependency on alternate base")
+	gitCmd(t, repo, "checkout", "main")
+	requireTreehouseOK(t, repo, home, "trust")
+	wt := getApprovalLease(t, repo, home, "--base", "alternate")
+	assertNoApprovalEvents(t, wt)
+	// Before return the file matches approval, but the reset restores the
+	// alternate base. Verification must occur AFTER that reset.
+	if err := os.WriteFile(filepath.Join(wt, "setup.sh"), []byte("approved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	requireTreehouseOK(t, repo, home, "return", wt, "--force")
+	assertNoApprovalEvents(t, wt)
+	requireTreehouseOK(t, repo, home, "destroy", wt, "--yes")
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Fatal("expected deletion to complete")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("mismatched execution files ran deletion hook")
 	}
 }
 
@@ -171,29 +155,21 @@ func TestApprovalFilesRequireMainAndWorktreeContents(t *testing.T) {
 	assertHookEvents(t, wt, "return", "create", "get")
 }
 
+// An earlier repository command editing a dependency is covered by
+// internal/config's TestRunWorktreeHooksRechecksBeforeEachRepositoryCommand.
+// This is the command-level slice: a user hook runs first and its edits are
+// already visible to the check that gates the repository commands.
 func TestApprovalFilesCheckedAfterEarlierHooks(t *testing.T) {
 	t.Parallel()
-	for _, earlier := range []string{"user", "repository"} {
-		t.Run(earlier, func(t *testing.T) {
-			t.Parallel()
-			repo, home, _ := setupApprovalFilesRepo(t)
-			mutation := "echo changed > setup.sh"
-			if earlier == "user" {
-				writeLifecycleConfig(t, filepath.Join(home, ".config", "treehouse", "config.toml"), config.Hooks{PostCreate: []string{mutation}})
-			} else {
-				writeLifecycleConfig(t, filepath.Join(repo, "treehouse.toml"), config.Hooks{
-					ApprovalFiles: []string{"setup.sh", "package.json"},
-					PostCreate:    []string{mutation, "echo unapproved >> hook-events.txt"},
-					PostGet:       []string{"echo unapproved >> hook-events.txt"},
-				})
-			}
-			requireTreehouseOK(t, repo, home, "trust")
-			wt := getApprovalLease(t, repo, home)
-			assertNoApprovalEvents(t, wt)
-			data, err := os.ReadFile(filepath.Join(wt, "setup.sh"))
-			if err != nil || !strings.Contains(string(data), "changed") {
-				t.Fatalf("earlier hook did not execute: %q, %v", data, err)
-			}
-		})
+	repo, home, _ := setupApprovalFilesRepo(t)
+	writeLifecycleConfig(t, filepath.Join(home, ".config", "treehouse", "config.toml"), config.Hooks{
+		PostCreate: []string{"echo changed > setup.sh"},
+	})
+	requireTreehouseOK(t, repo, home, "trust")
+	wt := getApprovalLease(t, repo, home)
+	assertNoApprovalEvents(t, wt)
+	data, err := os.ReadFile(filepath.Join(wt, "setup.sh"))
+	if err != nil || !strings.Contains(string(data), "changed") {
+		t.Fatalf("earlier hook did not execute: %q, %v", data, err)
 	}
 }

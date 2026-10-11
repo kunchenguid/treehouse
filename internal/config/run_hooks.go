@@ -34,6 +34,20 @@ func RunWorktreeHooks(event hooks.Event, worktree string, stdout, stderr io.Writ
 		return
 	}
 	hooks.Run(user.Hooks.commands(event), worktree, stdout, stderr)
+	// A user hook may have granted or revoked approval, so everything below
+	// decides from a freshly read user config, never from the pre-hook snapshot.
+	user, _, err = loadUser()
+	if err != nil {
+		fmt.Fprintf(stderr, "🌳 Warning: skipping repository hooks for %s: %v\n", worktree, err)
+		return
+	}
+	// A repository command runs only against a user-owned approval, so with no
+	// approval recorded at all there is nothing a repository config can add.
+	// Resolving the owning repository costs git subprocesses at every lifecycle
+	// event; skipping can only withhold repository hooks, never run one.
+	if len(user.TrustedRepos) == 0 {
+		return
+	}
 	if vcs.WorktreeBackendName(worktree) == "" {
 		return
 	}
@@ -46,7 +60,7 @@ func RunWorktreeHooks(event hooks.Event, worktree string, stdout, stderr io.Writ
 		return
 	}
 	for _, command := range repo.Hooks.commands(event) {
-		// A user hook (or an earlier repository command) may have revoked trust.
+		// An earlier repository command may have revoked trust.
 		user, _, err = loadUser()
 		if err != nil {
 			fmt.Fprintf(stderr, "🌳 Warning: skipping repository hooks for %s: %v\n", worktree, err)
