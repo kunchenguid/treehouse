@@ -33,12 +33,6 @@ func TestGitRunnersIgnoreGlobalSubmoduleRecurse(t *testing.T) {
 			return []byte(out), err
 		}},
 		{"runGitRaw", runGitRaw},
-		{"gitOutput", func(dir string, args ...string) ([]byte, error) {
-			return gitOutput(dir, nil, args...)
-		}},
-		{"gitOutputEnv", func(dir string, args ...string) ([]byte, error) {
-			return gitOutputEnv(dir, os.Environ(), nil, args...)
-		}},
 	}
 	for _, runner := range runners {
 		t.Run(runner.name, func(t *testing.T) {
@@ -60,5 +54,43 @@ func TestGitRunnersIgnoreGlobalSubmoduleRecurse(t *testing.T) {
 				t.Fatalf("detach with global submodule.recurse=true: %v", err)
 			}
 		})
+	}
+}
+
+func TestFetchKeepsGitSubmoduleFetchDefault(t *testing.T) {
+	base := t.TempDir()
+	config := filepath.Join(base, "gitconfig")
+	if err := os.WriteFile(config, []byte("[protocol \"file\"]\n\tallow = always\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", config)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	sub := initRepo(t)
+	writeTestFile(t, sub, "f.txt", "one\n")
+	gitRun(t, sub, "add", "f.txt")
+	gitRun(t, sub, "commit", "-m", "one")
+	upstream := initRepo(t)
+	gitRun(t, upstream, "submodule", "add", sub, "lib")
+	gitRun(t, upstream, "commit", "-m", "add submodule")
+
+	clone := filepath.Join(base, "clone")
+	gitRun(t, base, "clone", "--recurse-submodules", upstream, clone)
+
+	writeTestFile(t, sub, "f.txt", "two\n")
+	gitRun(t, sub, "commit", "-am", "two")
+	newSub, err := runGit(sub, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, filepath.Join(upstream, "lib"), "pull", "origin", "HEAD")
+	gitRun(t, upstream, "add", "lib")
+	gitRun(t, upstream, "commit", "-m", "bump submodule")
+
+	if err := Fetch(clone); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(filepath.Join(clone, "lib"), "cat-file", "-e", newSub+"^{commit}"); err != nil {
+		t.Fatalf("fetch did not fetch the moved submodule commit: %v", err)
 	}
 }

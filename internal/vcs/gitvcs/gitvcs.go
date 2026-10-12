@@ -759,7 +759,7 @@ func Fetch(repoRoot string) error {
 	if !HasRemote(repoRoot, "origin") {
 		return nil
 	}
-	_, err := runGit(repoRoot, "fetch", "origin")
+	_, err := execGit(repoRoot, false, "fetch", "origin")
 	return err
 }
 
@@ -1420,7 +1420,15 @@ func runGit(dir string, args ...string) (string, error) {
 }
 
 func runGitRaw(dir string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", append([]string{"-c", "submodule.recurse=false"}, args...)...)
+	return execGit(dir, true, args...)
+}
+
+func execGit(dir string, pinSubmoduleRecurse bool, args ...string) ([]byte, error) {
+	gitArgs := args
+	if pinSubmoduleRecurse {
+		gitArgs = append([]string{"-c", "submodule.recurse=false"}, args...)
+	}
+	cmd := exec.Command("git", gitArgs...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -1510,7 +1518,7 @@ func gitOutput(dir string, stdin []byte, args ...string) ([]byte, error) {
 }
 
 func gitOutputEnv(dir string, env []string, stdin []byte, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", append([]string{"-c", "submodule.recurse=false"}, args...)...)
+	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	if env != nil {
 		cmd.Env = env
