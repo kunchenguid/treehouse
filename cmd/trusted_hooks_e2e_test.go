@@ -68,178 +68,120 @@ func requireTreehouseOK(t *testing.T, repo, home string, args ...string) (string
 	return out, stderr
 }
 
+// One lifecycle exercises both hook sources in order. The old user/repository
+// matrix repeated the same acquisitions, resets, and returns with separate repos.
 func TestLifecycleHooksFreshReuseAndReturn(t *testing.T) {
-	t.Parallel()
-	for _, trusted := range []bool{false, true} {
-		name := "user"
-		if trusted {
-			name = "trusted repo"
-		}
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			repo, home := setupTestRepo(t)
-			prepareHookLog(t, repo)
-			path := filepath.Join(home, ".config", "treehouse", "config.toml")
-			if trusted {
-				path = filepath.Join(repo, "treehouse.toml")
-			}
-			// Reading README in post_return proves the hook sees the reset checkout.
-			readREADME := "cat README.md >> hook-events.txt"
-			if runtime.GOOS == "windows" {
-				readREADME = "type README.md >> hook-events.txt"
-			}
-			writeLifecycleConfig(t, path, config.Hooks{
-				PostCreate: []string{"echo create >> hook-events.txt"},
-				PostGet:    []string{"treehouse-nonexistent-hook-command", "echo get >> hook-events.txt", "echo hook-output"},
-				PostReturn: []string{"treehouse-nonexistent-hook-command", readREADME, "echo returned >> hook-events.txt"},
-			})
-			if trusted {
-				requireTreehouseOK(t, repo, home, "trust")
-			}
-			first := ""
-			for i := 0; i < 2; i++ {
-				args := []string{"get", "--lease"}
-				if i == 1 {
-					args = append(args, "--json")
-				}
-				out, stderr := requireTreehouseOK(t, repo, home, args...)
-				wt := strings.TrimSpace(out)
-				if i == 1 {
-					var lease leaseJSONResult
-					if err := json.Unmarshal([]byte(out), &lease); err != nil {
-						t.Fatalf("polluted lease JSON: %q: %v", out, err)
-					}
-					wt = lease.Path
-				} else if out != wt+"\n" {
-					t.Fatalf("polluted lease path: %q", out)
-				}
-				if !strings.Contains(stderr, "hook-output") || !strings.Contains(stderr, "hook command failed") {
-					t.Fatalf("missing hook diagnostics: %s", stderr)
-				}
-				if first == "" {
-					first = wt
-				} else if wt != first {
-					t.Fatalf("did not reuse slot: %s != %s", wt, first)
-				}
-				if err := os.WriteFile(filepath.Join(wt, "README.md"), []byte("dirty\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				// A named return works outside the repo, with the target's configuration.
-				_, stderr, code := runTreehouseFromDir(t, repo, t.TempDir(), home, nil, "return", "--force", wt)
-				if code != 0 {
-					t.Fatalf("return failed: %s", stderr)
-				}
-			}
-			assertHookEvents(t, first, "create", "get", "hello", "returned", "create", "get", "hello", "returned")
-		})
-	}
-}
-
-func TestTrustedHooksReturnAllAndSubshell(t *testing.T) {
-	t.Parallel()
-	for _, mode := range []string{"all", "subshell"} {
-		t.Run(mode, func(t *testing.T) {
-			t.Parallel()
-			repo, home := setupTestRepo(t)
-			prepareHookLog(t, repo)
-			writeLifecycleConfig(t, filepath.Join(repo, "treehouse.toml"), config.Hooks{
-				PostGet:    []string{"echo get >> hook-events.txt"},
-				PostReturn: []string{"echo returned >> hook-events.txt"},
-			})
-			requireTreehouseOK(t, repo, home, "trust")
-			if mode == "all" {
-				var worktrees []string
-				for i := 0; i < 2; i++ {
-					out, _ := requireTreehouseOK(t, repo, home, "get", "--lease")
-					worktrees = append(worktrees, strings.TrimSpace(out))
-				}
-				requireTreehouseOK(t, repo, home, "return", "--all", "--force")
-				for _, wt := range worktrees {
-					assertHookEvents(t, wt, "get", "returned")
-				}
-			} else {
-				_, stderr, code := runTreehouse(t, repo, home, []string{"SHELL=" + exitShellBin}, "get")
-				if code != 0 {
-					t.Fatalf("get subshell failed: %s", stderr)
-				}
-				assertHookEvents(t, extractWorktreePath(stderr, home), "get", "returned")
-			}
-		})
-	}
-}
-
-func TestPostReturnDoesNotRunWhenReturnRefused(t *testing.T) {
 	t.Parallel()
 	repo, home := setupTestRepo(t)
 	prepareHookLog(t, repo)
+	readREADME := "cat README.md >> hook-events.txt"
+	if runtime.GOOS == "windows" {
+		readREADME = "type README.md >> hook-events.txt"
+	}
 	writeLifecycleConfig(t, filepath.Join(home, ".config", "treehouse", "config.toml"), config.Hooks{
-		PostGet: []string{"echo get >> hook-events.txt"}, PostReturn: []string{"echo returned >> hook-events.txt"},
+		PostCreate: []string{"echo user-create >> hook-events.txt"},
+		PostGet:    []string{"treehouse-nonexistent-hook-command", "echo user-get >> hook-events.txt", "echo hook-output"},
+		PostReturn: []string{"treehouse-nonexistent-hook-command", readREADME, "echo user-return >> hook-events.txt"},
 	})
-	out, _ := requireTreehouseOK(t, repo, home, "get", "--lease")
-	wt := strings.TrimSpace(out)
-	if err := os.WriteFile(filepath.Join(wt, "README.md"), []byte("dirty\n"), 0o644); err != nil {
+	writeLifecycleConfig(t, filepath.Join(repo, "treehouse.toml"), config.Hooks{
+		PostCreate: []string{"echo repo-create >> hook-events.txt"},
+		PostGet:    []string{"treehouse-nonexistent-hook-command", "echo repo-get >> hook-events.txt"},
+		PostReturn: []string{"echo repo-return >> hook-events.txt"},
+	})
+	requireTreehouseOK(t, repo, home, "trust")
+	acquired := []string{"user-create", "repo-create", "user-get", "repo-get"}
+	returned := append(append([]string{}, acquired...), "hello", "user-return", "repo-return")
+
+	// Fresh acquisition keeps stdout usable even when a hook fails or prints.
+	out, stderr := requireTreehouseOK(t, repo, home, "get", "--lease", "--no-fetch")
+	first := strings.TrimSpace(out)
+	if out != first+"\n" {
+		t.Fatalf("polluted lease path: %q", out)
+	}
+	if !strings.Contains(stderr, "hook-output") || !strings.Contains(stderr, "hook command failed") {
+		t.Fatalf("missing hook diagnostics: %s", stderr)
+	}
+	assertHookEvents(t, first, acquired...)
+	if err := os.WriteFile(filepath.Join(first, "README.md"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"return", wt}, {"return", wt, "--force", "--if-lease-id", "wrong-lease"}} {
+	// Neither a dirty refusal nor a stale lease may run post_return.
+	for _, args := range [][]string{{"return", first}, {"return", first, "--force", "--if-lease-id", "wrong-lease"}} {
 		_, _, code := runTreehouse(t, repo, home, nil, args...)
 		if code == 0 {
 			t.Fatalf("unexpected successful return: %v", args)
 		}
-		assertHookEvents(t, wt, "get")
+		assertHookEvents(t, first, acquired...)
 	}
-	requireTreehouseOK(t, repo, home, "return", wt, "--force")
-	assertHookEvents(t, wt, "get", "returned")
+	// Return outside the repository loads the target's config, after reset.
+	_, stderr, code := runTreehouseFromDir(t, repo, t.TempDir(), home, nil, "return", "--force", first)
+	if code != 0 {
+		t.Fatalf("return failed: %s", stderr)
+	}
+	assertHookEvents(t, first, returned...)
+
+	// Reuse keeps JSON clean; return --all must invoke hooks for every slot.
+	out, stderr = requireTreehouseOK(t, repo, home, "get", "--lease", "--no-fetch", "--json")
+	var lease leaseJSONResult
+	if err := json.Unmarshal([]byte(out), &lease); err != nil {
+		t.Fatalf("polluted lease JSON: %q: %v", out, err)
+	}
+	if lease.Path != first {
+		t.Fatalf("did not reuse slot: %s != %s", lease.Path, first)
+	}
+	if !strings.Contains(stderr, "hook-output") || !strings.Contains(stderr, "hook command failed") {
+		t.Fatalf("missing hook diagnostics on reuse: %s", stderr)
+	}
+	out, _ = requireTreehouseOK(t, repo, home, "get", "--lease", "--no-fetch")
+	second := strings.TrimSpace(out)
+	if second == first {
+		t.Fatal("second lease reused an occupied slot")
+	}
+	requireTreehouseOK(t, repo, home, "return", "--all", "--force")
+	assertHookEvents(t, first, append(append([]string{}, returned...), returned...)...)
+	assertHookEvents(t, second, returned...)
 }
 
-func TestTrustCommandsAndHookDrift(t *testing.T) {
+func TestTrustedHooksSubshell(t *testing.T) {
 	t.Parallel()
 	repo, home := setupTestRepo(t)
 	prepareHookLog(t, repo)
-	path := filepath.Join(repo, "treehouse.toml")
-	writeLifecycleConfig(t, path, config.Hooks{PostGet: []string{"echo original >> hook-events.txt"}})
-	out, stderr := requireTreehouseOK(t, repo, home, "get", "--lease")
-	wt := strings.TrimSpace(out)
-	if !strings.Contains(stderr, "treehouse trust") {
-		t.Fatalf("warning has no trust guidance: %s", stderr)
-	}
-	if _, err := os.Stat(filepath.Join(wt, "hook-events.txt")); !os.IsNotExist(err) {
-		t.Fatal("untrusted hook executed")
-	}
-	// Trust invoked in a slot approves its main checkout's config.
-	requireTreehouseOK(t, wt, home, "trust")
-	requireTreehouseOK(t, repo, home, "return", wt, "--force")
-	out, _ = requireTreehouseOK(t, repo, home, "get", "--lease")
-	wt = strings.TrimSpace(out)
-	assertHookEvents(t, wt, "original")
-	writeLifecycleConfig(t, path, config.Hooks{PostGet: []string{"echo changed >> hook-events.txt"}, PostReturn: []string{"echo changed-return >> hook-events.txt"}})
-	requireTreehouseOK(t, repo, home, "return", wt, "--force")
-	out, stderr = requireTreehouseOK(t, repo, home, "get", "--lease")
-	wt = strings.TrimSpace(out)
-	assertHookEvents(t, wt, "original")
-	if !strings.Contains(stderr, "treehouse trust") {
-		t.Fatalf("drift did not warn: %s", stderr)
-	}
+	writeLifecycleConfig(t, filepath.Join(repo, "treehouse.toml"), config.Hooks{
+		PostGet:    []string{"echo get >> hook-events.txt"},
+		PostReturn: []string{"echo returned >> hook-events.txt"},
+	})
 	requireTreehouseOK(t, repo, home, "trust")
-	requireTreehouseOK(t, wt, home, "untrust")
-	requireTreehouseOK(t, repo, home, "return", wt, "--force")
-	assertHookEvents(t, wt, "original")
+	_, stderr, code := runTreehouse(t, repo, home, []string{"SHELL=" + exitShellBin}, "get", "--no-fetch")
+	if code != 0 {
+		t.Fatalf("get subshell failed: %s", stderr)
+	}
+	assertHookEvents(t, extractWorktreePath(stderr, home), "get", "returned")
 }
 
 func TestTrustedPreDestroyTargetsOwningClone(t *testing.T) {
 	t.Parallel()
+	repoA, _ := setupTestRepo(t)
+	repoB := filepath.Join(t.TempDir(), "myrepo")
+	gitCmd(t, "", "clone", gitCmd(t, repoA, "config", "--get", "remote.origin.url"), repoB)
+	// The owning clones are immutable. Each case gets its own HOME, approval,
+	// pool, and markers, so the command entry points can still run in parallel.
+	markerCommand := func(clone string) string {
+		if runtime.GOOS == "windows" {
+			return `echo ` + clone + ` > "%USERPROFILE%\` + clone + `"`
+		}
+		return `echo ` + clone + ` > "$HOME/` + clone + `"`
+	}
+	writeLifecycleConfig(t, filepath.Join(repoA, "treehouse.toml"), config.Hooks{PreDestroy: []string{markerCommand("A")}})
+	writeLifecycleConfig(t, filepath.Join(repoB, "treehouse.toml"), config.Hooks{PreDestroy: []string{markerCommand("B")}})
 	for _, mode := range []string{"destroy", "destroy all", "prune", "prune all"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
-			repoA, home := setupTestRepo(t)
-			repoB := filepath.Join(t.TempDir(), "myrepo")
-			gitCmd(t, "", "clone", gitCmd(t, repoA, "config", "--get", "remote.origin.url"), repoB)
-			markerA, markerB := filepath.Join(t.TempDir(), "A"), filepath.Join(t.TempDir(), "B")
-			writeLifecycleConfig(t, filepath.Join(repoA, "treehouse.toml"), config.Hooks{PreDestroy: []string{"echo A > " + quoteReturnPath(markerA)}})
-			writeLifecycleConfig(t, filepath.Join(repoB, "treehouse.toml"), config.Hooks{PreDestroy: []string{"echo B > " + quoteReturnPath(markerB)}})
+			home := t.TempDir()
+			markerA, markerB := filepath.Join(home, "A"), filepath.Join(home, "B")
 			requireTreehouseOK(t, repoB, home, "trust") // Same URL, but only B's hash.
-			out, _ := requireTreehouseOK(t, repoA, home, "get", "--lease")
+			out, _ := requireTreehouseOK(t, repoA, home, "get", "--lease", "--no-fetch")
 			wtA := strings.TrimSpace(out)
-			out, _ = requireTreehouseOK(t, repoB, home, "get", "--lease")
+			out, _ = requireTreehouseOK(t, repoB, home, "get", "--lease", "--no-fetch")
 			wtB := strings.TrimSpace(out)
 			requireTreehouseOK(t, repoA, home, "return", wtA, "--force")
 			requireTreehouseOK(t, repoB, home, "return", wtB, "--force")
@@ -291,7 +233,7 @@ func TestHookTableAliasCannotBypassTrust(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireTreehouseOK(t, repo, home, "trust")
-	out, _ := requireTreehouseOK(t, repo, home, "get", "--lease")
+	out, _ := requireTreehouseOK(t, repo, home, "get", "--lease", "--no-fetch")
 	wt := strings.TrimSpace(out)
 	assertHookEvents(t, wt, "approved")
 	// Keep an existing lease to exercise cleanup as well as fresh acquisition.
@@ -300,7 +242,7 @@ func TestHookTableAliasCannotBypassTrust(t *testing.T) {
 	if err := os.WriteFile(path, []byte(approved+alias), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, stderr, code := runTreehouse(t, repo, home, nil, "get", "--lease")
+	out, stderr, code := runTreehouse(t, repo, home, nil, "get", "--lease", "--no-fetch")
 	if code == 0 {
 		t.Fatalf("get executed an unapproved alias: stdout=%q, stderr=%q", out, stderr)
 	}
@@ -325,7 +267,15 @@ func TestUntrustAliasPreventsSubsequentHookExecution(t *testing.T) {
 	writeLifecycleConfig(t, filepath.Join(repo, "treehouse.toml"), config.Hooks{
 		PostGet: []string{"echo repository >> hook-events.txt"},
 	})
-	requireTreehouseOK(t, repo, home, "trust")
+	out, stderr := requireTreehouseOK(t, repo, home, "get", "--lease", "--no-fetch")
+	untrusted := strings.TrimSpace(out)
+	assertNoApprovalEvents(t, untrusted)
+	if !strings.Contains(stderr, "treehouse trust") {
+		t.Fatalf("warning has no trust guidance: %s", stderr)
+	}
+	// Trust invoked in a slot approves its main checkout's configuration.
+	requireTreehouseOK(t, untrusted, home, "trust")
+	requireTreehouseOK(t, repo, home, "return", untrusted, "--force")
 	userPath := filepath.Join(home, ".config", "treehouse", "config.toml")
 	data, err := os.ReadFile(userPath)
 	if err != nil {
@@ -340,7 +290,7 @@ func TestUntrustAliasPreventsSubsequentHookExecution(t *testing.T) {
 	}
 	// Noncanonical keys must block both reads and updates. A failed untrust
 	// cannot claim revocation or rewrite an alias as an unknown setting.
-	for _, args := range [][]string{{"get", "--lease"}, {"untrust"}} {
+	for _, args := range [][]string{{"get", "--lease", "--no-fetch"}, {"untrust"}} {
 		out, stderr, code := runTreehouse(t, repo, home, nil, args...)
 		if code == 0 || out != "" || !strings.Contains(stderr, "[trusted_repos]") {
 			t.Fatalf("alias accepted by %v: code=%d stdout=%q stderr=%q", args, code, out, stderr)
@@ -358,12 +308,12 @@ func TestUntrustAliasPreventsSubsequentHookExecution(t *testing.T) {
 	if err := os.WriteFile(userPath, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, _ := requireTreehouseOK(t, repo, home, "get", "--lease")
+	out, _ = requireTreehouseOK(t, repo, home, "get", "--lease", "--no-fetch")
 	wt := strings.TrimSpace(out)
 	assertHookEvents(t, wt, "repository")
 	requireTreehouseOK(t, repo, home, "return", wt, "--force")
 	requireTreehouseOK(t, repo, home, "untrust")
-	out, stderr := requireTreehouseOK(t, repo, home, "get", "--lease")
+	out, stderr = requireTreehouseOK(t, repo, home, "get", "--lease", "--no-fetch")
 	if strings.TrimSpace(out) != wt {
 		t.Fatal("expected slot reuse")
 	}

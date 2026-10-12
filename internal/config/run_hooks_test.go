@@ -279,3 +279,21 @@ post_get = ['echo repo-get>>hook-log.txt']
 		})
 	}
 }
+
+func TestRunWorktreeHooksChecksDependenciesAfterUserHooks(t *testing.T) {
+	repo := runHooksRepo(t, Hooks{PostCreate: []string{"echo changed>setup.sh"}},
+		"[hooks]\napproval_files=['setup.sh']\npost_create=['echo repo-create>>hook-log.txt']\n")
+	if err := os.WriteFile(filepath.Join(repo, "setup.sh"), []byte("approved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Trust(repo); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	RunWorktreeHooks(hooks.PostCreate, repo, &stdout, &stderr)
+	assertHookLog(t, repo, stderr.String())
+	data, err := os.ReadFile(filepath.Join(repo, "setup.sh"))
+	if err != nil || !strings.Contains(string(data), "changed") {
+		t.Fatalf("user hook did not edit the dependency: %q, %v", data, err)
+	}
+}

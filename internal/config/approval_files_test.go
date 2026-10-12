@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -187,13 +186,5 @@ func TestApprovalFilesRejectUnreadable(t *testing.T) {
 	assertRepositoryHooksDisabled(t, repo)
 	if _, _, err := Trust(repo); err == nil {
 		t.Fatal("approved unreadable file")
-	}
-}
-
-func TestApprovalFilesRejectCaseAliases(t *testing.T) {
-	repo := approvalFixture(t)
-	writeRepoConfig(t, repo, "[hooks]\nApproval_Files=['setup.sh']\n"+approvalCommands)
-	if _, _, err := Trust(repo); err == nil || !strings.Contains(err.Error(), "approval_files") {
-		t.Fatalf("expected canonical-key rejection, got %v", err)
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/BurntSushi/toml"
-	"github.com/kunchenguid/treehouse/v3/internal/config"
 )
 
 func writeApprovalHooks(t *testing.T, repo, marker string, paths []string) {
@@ -46,9 +45,11 @@ func setupApprovalFilesRepo(t *testing.T) (repo, home, marker string) {
 	return repo, home, marker
 }
 
+// Fixtures already have their local base refs; these tests exercise hook
+// approval, not fetch behavior (covered by the baseline get tests).
 func getApprovalLease(t *testing.T, repo, home string, flags ...string) string {
 	t.Helper()
-	out, _ := requireTreehouseOK(t, repo, home, append([]string{"get", "--lease"}, flags...)...)
+	out, _ := requireTreehouseOK(t, repo, home, append([]string{"get", "--lease", "--no-fetch"}, flags...)...)
 	return strings.TrimSpace(out)
 }
 
@@ -153,23 +154,4 @@ func TestApprovalFilesRequireMainAndWorktreeContents(t *testing.T) {
 	assertHookEvents(t, wt, "return")
 	wt = getApprovalLease(t, repo, home)
 	assertHookEvents(t, wt, "return", "create", "get")
-}
-
-// An earlier repository command editing a dependency is covered by
-// internal/config's TestRunWorktreeHooksRechecksBeforeEachRepositoryCommand.
-// This is the command-level slice: a user hook runs first and its edits are
-// already visible to the check that gates the repository commands.
-func TestApprovalFilesCheckedAfterEarlierHooks(t *testing.T) {
-	t.Parallel()
-	repo, home, _ := setupApprovalFilesRepo(t)
-	writeLifecycleConfig(t, filepath.Join(home, ".config", "treehouse", "config.toml"), config.Hooks{
-		PostCreate: []string{"echo changed > setup.sh"},
-	})
-	requireTreehouseOK(t, repo, home, "trust")
-	wt := getApprovalLease(t, repo, home)
-	assertNoApprovalEvents(t, wt)
-	data, err := os.ReadFile(filepath.Join(wt, "setup.sh"))
-	if err != nil || !strings.Contains(string(data), "changed") {
-		t.Fatalf("earlier hook did not execute: %q, %v", data, err)
-	}
 }
