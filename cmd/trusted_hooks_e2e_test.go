@@ -160,23 +160,26 @@ func TestTrustedHooksSubshell(t *testing.T) {
 
 func TestTrustedPreDestroyTargetsOwningClone(t *testing.T) {
 	t.Parallel()
-	repoA, _ := setupTestRepo(t)
-	repoB := filepath.Join(t.TempDir(), "myrepo")
-	gitCmd(t, "", "clone", gitCmd(t, repoA, "config", "--get", "remote.origin.url"), repoB)
-	// The owning clones are immutable. Each case gets its own HOME, approval,
-	// pool, and markers, so the command entry points can still run in parallel.
+	origin, _ := setupTestRepo(t)
+	originURL := gitCmd(t, origin, "config", "--get", "remote.origin.url")
 	markerCommand := func(clone string) string {
 		if runtime.GOOS == "windows" {
 			return `echo ` + clone + ` > "%USERPROFILE%\` + clone + `"`
 		}
 		return `echo ` + clone + ` > "$HOME/` + clone + `"`
 	}
-	writeLifecycleConfig(t, filepath.Join(repoA, "treehouse.toml"), config.Hooks{PreDestroy: []string{markerCommand("A")}})
-	writeLifecycleConfig(t, filepath.Join(repoB, "treehouse.toml"), config.Hooks{PreDestroy: []string{markerCommand("B")}})
 	for _, mode := range []string{"destroy", "destroy all", "prune", "prune all"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			home := t.TempDir()
+			// The cases share one origin, but `git worktree add` is not safe to
+			// run concurrently in a single clone, so each gets its own pair.
+			clones := t.TempDir()
+			repoA, repoB := filepath.Join(clones, "A", "myrepo"), filepath.Join(clones, "B", "myrepo")
+			for clone, path := range map[string]string{"A": repoA, "B": repoB} {
+				gitCmd(t, "", "clone", "--quiet", originURL, path)
+				writeLifecycleConfig(t, filepath.Join(path, "treehouse.toml"), config.Hooks{PreDestroy: []string{markerCommand(clone)}})
+			}
 			markerA, markerB := filepath.Join(home, "A"), filepath.Join(home, "B")
 			requireTreehouseOK(t, repoB, home, "trust") // Same URL, but only B's hash.
 			out, _ := requireTreehouseOK(t, repoA, home, "get", "--lease", "--no-fetch")
