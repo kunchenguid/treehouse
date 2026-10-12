@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.3](https://github.com/kunchenguid/treehouse/compare/v3.1.2...v3.1.3) (2026-10-12)
+
+
+### Bug Fixes
+
+* **vcs:** pin submodule.recurse=false in git runners ([#177](https://github.com/kunchenguid/treehouse/issues/177)) ([d40678e](https://github.com/kunchenguid/treehouse/commit/d40678e3b88ac638c4c05ccdfd96082c1aa1648a))
+
 ## [3.1.2](https://github.com/kunchenguid/treehouse/compare/v3.1.1...v3.1.2) (2026-10-02)
 
 
