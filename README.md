@@ -58,7 +58,7 @@ irm https://kunchenguid.github.io/treehouse/install.ps1 | iex
 ```sh
 nix run github:kunchenguid/treehouse
 # or pin a specific release tag:
-nix run github:kunchenguid/treehouse/v2.3.0
+nix run github:kunchenguid/treehouse/v3.1.2
 ```
 
 Install into your Nix profile:
