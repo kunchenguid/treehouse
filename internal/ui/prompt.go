@@ -2,15 +2,37 @@ package ui
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/mattn/go-isatty"
 )
 
+// ErrNoAnswer reports a non-terminal stdin timeout or a prompt attempted after
+// one. Callers treat it like EOF: the prompt is unanswered.
+var ErrNoAnswer = errors.New("no answer on stdin")
+
+// stdinAnswerWait bounds how long a prompt waits for an answer on a stdin that
+// is not a terminal. A scripted answer is already in the pipe or file when the
+// prompt reads it; an open pipe that nobody writes to (the usual state under CI
+// steps and agent harnesses) never delivers one, and would block forever.
+var stdinAnswerWait = 3 * time.Second
+
+type lineResult struct {
+	line string
+	err  error
+}
+
 var (
-	stdinOnce   sync.Once
-	stdinReader *bufio.Reader
+	stdinOnce        sync.Once
+	stdinReader      *bufio.Reader
+	stdinExhausted   bool
+	isTerminal       = isatty.IsTerminal
+	isCygwinTerminal = isatty.IsCygwinTerminal
 )
 
 // promptReader is one reader for the whole process. bufio pulls a whole chunk
@@ -43,7 +65,7 @@ func Confirm(message string, defaultYes bool) (bool, error) {
 	// only whitespace holds no answer, so it stays unanswered instead of
 	// selecting the default. A blank line with no error is the bare Enter the
 	// [Y/n] hint documents, and still selects the default.
-	line, err := promptReader().ReadString('\n')
+	line, err := readLine()
 	input := strings.TrimSpace(strings.ToLower(line))
 	if err != nil && input == "" {
 		return defaultYes, err
@@ -54,4 +76,38 @@ func Confirm(message string, defaultYes bool) (bool, error) {
 	}
 
 	return input == "y" || input == "yes", nil
+}
+
+// readLine reads one line from stdin. A terminal blocks until the operator
+// answers. Any other stdin is given stdinAnswerWait to deliver the line and is
+// otherwise reported as ErrNoAnswer. A timeout loses answer-to-prompt alignment,
+// so all later prompts fail immediately rather than applying a delayed answer
+// to a different worktree. The abandoned read may finish, but is never reused.
+func readLine() (string, error) {
+	if stdinExhausted {
+		return "", ErrNoAnswer
+	}
+	if stdinIsTerminal() {
+		return promptReader().ReadString('\n')
+	}
+	reader := promptReader()
+	ch := make(chan lineResult, 1)
+	go func() {
+		line, err := reader.ReadString('\n')
+		ch <- lineResult{line, err}
+	}()
+	timer := time.NewTimer(stdinAnswerWait)
+	defer timer.Stop()
+	select {
+	case r := <-ch:
+		return r.line, r.err
+	case <-timer.C:
+		stdinExhausted = true
+		return "", ErrNoAnswer
+	}
+}
+
+func stdinIsTerminal() bool {
+	fd := os.Stdin.Fd()
+	return isTerminal(fd) || isCygwinTerminal(fd)
 }
