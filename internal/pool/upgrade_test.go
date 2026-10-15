@@ -43,7 +43,7 @@ func writeRawState(t *testing.T, poolDir string, s State) {
 
 func statusOf(t *testing.T, poolDir, path string) WorktreeStatus {
 	t.Helper()
-	statuses, err := List(poolDir)
+	statuses, err := List(poolDir, "")
 	if err != nil {
 		t.Fatal(err)
 	}

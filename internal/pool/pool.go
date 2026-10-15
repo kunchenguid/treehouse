@@ -408,7 +408,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 
 	// After the fetch, not before: a base that exists only on origin would be
 	// rejected against pre-fetch refs.
-	branch, err := resolveBaseBranch(repoRoot, opts.baseBranch)
+	branch, err := ResolveBaseBranch(repoRoot, opts.baseBranch)
 	if err != nil {
 		return LeaseInfo{}, err
 	}
@@ -850,13 +850,18 @@ func headLandedForReuse(wt WorktreeEntry, branch string) (resetRef, head string,
 }
 
 // landedOnDefaultBase answers for `status` what a plain `get` would decide:
-// whether the slot's HEAD is landed on the repository default (or its recorded
-// base). `status` reads local refs and does not fetch, so a merge that only
-// exists on the remote shows as unlanded until the next `get` fetches.
-func landedOnDefaultBase(wt WorktreeEntry) bool {
-	branch, err := vcs.DefaultBranchForWorktree(wt.Path)
-	if err != nil {
-		return false
+// whether the slot's HEAD is landed on the configured base (or its recorded
+// base), falling back to the repository default when no base is configured.
+// `status` reads local refs and does not fetch, so a merge that only exists on
+// the remote shows as unlanded until the next `get` fetches.
+func landedOnDefaultBase(wt WorktreeEntry, configuredBase string) bool {
+	branch := configuredBase
+	if branch == "" {
+		var err error
+		branch, err = vcs.DefaultBranchForWorktree(wt.Path)
+		if err != nil {
+			return false
+		}
 	}
 	_, _, landed := headLandedForReuse(wt, branch)
 	return landed
@@ -899,14 +904,15 @@ func headMergedIntoRecordedBase(wt WorktreeEntry, requested, head string) bool {
 	return err == nil && safe && recordedHead == head
 }
 
-// resolveBaseBranch picks the branch worktrees are cut from and reset to: the
-// explicitly requested one, otherwise the inferred default.
+// ResolveBaseBranch picks the branch worktrees are cut from and reset to: the
+// explicitly requested one, otherwise the inferred default. `status` reuses it
+// so its landed check agrees with what `get` will decide.
 //
 // Only an explicit request is verified. GetDefaultBranch already errors when it
 // cannot answer, but an unverified explicit branch would not surface at all:
 // acquire SKIPS a slot whose safety check fails, so a typo would look like a
 // pool with nothing reusable and burn a fresh slot per call.
-func resolveBaseBranch(repoRoot, requested string) (string, error) {
+func ResolveBaseBranch(repoRoot, requested string) (string, error) {
 	if requested == "" {
 		return vcs.GetDefaultBranch(repoRoot)
 	}
@@ -1191,7 +1197,11 @@ func validateReleasePreconditions(wt WorktreeEntry, preconditions ReleasePrecond
 // invoking shell and the status process itself as tenants of the slot they
 // were merely observing. Those PIDs are gone by the time anyone checks them,
 // which reads as a stale snapshot of real leftover processes.
-func List(poolDir string) ([]WorktreeStatus, error) {
+// configuredBase is the base branch `get` would resolve for this repository
+// (ResolveBaseBranch's result, or empty to infer the repository default per
+// slot), so the unlanded check below agrees with what `get` will actually
+// reuse.
+func List(poolDir string, configuredBase string) ([]WorktreeStatus, error) {
 	var result []WorktreeStatus
 
 	err := WithStateLock(poolDir, func() error {
@@ -1280,7 +1290,7 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 			default:
 				if dirty, _ := vcs.IsDirty(wt.Path); dirty {
 					ws.Status = StatusDirty
-				} else if !landedOnDefaultBase(wt) {
+				} else if !landedOnDefaultBase(wt, configuredBase) {
 					ws.Status = StatusUnlanded
 				}
 			}

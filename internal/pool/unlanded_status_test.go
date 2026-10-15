@@ -33,7 +33,7 @@ func quietListProcesses(t *testing.T) {
 
 func listOne(t *testing.T, poolDir string) WorktreeStatus {
 	t.Helper()
-	statuses, err := List(poolDir)
+	statuses, err := List(poolDir, "")
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -140,5 +140,52 @@ func TestList_UnlandedSlotUnderCwdIsHeldOnlyByCwd(t *testing.T) {
 	got := listOne(t, poolDir)
 	if got.Status != StatusHere || !got.HeldOnlyByCwd {
 		t.Fatalf("got status %q, HeldOnlyByCwd %v; want %q and true", got.Status, got.HeldOnlyByCwd, StatusHere)
+	}
+}
+
+// Regression: status must judge a slot against the SAME base acquire would
+// use, not always the repository default. A slot cut from main, holding a
+// commit merged only into develop, reads unlanded against the repository
+// default but available once the configured base (resolved the same way
+// AcquireWithOptions resolves it) is passed through - and get indeed reuses
+// it, so the two must agree.
+func TestList_HonorsConfiguredBaseBranch(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	runGit(t, repoDir, "branch", "develop")
+	quietListProcesses(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	head := commitInSlot(t, poolDir, wtPath)
+
+	runGit(t, repoDir, "checkout", "develop")
+	runGit(t, repoDir, "merge", "--ff-only", head)
+	runGit(t, repoDir, "push", "origin", "develop")
+	runGit(t, repoDir, "checkout", "main")
+
+	if got := listOne(t, poolDir).Status; got != StatusUnlanded {
+		t.Fatalf("status against the repository default = %q, want %q", got, StatusUnlanded)
+	}
+
+	resolved, err := ResolveBaseBranch(repoDir, "develop")
+	if err != nil {
+		t.Fatalf("ResolveBaseBranch failed: %v", err)
+	}
+	statuses, err := List(poolDir, resolved)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if got := statuses[0].Status; got != StatusAvailable {
+		t.Fatalf("status against the configured base = %q, want %q", got, StatusAvailable)
+	}
+
+	reused, err := AcquireWithOptions(repoDir, poolDir, 1, nil, AcquireOptions{BaseBranch: "develop"})
+	if err != nil {
+		t.Fatalf("expected get to agree and reuse the slot: %v", err)
+	}
+	if reused != wtPath {
+		t.Fatalf("reused %s, want %s", reused, wtPath)
 	}
 }

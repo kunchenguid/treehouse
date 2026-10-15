@@ -58,7 +58,15 @@ var statusCmd = &cobra.Command{
 			return err
 		}
 
-		worktrees, err := pool.List(poolDir)
+		configuredBase, err := pool.ResolveBaseBranch(repoRoot, cfg.BaseBranch)
+		if err != nil {
+			// Unresolvable: fall back to per-slot inference. `get` would error
+			// outright on this config rather than reuse anything, so there is
+			// no disagreement to protect against here.
+			configuredBase = ""
+		}
+
+		worktrees, err := pool.List(poolDir, configuredBase)
 		if err != nil {
 			return err
 		}

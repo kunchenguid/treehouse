@@ -132,7 +132,7 @@ func TestAcquire_UniqueLeafAndSharedLeafSlotsCoexist(t *testing.T) {
 		t.Fatalf("expected two distinct slots, got %s twice", shared)
 	}
 
-	statuses, err := List(poolDir)
+	statuses, err := List(poolDir, "")
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}

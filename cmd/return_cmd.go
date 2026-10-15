@@ -260,12 +260,24 @@ func returnableStatus(wt pool.WorktreeStatus) bool {
 // that the automatic safety check cannot free (including a 3.0.0 upgrade
 // quarantine) is counted held and skipped; only a named return releases it.
 func returnHeldWorktrees() error {
-	poolDir, err := repositoryPoolDir()
+	repoRoot, err := vcs.FindMainRepoRoot()
+	if err != nil {
+		return fmt.Errorf("not in a git or jj repository: %w", err)
+	}
+	cfg, err := config.Load(repoRoot)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	poolDir, err := poolDirForRepoRoot(repoRoot)
 	if err != nil {
 		return err
 	}
+	configuredBase, err := pool.ResolveBaseBranch(repoRoot, cfg.BaseBranch)
+	if err != nil {
+		configuredBase = ""
+	}
 
-	worktrees, err := pool.List(poolDir)
+	worktrees, err := pool.List(poolDir, configuredBase)
 	if err != nil {
 		return err
 	}

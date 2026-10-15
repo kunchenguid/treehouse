@@ -130,7 +130,7 @@ func TestList_RecoveryReportsBrokenMarkerSlotDamaged(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	statuses, err := List(poolDir)
+	statuses, err := List(poolDir, "")
 	if err != nil {
 		t.Fatalf("List aborted because of one broken slot: %v", err)
 	}
