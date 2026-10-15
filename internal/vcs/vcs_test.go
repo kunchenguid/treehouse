@@ -521,3 +521,49 @@ func TestDestructiveWrappersRefuseMarkerlessPath(t *testing.T) {
 		t.Fatalf("enclosing repository HEAD moved off main to %q", ref)
 	}
 }
+
+func TestVCSFromFileRequiresExactKey(t *testing.T) {
+	for _, tc := range []struct{ name, contents, want string }{
+		{"canonical", "vcs='jj'\n", "jj"},
+		{"uppercase", "VCS='jj'\n", ""},
+		{"mixed case", "Vcs='jj'\n", ""},
+		{"Unicode alias", "\"vcſ\"='jj'\n", ""},
+		{"multiple spellings", "vcs='jj'\nVCS='git'\n", ""},
+		{"same values", "vcs='jj'\nVCS='jj'\n", ""},
+		{"wrong type", "vcs=7\n", ""},
+		{"dynamic key", "[trusted_repos]\nVCS='jj'\n", ""},
+		{"canonical with dynamic key", "vcs='git'\n[trusted_repos]\nVCS='jj'\n", "git"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "treehouse.toml")
+			if err := os.WriteFile(path, []byte(tc.contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := vcsFromFile(path); got != tc.want {
+				t.Fatalf("vcs override=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestVCSAliasesDoNotEnableJJ(t *testing.T) {
+	for _, scope := range []string{"repository", "user"} {
+		t.Run(scope, func(t *testing.T) {
+			home := isolateUserConfig(t)
+			repo := fakeJJOnlyRepo(t)
+			path := filepath.Join(repo, "treehouse.toml")
+			if scope == "user" {
+				path = userConfigPath(home)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("VCS='jj'\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := backendFor(repo).Name(); got != "git" {
+				t.Fatalf("noncanonical %s key enabled %s", scope, got)
+			}
+		})
+	}
+}
