@@ -23,6 +23,11 @@ const (
 	StatusLeased    = "leased"
 	StatusHere      = "you're here"
 	StatusDamaged   = "damaged"
+	// StatusUnlanded is an idle, clean, process-free slot whose HEAD is not
+	// proven merged into the base, so acquire skips it rather than reset it.
+	// It reads exactly as `get` does: anything that check cannot prove
+	// (including a check that errors) is unlanded, never available.
+	StatusUnlanded = "unlanded"
 	// StatusUnverified is a slot whose process table could not be read: the
 	// question "is anything running here?" has no answer, so nothing decided
 	// from the process list (in-use) or from its absence (damaged, dirty,
@@ -68,8 +73,9 @@ type WorktreeStatus struct {
 	// untracked files into, or "" when there is none.
 	RecoveryBackup string
 	// HeldOnlyByCwd reports a StatusHere slot that nobody is actually holding:
-	// it is unleased, idle, clean, quiet and undamaged, and the only reason it
-	// is not reported available is that the caller is standing in it. Status
+	// it is unleased, idle, clean, quiet and undamaged (it may be unlanded), and
+	// the only reason it is not reported available or unlanded is that the
+	// caller is standing in it. Status
 	// alone cannot answer that, because StatusHere hides whichever
 	// classification the slot would otherwise have carried.
 	HeldOnlyByCwd bool
@@ -461,6 +467,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		otherFlavor := 0
 		otherClone := 0
 		unverifiedClone := 0
+		unlanded := 0
 		for i, wt := range state.Worktrees {
 			if wt.Destroying || wt.Leased || ownerAlive(wt) {
 				continue
@@ -513,11 +520,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			if err != nil || dirty {
 				continue
 			}
-			safe, resetRef, head, err := vcs.IsWorktreeSafeToReset(wt.Path, branch)
-			if err != nil {
-				continue
-			}
-			if !safe && !headMergedIntoRecordedBase(wt, branch, head) {
+			resetRef, head, landed := headLandedForReuse(wt, branch)
+			if !landed {
+				unlanded++
 				continue
 			}
 			// Found an available one. Reset it to the verified commit only if
@@ -635,6 +640,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 					msg += fmt.Sprintf(", and this repository's clone identity cannot be verified: %v", identityErr)
 				}
 				return fmt.Errorf("%s. Run 'treehouse status' to see details, or increase max_trees in treehouse.toml", msg)
+			}
+			if unlanded > 0 {
+				return fmt.Errorf("all %d worktrees are in use, dirty, or hold work not merged into %q (%d unlanded; 'treehouse status' reports them as %s, and get never resets them; max_trees = %d). Merge or return that work, or increase max_trees in treehouse.toml", len(state.Worktrees), branch, unlanded, StatusUnlanded, poolSize)
 			}
 			return fmt.Errorf("all %d worktrees are in use or dirty (max_trees = %d). Run 'treehouse status' to see details, or increase max_trees in treehouse.toml", len(state.Worktrees), poolSize)
 		}
@@ -823,6 +831,35 @@ func leaseInfoFromEntry(wt WorktreeEntry, baseBranch string) LeaseInfo {
 		LeasedAt:    wt.LeasedAt,
 		BaseBranch:  baseBranch,
 	}
+}
+
+// headLandedForReuse is the merge-state proof acquire demands before it
+// resets a slot, shared with List so `status` and `get` cannot disagree: HEAD
+// is merged into branch, or into the slot's recorded base. It returns the
+// reset target and the HEAD it vouched for. Fails closed: a check that errors
+// proves nothing, so it reports not landed.
+func headLandedForReuse(wt WorktreeEntry, branch string) (resetRef, head string, landed bool) {
+	safe, resetRef, head, err := vcs.IsWorktreeSafeToReset(wt.Path, branch)
+	if err != nil {
+		return "", "", false
+	}
+	if !safe && !headMergedIntoRecordedBase(wt, branch, head) {
+		return "", "", false
+	}
+	return resetRef, head, true
+}
+
+// landedOnDefaultBase answers for `status` what a plain `get` would decide:
+// whether the slot's HEAD is landed on the repository default (or its recorded
+// base). `status` reads local refs and does not fetch, so a merge that only
+// exists on the remote shows as unlanded until the next `get` fetches.
+func landedOnDefaultBase(wt WorktreeEntry) bool {
+	branch, err := vcs.DefaultBranchForWorktree(wt.Path)
+	if err != nil {
+		return false
+	}
+	_, _, landed := headLandedForReuse(wt, branch)
+	return landed
 }
 
 // headMergedIntoRecordedBase reports whether a slot carries nothing beyond the
@@ -1243,6 +1280,8 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 			default:
 				if dirty, _ := vcs.IsDirty(wt.Path); dirty {
 					ws.Status = StatusDirty
+				} else if !landedOnDefaultBase(wt) {
+					ws.Status = StatusUnlanded
 				}
 			}
 			// Damaged is not overlaid. A missing marker is a different kind of
@@ -1252,7 +1291,7 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 			// readable. The recovery-scan case below already forces damaged
 			// back over the overlay for exactly this reason.
 			if !wt.Leased && !owned && ws.Status != StatusDamaged && process.WorktreeContainsCwd(wt.Path, cwd) {
-				ws.HeldOnlyByCwd = ws.Status == StatusAvailable
+				ws.HeldOnlyByCwd = ws.Status == StatusAvailable || ws.Status == StatusUnlanded
 				ws.Status = StatusHere
 			}
 

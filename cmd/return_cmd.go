@@ -63,7 +63,8 @@ already resolves keeps resolving to exactly the same worktree.
                                     repository's pool.
 
 --all acts on every slot somebody is holding. It leaves alone a slot
-'treehouse status' reports 'available' (nothing to return) or 'damaged' (its
+'treehouse status' reports 'available' (nothing to return), 'unlanded' (idle
+with commits not merged into the base; name it to return it) or 'damaged' (its
 marker cannot be read, so 'treehouse destroy' - not return - is what removes
 it), and a slot reported 'you're here' that is otherwise parked, clean and
 quiet: standing in a slot is not holding it, and 'treehouse enter' promises not
@@ -204,7 +205,10 @@ func bulkReturnPreconditions(wt pool.WorktreeStatus) pool.ReleasePreconditions {
 // returnableStatus reports whether `return --all` acts on a slot in this state.
 //
 // Available is excluded because there is nothing to return: the slot is already
-// parked and a later `get` will hand it out. Damaged is excluded because its
+// parked and a later `get` will hand it out. Unlanded is excluded for the same
+// reason it always was (it used to read available): the slot is idle, clean and
+// unowned, so nobody holds it, and a bulk return must not reset commits `get`
+// itself refuses to touch; a named return is the deliberate act. Damaged is excluded because its
 // marker is missing or unreadable, so neither the detach nor the reset a return
 // performs can be judged safe, and `destroy` - which `status` already spells out
 // for such a slot - is the verb that removes it. So is a slot reported
@@ -232,7 +236,7 @@ func returnableStatus(wt pool.WorktreeStatus) bool {
 		return false
 	}
 	switch wt.Status {
-	case pool.StatusAvailable, pool.StatusDamaged:
+	case pool.StatusAvailable, pool.StatusUnlanded, pool.StatusDamaged:
 		return false
 	default:
 		return true
@@ -251,7 +255,7 @@ func returnableStatus(wt pool.WorktreeStatus) bool {
 // every retry forever. A run where every slot was skipped still exits 0:
 // nothing it set out to return was still there to return.
 //
-// A slot nobody holds - available, damaged, or one the caller merely stands
+// A slot nobody holds - available, unlanded, damaged, or one the caller merely stands
 // in - is never a target at all and is counted separately. A recovered slot
 // that the automatic safety check cannot free (including a 3.0.0 upgrade
 // quarantine) is counted held and skipped; only a named return releases it.
