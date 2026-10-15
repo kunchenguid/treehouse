@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.1.4](https://github.com/kunchenguid/treehouse/compare/v3.1.3...v3.1.4) (2026-10-15)
+
+
+### Bug Fixes
+
+* **nix:** drop x86_64-darwin and update flake.lock ([#182](https://github.com/kunchenguid/treehouse/issues/182)) ([2a93409](https://github.com/kunchenguid/treehouse/commit/2a934095cc791845f4b689ce9a5379df6d20df39))
+* **update:** refuse self-update and silence the notice in the Nix store ([#180](https://github.com/kunchenguid/treehouse/issues/180)) ([93a18da](https://github.com/kunchenguid/treehouse/commit/93a18dabcf5ad46bf243492912865d65ef0977dd))
+
 ## [3.1.3](https://github.com/kunchenguid/treehouse/compare/v3.1.2...v3.1.3) (2026-10-12)
 
 
