@@ -42,6 +42,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      WORKSPACE_TESTS: '^Test(Workspace|RemoveWorkspaceRepository|ResolveWorktreePathResolvesFacadeLink|ReturnOutsideRepository)'
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +52,18 @@ jobs:
           go-version-file: go.mod
 
       - name: Test
+        if: matrix.os != 'windows-latest'
         run: go test ./...
+
+      # Windows Git subprocesses make the combined cmd suite exceed Go's 10m timeout.
+      # Keep complementary partitions and avoid contention with the pool suite.
+      - name: Test Windows core
+        if: matrix.os == 'windows-latest'
+        run: go test -p 1 ./... -skip "$env:WORKSPACE_TESTS"
+
+      - name: Test Windows workspaces
+        if: matrix.os == 'windows-latest'
+        run: go test -p 1 ./... -run "$env:WORKSPACE_TESTS"
 
       - name: Build
         run: go build -o treehouse${{ matrix.os == 'windows-latest' && '.exe' || '' }} .
