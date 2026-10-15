@@ -57,12 +57,7 @@ func enterRunE(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to resolve pool directory: %w", err)
 	}
 
-	configuredBase, err := pool.ResolveBaseBranch(repoRoot, cfg.BaseBranch)
-	if err != nil {
-		configuredBase = ""
-	}
-
-	worktrees, err := pool.List(poolDir, configuredBase)
+	worktrees, err := pool.List(poolDir)
 	if err != nil {
 		return err
 	}

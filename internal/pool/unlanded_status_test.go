@@ -33,9 +33,9 @@ func quietListProcesses(t *testing.T) {
 
 func listOne(t *testing.T, poolDir string) WorktreeStatus {
 	t.Helper()
-	statuses, err := List(poolDir, "")
+	statuses, err := ListWithMergeState(poolDir, func() string { return "" })
 	if err != nil {
-		t.Fatalf("List failed: %v", err)
+		t.Fatalf("ListWithMergeState failed: %v", err)
 	}
 	if len(statuses) != 1 {
 		t.Fatalf("expected one worktree, got %#v", statuses)
@@ -173,9 +173,9 @@ func TestList_HonorsConfiguredBaseBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveBaseBranch failed: %v", err)
 	}
-	statuses, err := List(poolDir, resolved)
+	statuses, err := ListWithMergeState(poolDir, func() string { return resolved })
 	if err != nil {
-		t.Fatalf("List failed: %v", err)
+		t.Fatalf("ListWithMergeState failed: %v", err)
 	}
 	if got := statuses[0].Status; got != StatusAvailable {
 		t.Fatalf("status against the configured base = %q, want %q", got, StatusAvailable)
@@ -187,5 +187,71 @@ func TestList_HonorsConfiguredBaseBranch(t *testing.T) {
 	}
 	if reused != wtPath {
 		t.Fatalf("reused %s, want %s", reused, wtPath)
+	}
+}
+
+// The plain listing exists for callers that never act on the difference
+// (`enter`, `return --all`), so it must not pay for the merge-state proof: the
+// same slot that reads unlanded through ListWithMergeState reads available
+// here, which is also how those callers have always seen it.
+func TestList_WithoutMergeStateNeverReportsUnlanded(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	quietListProcesses(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	commitInSlot(t, poolDir, wtPath)
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 || statuses[0].Status != StatusAvailable {
+		t.Fatalf("plain List = %#v, want one available slot", statuses)
+	}
+	if got := listOne(t, poolDir).Status; got != StatusUnlanded {
+		t.Fatalf("ListWithMergeState = %q, want %q", got, StatusUnlanded)
+	}
+}
+
+// The base is resolved at most once per listing and only when a slot reaches
+// the check: a pool with nothing idle and clean costs no resolution at all,
+// and several idle slots share one.
+func TestListWithMergeState_ResolvesBaseLazilyAndOnce(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	quietListProcesses(t)
+
+	if _, err := AcquireLease(repoDir, poolDir, 3, nil, "holder"); err != nil {
+		t.Fatalf("AcquireLease failed: %v", err)
+	}
+	calls := 0
+	count := func() string { calls++; return "" }
+
+	if _, err := ListWithMergeState(poolDir, count); err != nil {
+		t.Fatalf("ListWithMergeState failed: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("base resolved %d times for a pool holding only a lease, want 0", calls)
+	}
+
+	var idle []string
+	for i := 0; i < 2; i++ {
+		wtPath, err := Acquire(repoDir, poolDir, 3, nil)
+		if err != nil {
+			t.Fatalf("Acquire failed: %v", err)
+		}
+		idle = append(idle, wtPath)
+	}
+	for _, wtPath := range idle {
+		clearOwnerReservation(t, poolDir, wtPath)
+	}
+	statuses, err := ListWithMergeState(poolDir, count)
+	if err != nil {
+		t.Fatalf("ListWithMergeState failed: %v", err)
+	}
+	if len(statuses) != 3 || calls != 1 {
+		t.Fatalf("base resolved %d times for %#v, want exactly 1 across two idle slots", calls, statuses)
 	}
 }

@@ -208,7 +208,10 @@ func bulkReturnPreconditions(wt pool.WorktreeStatus) pool.ReleasePreconditions {
 // parked and a later `get` will hand it out. Unlanded is excluded for the same
 // reason it always was (it used to read available): the slot is idle, clean and
 // unowned, so nobody holds it, and a bulk return must not reset commits `get`
-// itself refuses to touch; a named return is the deliberate act. Damaged is excluded because its
+// itself refuses to touch; a named return is the deliberate act. The bulk
+// listing skips the merge-state proof (pool.List), so it sees such a slot as
+// available; the case stays so a switch to pool.ListWithMergeState cannot make
+// this run start resetting it. Damaged is excluded because its
 // marker is missing or unreadable, so neither the detach nor the reset a return
 // performs can be judged safe, and `destroy` - which `status` already spells out
 // for such a slot - is the verb that removes it. So is a slot reported
@@ -260,24 +263,12 @@ func returnableStatus(wt pool.WorktreeStatus) bool {
 // that the automatic safety check cannot free (including a 3.0.0 upgrade
 // quarantine) is counted held and skipped; only a named return releases it.
 func returnHeldWorktrees() error {
-	repoRoot, err := vcs.FindMainRepoRoot()
-	if err != nil {
-		return fmt.Errorf("not in a git or jj repository: %w", err)
-	}
-	cfg, err := config.Load(repoRoot)
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-	poolDir, err := poolDirForRepoRoot(repoRoot)
+	poolDir, err := repositoryPoolDir()
 	if err != nil {
 		return err
 	}
-	configuredBase, err := pool.ResolveBaseBranch(repoRoot, cfg.BaseBranch)
-	if err != nil {
-		configuredBase = ""
-	}
 
-	worktrees, err := pool.List(poolDir, configuredBase)
+	worktrees, err := pool.List(poolDir)
 	if err != nil {
 		return err
 	}

@@ -407,7 +407,7 @@ func TestStaleJJAuthenticationRequiresSignedInventory(t *testing.T) {
 	if len(signed.Worktrees) != 1 {
 		t.Fatalf("signed state entries = %d, want 1", len(signed.Worktrees))
 	}
-	if _, err := List(poolDir, ""); err == nil {
+	if _, err := List(poolDir); err == nil {
 		t.Fatal("expected forged authentication identity to fail closed")
 	}
 	if _, err := os.Stat(authPath); err != nil {
@@ -1491,7 +1491,7 @@ func TestList_RecoversDestroyingWorktreeWhenOwnerIsGone(t *testing.T) {
 		t.Fatalf("WriteState failed: %v", err)
 	}
 
-	statuses, err := List(poolDir, "")
+	statuses, err := List(poolDir)
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -1530,7 +1530,7 @@ func TestList_RecoversDestroyingWorktreeWhenOwnerIdentityDoesNotMatch(t *testing
 		t.Fatalf("WriteState failed: %v", err)
 	}
 
-	statuses, err := List(poolDir, "")
+	statuses, err := List(poolDir)
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -1555,7 +1555,7 @@ func TestList_ShowsReservedWorktreeAsInUse(t *testing.T) {
 		t.Fatalf("Acquire failed: %v", err)
 	}
 
-	statuses, err := List(poolDir, "")
+	statuses, err := List(poolDir)
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -3323,7 +3323,7 @@ func TestList_ShowsLeasedState(t *testing.T) {
 		t.Fatalf("AcquireLease failed: %v", err)
 	}
 
-	statuses, err := List(poolDir, "")
+	statuses, err := List(poolDir)
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -3361,7 +3361,7 @@ func TestHealState_PreservesLease(t *testing.T) {
 		t.Fatalf("WriteState failed: %v", err)
 	}
 
-	statuses, err := List(poolDir, "")
+	statuses, err := List(poolDir)
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -4068,7 +4068,7 @@ func TestList_MarkerlessSlotReportsDamaged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	statuses, err := List(poolDir, "")
+	statuses, err := List(poolDir)
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -4102,7 +4102,7 @@ func TestList_MarkerlessSlotDoesNotInheritEnclosingBranch(t *testing.T) {
 		t.Fatalf("removing the slot marker: %v", err)
 	}
 
-	statuses, err := List(poolDir, "")
+	statuses, err := List(poolDir)
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -4140,7 +4140,7 @@ func TestList_UnreadableMarkerReportsBranchError(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	statuses, err := List(poolDir, "")
+	statuses, err := List(poolDir)
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -4170,7 +4170,7 @@ func TestList_ReportsBranchAndDetached(t *testing.T) {
 	}
 	clearOwnerReservation(t, poolDir, wtPath)
 
-	statuses, err := List(poolDir, "")
+	statuses, err := List(poolDir)
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -4186,7 +4186,7 @@ func TestList_ReportsBranchAndDetached(t *testing.T) {
 
 	runGit(t, wtPath, "switch", "-c", "slot-branch")
 
-	statuses, err = List(poolDir, "")
+	statuses, err = List(poolDir)
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -4327,7 +4327,7 @@ func TestList_ReportsOnlyProcessesReturnWouldTerminate(t *testing.T) {
 	)
 	t.Cleanup(restore)
 
-	statuses, err := List(poolDir, "")
+	statuses, err := List(poolDir)
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -4365,7 +4365,7 @@ func TestList_FallsBackToRawScanWhenFilteringFails(t *testing.T) {
 	)
 	t.Cleanup(restore)
 
-	statuses, err := List(poolDir, "")
+	statuses, err := List(poolDir)
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -4409,7 +4409,7 @@ func TestList_ReportsUnverifiedWhenTheProcessTableCannotBeRead(t *testing.T) {
 
 	var statuses []WorktreeStatus
 	stderr := captureStderr(t, func() {
-		statuses, err = List(poolDir, "")
+		statuses, err = List(poolDir)
 	})
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
@@ -4480,7 +4480,7 @@ func assertSingleStatus(t *testing.T, poolDir, want string) {
 	var statuses []WorktreeStatus
 	var err error
 	captureStderr(t, func() {
-		statuses, err = List(poolDir, "")
+		statuses, err = List(poolDir)
 	})
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
@@ -4514,7 +4514,7 @@ func TestList_ReportsYoureHereWithoutACallerProcess(t *testing.T) {
 	// setupRepo resolves symlinks, so this is the path List will compare against.
 	t.Chdir(wtPath)
 
-	statuses, err := List(poolDir, "")
+	statuses, err := List(poolDir)
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -4572,7 +4572,7 @@ func TestList_ReportsYoureHereThroughASymlinkedPoolPath(t *testing.T) {
 
 	t.Chdir(physicalSlot)
 
-	statuses, err := List(poolDir, "")
+	statuses, err := List(poolDir)
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}

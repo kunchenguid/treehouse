@@ -66,7 +66,7 @@ func TestList_CorruptRecoveryFailsClosedWhenSlotUnreadable(t *testing.T) {
 		}
 	})
 
-	if _, err := List(poolDir, ""); err == nil {
+	if _, err := List(poolDir); err == nil {
 		t.Fatal("List with unreadable corrupt-state recovery slot returned nil error")
 	}
 

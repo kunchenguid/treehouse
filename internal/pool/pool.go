@@ -1197,12 +1197,30 @@ func validateReleasePreconditions(wt WorktreeEntry, preconditions ReleasePrecond
 // invoking shell and the status process itself as tenants of the slot they
 // were merely observing. Those PIDs are gone by the time anyone checks them,
 // which reads as a stale snapshot of real leftover processes.
-// configuredBase is the base branch `get` would resolve for this repository
-// (ResolveBaseBranch's result, or empty to infer the repository default per
-// slot), so the unlanded check below agrees with what `get` will actually
-// reuse.
-func List(poolDir string, configuredBase string) ([]WorktreeStatus, error) {
+//
+// List never judges merge state, so it cannot report StatusUnlanded: callers
+// that only act on held slots (`enter`, `return --all`) would treat an unlanded
+// slot exactly like an available one, and the proof costs several git
+// processes per idle clean slot. `status` uses ListWithMergeState.
+func List(poolDir string) ([]WorktreeStatus, error) {
+	return listWorktrees(poolDir, nil)
+}
+
+// ListWithMergeState is List plus the merge-state proof `get` applies, so an
+// idle, clean slot holding work that is not proven landed reads StatusUnlanded
+// instead of StatusAvailable. configuredBase returns the base branch `get`
+// would resolve for this repository (ResolveBaseBranch's result, or "" to
+// infer the repository default per slot). It is called at most once, and only
+// when some slot reaches the check, so a pool with nothing idle and clean pays
+// no git for it.
+func ListWithMergeState(poolDir string, configuredBase func() string) ([]WorktreeStatus, error) {
+	return listWorktrees(poolDir, configuredBase)
+}
+
+func listWorktrees(poolDir string, configuredBase func() string) ([]WorktreeStatus, error) {
 	var result []WorktreeStatus
+	var base string
+	baseResolved := false
 
 	err := WithStateLock(poolDir, func() error {
 		state, err := ReadState(poolDir)
@@ -1290,8 +1308,13 @@ func List(poolDir string, configuredBase string) ([]WorktreeStatus, error) {
 			default:
 				if dirty, _ := vcs.IsDirty(wt.Path); dirty {
 					ws.Status = StatusDirty
-				} else if !landedOnDefaultBase(wt, configuredBase) {
-					ws.Status = StatusUnlanded
+				} else if configuredBase != nil {
+					if !baseResolved {
+						base, baseResolved = configuredBase(), true
+					}
+					if !landedOnDefaultBase(wt, base) {
+						ws.Status = StatusUnlanded
+					}
 				}
 			}
 			// Damaged is not overlaid. A missing marker is a different kind of
