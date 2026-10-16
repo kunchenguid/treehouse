@@ -515,12 +515,36 @@ func unknownWorktreeNameError(poolDir, name string) error {
 
 func resolveWorktreePath(args []string) (string, error) {
 	if len(args) > 0 {
-		return filepath.Abs(args[0])
+		arg := args[0]
+		if runtime.GOOS == "windows" {
+			home, _ := os.UserHomeDir()
+			arg = windowsReturnPathArg(arg, home)
+		}
+		return filepath.Abs(arg)
 	}
 	if env := os.Getenv("TREEHOUSE_DIR"); env != "" {
 		return filepath.Abs(env)
 	}
 	return os.Getwd()
+}
+
+// windowsReturnPathArg rewrites the two Windows spellings that filepath.Abs
+// cannot resolve by itself into a native drive path. A Git Bash path such as
+// /c/Users/me/repo has no drive, so Abs joins it under the current drive as
+// C:\c\Users\me\repo. The ~\ form is the one treehouse prints in its own
+// "Run 'treehouse return ~\...'" hint, and cmd and PowerShell do not expand
+// "~", so Abs joins it under the working directory. Any other argument, and
+// any argument whose expansion cannot be made, is returned unchanged.
+func windowsReturnPathArg(arg, home string) string {
+	if len(arg) >= 3 && arg[0] == '/' && (arg[2] == '/' || arg[2] == '\\') {
+		if c := arg[1] | 0x20; c >= 'a' && c <= 'z' {
+			return strings.ToUpper(arg[1:2]) + ":" + arg[2:]
+		}
+	}
+	if len(arg) >= 2 && arg[0] == '~' && (arg[1] == '\\' || arg[1] == '/') && home != "" {
+		return filepath.Join(home, arg[2:])
+	}
+	return arg
 }
 
 // returnBaseBranch resolves the configured base branch for the repository that
