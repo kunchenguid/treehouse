@@ -2,6 +2,7 @@ package gitvcs
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -296,81 +297,199 @@ func TestResetWorktreeUsesCommitVerifiedBySafetyCheck(t *testing.T) {
 	}
 }
 
-func TestResetWorktreeToRefRefusesWhenHeadChanged(t *testing.T) {
+func TestResetWorktreeToRefMovesHeadOnEveryRefFormat(t *testing.T) {
+	for _, format := range refFormats {
+		t.Run(format, func(t *testing.T) {
+			base := t.TempDir()
+			repoDir := filepath.Join(base, "repo")
+			wtPath := filepath.Join(base, "worktree")
+			initRepoWithFormat(t, repoDir, refFormatInitFlag(t, format))
+			mustGit(t, repoDir, "worktree", "add", "--detach", wtPath, "main")
+			commitFile(t, repoDir, "advanced.txt", "advance main")
+
+			safe, resetRef, head, err := IsWorktreeSafeToReset(wtPath, "main")
+			if err != nil {
+				t.Fatalf("IsWorktreeSafeToReset: %v", err)
+			}
+			if !safe || resetRef == head {
+				t.Fatalf("expected a safe worktree behind its base, got safe=%v head=%s base=%s", safe, head, resetRef)
+			}
+
+			if err := ResetWorktreeToRef(wtPath, resetRef, head, true); err != nil {
+				t.Fatalf("ResetWorktreeToRef: %v", err)
+			}
+			if got, _ := runGit(wtPath, "rev-parse", "HEAD"); got != resetRef {
+				t.Fatalf("HEAD = %s, want the base %s", got, resetRef)
+			}
+			if status, _ := runGit(wtPath, "status", "--porcelain", "--untracked-files=all"); status != "" {
+				t.Fatalf("expected a clean worktree on the base, got %q", status)
+			}
+		})
+	}
+}
+
+func TestResetWorktreeDetachesWithoutMovingTheCheckedOutBranch(t *testing.T) {
+	for _, format := range refFormats {
+		t.Run(format, func(t *testing.T) {
+			base := t.TempDir()
+			repoDir := filepath.Join(base, "repo")
+			wtPath := filepath.Join(base, "worktree")
+			initRepoWithFormat(t, repoDir, refFormatInitFlag(t, format))
+			mustGit(t, repoDir, "worktree", "add", "-b", "work", wtPath, "main")
+			workTip := commitFile(t, wtPath, "work.txt", "work")
+			mainTip := commitFile(t, repoDir, "advanced.txt", "advance main")
+
+			if err := ResetWorktree(wtPath, "main"); err != nil {
+				t.Fatalf("ResetWorktree: %v", err)
+			}
+			if got, _ := runGit(wtPath, "rev-parse", "HEAD"); got != mainTip {
+				t.Fatalf("HEAD = %s, want main %s", got, mainTip)
+			}
+			if ref, err := runGit(wtPath, "symbolic-ref", "-q", "HEAD"); err == nil {
+				t.Fatalf("expected a detached HEAD, still on %s", ref)
+			}
+			if got, _ := runGit(repoDir, "rev-parse", "work"); got != workTip {
+				t.Fatalf("branch work = %s, want it left at %s", got, workTip)
+			}
+		})
+	}
+}
+
+func TestPreparedHeadUpdateRefusesConcurrentCommitsUntilCommitted(t *testing.T) {
 	base := t.TempDir()
 	repoDir := filepath.Join(base, "repo")
 	wtPath := filepath.Join(base, "worktree")
-
-	mustGit(t, "", "init", "--initial-branch=main", repoDir)
-	mustGit(t, repoDir, "config", "user.email", "test@test.com")
-	mustGit(t, repoDir, "config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("base\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	mustGit(t, repoDir, "add", ".")
-	mustGit(t, repoDir, "commit", "-m", "initial")
+	initRepoWithFormat(t, repoDir, refFormatInitFlag(t, "reftable"))
 	mustGit(t, repoDir, "worktree", "add", "--detach", wtPath, "main")
-
-	safe, resetRef, head, err := IsWorktreeSafeToReset(wtPath, "main")
+	head, err := runGit(wtPath, "rev-parse", "HEAD")
 	if err != nil {
-		t.Fatalf("IsWorktreeSafeToReset: %v", err)
+		t.Fatalf("resolve HEAD: %v", err)
 	}
-	if !safe {
-		t.Fatal("expected worktree at base to be safe to reset")
+	target := commitFile(t, repoDir, "advanced.txt", "advance main")
+
+	update, err := prepareHeadUpdate(wtPath, target, head)
+	if err != nil {
+		t.Fatalf("prepareHeadUpdate: %v", err)
+	}
+	defer update.abort()
+	if _, err := runGit(wtPath, "commit", "--allow-empty", "-m", "concurrent"); err == nil {
+		t.Fatal("expected a commit to be refused while the HEAD update is prepared")
+	}
+	if err := update.commit(); err != nil {
+		t.Fatalf("commit HEAD update: %v", err)
+	}
+	if got, _ := runGit(wtPath, "rev-parse", "HEAD"); got != target {
+		t.Fatalf("HEAD = %s, want %s", got, target)
+	}
+}
+
+// A git older than 2.27 has no update-ref transaction verbs, and until 2.34 the
+// protocol could deadlock; a files-storage reset must not depend on it.
+func TestResetWorktreeToRefOnFilesStorageNeedsNoUpdateRefTransaction(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the git wrapper is a POSIX shell script")
+	}
+	base := t.TempDir()
+	repoDir := filepath.Join(base, "repo")
+	wtPath := filepath.Join(base, "worktree")
+	initRepoWithFormat(t, repoDir, refFormatInitFlag(t, "files"))
+	mustGit(t, repoDir, "worktree", "add", "--detach", wtPath, "main")
+	commitFile(t, repoDir, "advanced.txt", "advance main")
+	safe, resetRef, head, err := IsWorktreeSafeToReset(wtPath, "main")
+	if err != nil || !safe {
+		t.Fatalf("IsWorktreeSafeToReset: safe=%v err=%v", safe, err)
 	}
 
-	// Concurrent committed work after the safety check: HEAD is no longer the
-	// one whose ancestry was verified, so the reset must refuse.
-	if err := os.WriteFile(filepath.Join(wtPath, "unlanded.txt"), []byte("keep\n"), 0o644); err != nil {
+	realGit, err := exec.LookPath("git")
+	if err != nil {
 		t.Fatal(err)
 	}
-	mustGit(t, wtPath, "add", "unlanded.txt")
-	mustGit(t, wtPath, "commit", "-m", "unlanded after check")
-	changed, err := runGit(wtPath, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatalf("resolve changed HEAD: %v", err)
+	binDir := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\nfor a in \"$@\"; do\n  [ \"$a\" = update-ref ] && { echo 'fatal: unknown command: start' >&2; exit 128; }\ndone\nexec '%s' \"$@\"\n", realGit)
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if changed == head {
-		t.Fatal("expected HEAD to change after the concurrent commit")
-	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	if err := ResetWorktreeToRef(wtPath, resetRef, head, true); err == nil {
-		t.Fatal("expected ResetWorktreeToRef to refuse after HEAD changed")
+	if err := ResetWorktreeToRef(wtPath, resetRef, head, true); err != nil {
+		t.Fatalf("ResetWorktreeToRef with a git lacking update-ref transactions: %v", err)
 	}
-	got, err := runGit(wtPath, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatalf("resolve preserved HEAD: %v", err)
+	if got, _ := runGit(wtPath, "rev-parse", "HEAD"); got != resetRef {
+		t.Fatalf("HEAD = %s, want the base %s", got, resetRef)
 	}
-	if got != changed {
-		t.Fatalf("expected unlanded HEAD %s preserved, got %s", changed, got)
+	if status, _ := runGit(wtPath, "status", "--porcelain", "--untracked-files=all"); status != "" {
+		t.Fatalf("expected a clean worktree on the base, got %q", status)
 	}
-	if _, err := os.Stat(filepath.Join(wtPath, "unlanded.txt")); err != nil {
-		t.Fatalf("expected concurrent commit preserved on disk: %v", err)
+}
+
+func TestResetWorktreeToRefRunsNoReferenceTransactionHook(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the hook fixture is a shell script")
+	}
+	for _, format := range refFormats {
+		t.Run(format, func(t *testing.T) {
+			base := t.TempDir()
+			repoDir := filepath.Join(base, "repo")
+			wtPath := filepath.Join(base, "worktree")
+			initRepoWithFormat(t, repoDir, refFormatInitFlag(t, format))
+			mustGit(t, repoDir, "worktree", "add", "--detach", wtPath, "main")
+			commitFile(t, repoDir, "advanced.txt", "advance main")
+			hooksDir, err := runGit(repoDir, "rev-parse", "--path-format=absolute", "--git-path", "hooks")
+			if err != nil {
+				t.Fatalf("resolve hooks dir: %v", err)
+			}
+			if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(hooksDir, "reference-transaction"), []byte("#!/bin/sh\necho ran > hook-ran.txt\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			safe, resetRef, head, err := IsWorktreeSafeToReset(wtPath, "main")
+			if err != nil || !safe {
+				t.Fatalf("IsWorktreeSafeToReset: safe=%v err=%v", safe, err)
+			}
+			if err := ResetWorktreeToRef(wtPath, resetRef, head, true); err != nil {
+				t.Fatalf("ResetWorktreeToRef: %v", err)
+			}
+			if got, _ := runGit(wtPath, "rev-parse", "HEAD"); got != resetRef {
+				t.Fatalf("HEAD = %s, want the base %s", got, resetRef)
+			}
+			if _, err := os.Stat(filepath.Join(wtPath, "hook-ran.txt")); !os.IsNotExist(err) {
+				t.Fatalf("reset ran the reference-transaction hook: %v", err)
+			}
+		})
+	}
+}
+
+func TestResetWorktreeToRefRefusesWhenHeadChanged(t *testing.T) {
+	for _, format := range refFormats {
+		t.Run(format, func(t *testing.T) {
+			wtPath, resetRef, head := setupSafeResetWorktree(t, refFormatInitFlag(t, format))
+
+			// Concurrent committed work after the safety check: HEAD is no longer the
+			// one whose ancestry was verified, so the reset must refuse.
+			changed := commitFile(t, wtPath, "unlanded.txt", "unlanded after check")
+
+			if err := ResetWorktreeToRef(wtPath, resetRef, head, true); err == nil {
+				t.Fatal("expected ResetWorktreeToRef to refuse after HEAD changed")
+			}
+			got, err := runGit(wtPath, "rev-parse", "HEAD")
+			if err != nil {
+				t.Fatalf("resolve preserved HEAD: %v", err)
+			}
+			if got != changed {
+				t.Fatalf("expected unlanded HEAD %s preserved, got %s", changed, got)
+			}
+			if _, err := os.Stat(filepath.Join(wtPath, "unlanded.txt")); err != nil {
+				t.Fatalf("expected concurrent commit preserved on disk: %v", err)
+			}
+		})
 	}
 }
 
 func TestResetWorktreeToRefRefusesWhenHeadLockHeld(t *testing.T) {
-	base := t.TempDir()
-	repoDir := filepath.Join(base, "repo")
-	wtPath := filepath.Join(base, "worktree")
-
-	mustGit(t, "", "init", "--initial-branch=main", repoDir)
-	mustGit(t, repoDir, "config", "user.email", "test@test.com")
-	mustGit(t, repoDir, "config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("base\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	mustGit(t, repoDir, "add", ".")
-	mustGit(t, repoDir, "commit", "-m", "initial")
-	mustGit(t, repoDir, "worktree", "add", "--detach", wtPath, "main")
-
-	safe, resetRef, head, err := IsWorktreeSafeToReset(wtPath, "main")
-	if err != nil {
-		t.Fatalf("IsWorktreeSafeToReset: %v", err)
-	}
-	if !safe {
-		t.Fatal("expected worktree at base to be safe to reset")
-	}
+	wtPath, resetRef, head := setupSafeResetWorktree(t, refFormatInitFlag(t, "files"))
 
 	headPath, err := gitPath(wtPath, "HEAD")
 	if err != nil {
@@ -448,73 +567,70 @@ func TestResetWorktreeToRefRefusesWhenDirtyAfterSafetyCheck(t *testing.T) {
 			},
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			wtPath, resetRef, head := setupSafeResetWorktree(t)
-			keepPath, keepContents := tc.dirty(t, wtPath)
+	for _, format := range refFormats {
+		for _, tc := range cases {
+			t.Run(format+"/"+tc.name, func(t *testing.T) {
+				wtPath, resetRef, head := setupSafeResetWorktree(t, refFormatInitFlag(t, format))
+				keepPath, keepContents := tc.dirty(t, wtPath)
+				err := ResetWorktreeToRef(wtPath, resetRef, head, true)
+				if err == nil {
+					t.Fatal("expected ResetWorktreeToRef to refuse after the tree became dirty")
+				}
+				if !strings.Contains(err.Error(), "became dirty after safety check") {
+					t.Fatalf("expected dirty-after-check error, got %v", err)
+				}
 
-			err := ResetWorktreeToRef(wtPath, resetRef, head, true)
-			if err == nil {
-				t.Fatal("expected ResetWorktreeToRef to refuse after the tree became dirty")
-			}
-			if !strings.Contains(err.Error(), "became dirty after safety check") {
-				t.Fatalf("expected dirty-after-check error, got %v", err)
+				got, err := runGit(wtPath, "rev-parse", "HEAD")
+				if err != nil {
+					t.Fatalf("resolve preserved HEAD: %v", err)
+				}
+				if got != head {
+					t.Fatalf("expected HEAD %s preserved, got %s", head, got)
+				}
+				contents, err := os.ReadFile(keepPath)
+				if err != nil {
+					t.Fatalf("expected concurrent uncommitted work preserved on disk: %v", err)
+				}
+				if string(contents) != keepContents {
+					t.Fatalf("expected %q preserved, got %q", keepContents, contents)
+				}
+			})
+		}
+	}
+}
+
+func TestResetWorktreeToRefDiscardsDirtyWithoutRequireClean(t *testing.T) {
+	for _, format := range refFormats {
+		t.Run(format, func(t *testing.T) {
+			wtPath, resetRef, head := setupSafeResetWorktree(t, refFormatInitFlag(t, format))
+			scratch := filepath.Join(wtPath, "scratch.txt")
+			if err := os.WriteFile(scratch, []byte("discard\n"), 0o644); err != nil {
+				t.Fatal(err)
 			}
 
+			if err := ResetWorktreeToRef(wtPath, resetRef, head, false); err != nil {
+				t.Fatalf("ResetWorktreeToRef without requireClean: %v", err)
+			}
 			got, err := runGit(wtPath, "rev-parse", "HEAD")
 			if err != nil {
-				t.Fatalf("resolve preserved HEAD: %v", err)
+				t.Fatalf("resolve reset HEAD: %v", err)
 			}
-			if got != head {
-				t.Fatalf("expected HEAD %s preserved, got %s", head, got)
+			if got != resetRef {
+				t.Fatalf("reset targeted %s, want %s", got, resetRef)
 			}
-			contents, err := os.ReadFile(keepPath)
-			if err != nil {
-				t.Fatalf("expected concurrent uncommitted work preserved on disk: %v", err)
-			}
-			if string(contents) != keepContents {
-				t.Fatalf("expected %q preserved, got %q", keepContents, contents)
+			if _, err := os.Stat(scratch); !os.IsNotExist(err) {
+				t.Fatal("expected return-path reset to discard uncommitted work")
 			}
 		})
 	}
 }
 
-func TestResetWorktreeToRefDiscardsDirtyWithoutRequireClean(t *testing.T) {
-	wtPath, resetRef, head := setupSafeResetWorktree(t)
-	scratch := filepath.Join(wtPath, "scratch.txt")
-	if err := os.WriteFile(scratch, []byte("discard\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := ResetWorktreeToRef(wtPath, resetRef, head, false); err != nil {
-		t.Fatalf("ResetWorktreeToRef without requireClean: %v", err)
-	}
-	got, err := runGit(wtPath, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatalf("resolve reset HEAD: %v", err)
-	}
-	if got != resetRef {
-		t.Fatalf("reset targeted %s, want %s", got, resetRef)
-	}
-	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
-		t.Fatal("expected return-path reset to discard uncommitted work")
-	}
-}
-
-func setupSafeResetWorktree(t *testing.T) (wtPath, resetRef, head string) {
+func setupSafeResetWorktree(t *testing.T, initFlag string) (wtPath, resetRef, head string) {
 	t.Helper()
 	base := t.TempDir()
 	repoDir := filepath.Join(base, "repo")
 	wtPath = filepath.Join(base, "worktree")
-
-	mustGit(t, "", "init", "--initial-branch=main", repoDir)
-	mustGit(t, repoDir, "config", "user.email", "test@test.com")
-	mustGit(t, repoDir, "config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("base\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	mustGit(t, repoDir, "add", ".")
-	mustGit(t, repoDir, "commit", "-m", "initial")
+	initRepoWithFormat(t, repoDir, initFlag)
 	mustGit(t, repoDir, "worktree", "add", "--detach", wtPath, "main")
 
 	safe, resetRef, head, err := IsWorktreeSafeToReset(wtPath, "main")
@@ -896,7 +1012,7 @@ func TestSeedInventoryRemovesSeedWhoseSourceWasDeleted(t *testing.T) {
 }
 
 func TestResetWorktreeRejectsControlPathSeedInventory(t *testing.T) {
-	worktree, _, _ := setupSafeResetWorktree(t)
+	worktree, _, _ := setupSafeResetWorktree(t, "")
 
 	if err := ResetWorktreeWithSeededPaths(worktree, "main", []string{".git"}); err == nil {
 		t.Fatal("reset accepted a control path as seeded inventory")
@@ -1425,6 +1541,49 @@ func assertGitCheckoutFile(t *testing.T, root, name, want string) {
 	if got := strings.ReplaceAll(string(data), "\r\n", "\n"); got != want {
 		t.Fatalf("%s = %q, want %q", name, data, want)
 	}
+}
+
+// refFormats are the ref storage formats a pooled clone can use; reftable keeps HEAD out of the HEAD file.
+var refFormats = []string{"files", "reftable"}
+
+// refFormatInitFlag pins a repository to format against GIT_DEFAULT_REF_FORMAT; a git without --ref-format only creates files repositories.
+func refFormatInitFlag(t *testing.T, format string) string {
+	t.Helper()
+	initFlag := "--ref-format=" + format
+	if out, err := exec.Command("git", "init", "-q", initFlag, t.TempDir()).CombinedOutput(); err != nil {
+		if format != "files" {
+			t.Skipf("this git cannot create a %s repository: %v: %s", initFlag, err, out)
+		}
+		return ""
+	}
+	return initFlag
+}
+
+func initRepoWithFormat(t *testing.T, repoDir, initFlag string) {
+	t.Helper()
+	args := []string{"init", "--initial-branch=main"}
+	if initFlag != "" {
+		args = append(args, initFlag)
+	}
+	mustGit(t, "", append(args, repoDir)...)
+	mustGit(t, repoDir, "config", "user.email", "test@test.com")
+	mustGit(t, repoDir, "config", "user.name", "Test")
+	commitFile(t, repoDir, "README.md", "initial")
+}
+
+// commitFile commits a new file in dir and returns the resulting HEAD.
+func commitFile(t *testing.T, dir, name, message string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(message+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, dir, "add", name)
+	mustGit(t, dir, "commit", "-m", message)
+	head, err := runGit(dir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve HEAD after commit: %v", err)
+	}
+	return head
 }
 func mustGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
