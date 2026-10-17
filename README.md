@@ -295,7 +295,7 @@ path=$(treehouse get --lease)
 
 It acquires a worktree exactly like `get`, but instead of opening a subshell it marks the worktree **leased** in treehouse's persistent state. By default it prints only the worktree's absolute path to stdout; `--json` prints the lease allocation instead. Every human-facing message goes to stderr, so either output mode stays clean.
 
-An ordinary lease keeps a worktree out of later `get` and `prune`, regardless of whether any process runs inside it, until the lease is explicitly released. Recovered leases have a separate, conservative automatic release path described in [Recovering missing pool state](#recovering-missing-pool-state).
+An ordinary lease keeps a worktree out of later `get` and `prune`, regardless of whether any process runs inside it, until the lease is explicitly released. Recovered leases, and leases that name their holder process, have separate, conservative automatic release paths described in [Recovering missing pool state](#recovering-missing-pool-state) and [Freeing a lease whose holder exited](#freeing-a-lease-whose-holder-exited).
 A bulk `treehouse destroy <pool> --all` never removes it either; only naming its exact path with `treehouse destroy <path> --include-leased --yes` will.
 
 Pass `--lease-holder <label>` (or set `$TREEHOUSE_LEASE_HOLDER`) to record who holds the lease; `treehouse status` then shows it next to the `leased` state.
