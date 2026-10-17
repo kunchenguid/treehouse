@@ -752,9 +752,8 @@ func pruneReturnBase(wt WorktreeEntry, options PruneOptions) string {
 
 // pruneReturnTarget resolves the commit a returned worktree parks on (the
 // requested base, otherwise the repository default) together with the HEAD
-// recorded at the same moment. The safety half of IsWorktreeSafeToReset is not
-// what authorizes the reset - prune's landing proof is - but any error from it
-// still fails closed.
+// recorded at the same moment. Prune's landing proof, not a second merge check
+// against the parking base, authorizes the reset.
 func pruneReturnTarget(worktreePath, base string) (string, string, error) {
 	if base == "" {
 		resolved, err := vcs.DefaultBranchForWorktree(worktreePath)
@@ -763,11 +762,7 @@ func pruneReturnTarget(worktreePath, base string) (string, string, error) {
 		}
 		base = resolved
 	}
-	_, target, head, err := vcs.IsWorktreeSafeToReset(worktreePath, base)
-	if err != nil {
-		return "", "", err
-	}
-	return target, head, nil
+	return vcs.ResetTarget(worktreePath, base)
 }
 
 func analyzePruneCandidate(poolDir string, resolveContext pruneContextResolver, wt WorktreeEntry, options PruneOptions) (PruneWorktree, PruneSkipped, bool, pruneContext, error) {
