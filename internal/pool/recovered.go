@@ -45,8 +45,11 @@ func recoverQuarantinedEntries(poolDir string) error {
 		if reason != "" && !recovered {
 			reason = fmt.Sprintf("its holder process %d exited, but %s", wt.LeaseHolderPID, reason)
 		}
-		if reason == "" {
+		if reason == "" && recovered {
 			releaseEntry(wt)
+			changed = true
+		} else if reason == "" {
+			clearLease(wt)
 			changed = true
 		} else if reason != wt.RecoveryReason {
 			wt.RecoveryReason = reason

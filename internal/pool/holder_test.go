@@ -138,6 +138,50 @@ func TestExitedHolderLeaseIsFreedWhenSafe(t *testing.T) {
 	}
 }
 
+func TestExitedHolderLeaseKeepsSeedInventoryUntilReuseRemovesIt(t *testing.T) {
+	repo, poolDir := setupLocalRepo(t)
+	for name, contents := range map[string]string{
+		".gitignore": "*.seed\n",
+		"local.seed": "secret\n",
+	} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGit(t, repo, "add", ".gitignore")
+	runGit(t, repo, "commit", "-m", "ignore seeds")
+	lease, err := AcquireLeaseInfoWithOptions(repo, poolDir, 1, nil, "agent", AcquireOptions{
+		IncludeManifest: []byte("local.seed\n"),
+		LeaseHolderPID:  int32(os.Getppid()),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := filepath.Join(lease.Path, "local.seed")
+	assertFileContents(t, seed, "secret\n")
+	pid, stamp := exitedHolder(t)
+	setHolder(t, poolDir, lease.Path, pid, stamp)
+
+	if st := statusOf(t, poolDir, lease.Path); st.Status != StatusAvailable {
+		t.Fatalf("status = %+v, want the exited holder's lease freed", st)
+	}
+	if wt := entryFor(t, poolDir, lease.Path); wt.Leased || !wt.SeedInventoryKnown || len(wt.SeededPaths) != 1 || wt.SeededPaths[0] != "local.seed" {
+		t.Fatalf("freed entry reads back as %#v, want its seed inventory kept", wt)
+	}
+	assertFileContents(t, seed, "secret\n")
+
+	reused, err := AcquireWithOptions(repo, poolDir, 1, nil, AcquireOptions{IncludeManifest: []byte{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused != lease.Path {
+		t.Fatalf("acquired %s, want reused %s", reused, lease.Path)
+	}
+	if _, err := os.Stat(seed); !os.IsNotExist(err) {
+		t.Fatalf("reuse left the previous lease's seeded file: %v", err)
+	}
+}
+
 func TestHolderLeasesThatAreNotProvenGoneStayLeased(t *testing.T) {
 	t.Run("live holder", func(t *testing.T) {
 		repo, poolDir := setupLocalRepo(t)
