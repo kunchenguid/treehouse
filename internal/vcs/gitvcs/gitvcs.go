@@ -1310,6 +1310,16 @@ func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error
 // detects a squash merge without treating unrelated target-branch changes as a
 // mismatch.
 func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
+	ancestor, err := IsHeadAncestorOf(worktreePath, ref)
+	if err != nil || ancestor {
+		return ancestor, err
+	}
+	return isHeadContentMergedIntoRef(worktreePath, ref)
+}
+
+// IsHeadAncestorOf reports whether worktreePath's HEAD is reachable from ref by
+// commit ancestry alone, without IsHeadMergedIntoRef's squash fallback.
+func IsHeadAncestorOf(worktreePath, ref string) (bool, error) {
 	cmd := exec.Command("git", "merge-base", "--is-ancestor", "HEAD", ref)
 	cmd.Dir = worktreePath
 	out, err := cmd.CombinedOutput()
@@ -1317,7 +1327,7 @@ func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 		return true, nil
 	}
 	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-		return isHeadContentMergedIntoRef(worktreePath, ref)
+		return false, nil
 	}
 	return false, fmt.Errorf("git merge-base --is-ancestor HEAD %s: %s", ref, strings.TrimSpace(string(out)))
 }

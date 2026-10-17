@@ -375,6 +375,20 @@ func WorktreeAtCommit(worktreePath, commit string) (bool, error) {
 	return gitvcs.WorktreeAtCommit(worktreePath, commit)
 }
 
+// IsHeadAncestorOf reports whether a git worktree's HEAD is reachable from ref
+// by ancestry alone. Like WorktreeAtCommit it is git-only and sits outside the
+// Backend interface: jj merged detection is already ancestry-only.
+func IsHeadAncestorOf(worktreePath, ref string) (bool, error) {
+	name, err := WorktreeBackendNameChecked(worktreePath)
+	if err != nil {
+		return false, err
+	}
+	if name != "git" {
+		return false, fmt.Errorf("ancestry check requires a git worktree")
+	}
+	return gitvcs.IsHeadAncestorOf(worktreePath, ref)
+}
+
 func LocalBranchExists(repoRoot, branch string) (bool, error) {
 	if backendFor(repoRoot).Name() != "git" {
 		return false, fmt.Errorf("local branch lookup requires the git backend")
