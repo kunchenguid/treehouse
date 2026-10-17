@@ -209,7 +209,7 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `return`  | `--all`   | Return every held worktree in this repository's pool; leaves alone slots `status` reports `available` or `damaged`, and a `you're here` slot nobody else holds |
 | `return`  | `--if-lease-id` | Return only if the current lease has the expected per-acquisition identity |
 | `return`  | `--if-lease-holder` | Return only if the current lease has the expected holder |
-| `prune`   | `--yes`   | Delete listed prune candidates instead of doing a dry run |
+| `prune`   | `--yes`   | Delete listed prune candidates (with `--return`, return them) instead of doing a dry run |
 | `prune`   | `--all`   | Sweep every managed pool under the user-level treehouse root |
 | `prune`   | `--global` | Alias for `--all` |
 | `prune`   | `--prune-orphans` | Include backing-repository-missing orphans in prune candidates |
