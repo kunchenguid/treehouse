@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 var (
 	getLease        bool
 	getLeaseHolder  string
+	getHolderPID    int32
 	getBranch       string
 	getJSON         bool
 	getNoFetch      bool
@@ -49,6 +51,13 @@ absolute path to stdout; add --json for the lease identity and metadata. All
 banners go to stderr. A leased worktree is never handed out by a later get and
 never removed by prune, even with no process running inside it, until you release
 it with 'treehouse return <path>'.
+
+Pass --lease-holder-pid with the PID of the long-lived process that keeps the
+worktree (your shell's $$, or the agent that runs treehouse) to let the lease go
+once that process has exited: the next pool command frees it only when nothing
+runs in the worktree, it has no tracked changes, and its HEAD is contained in a
+remote-tracking ref or its base branch. The process must be an ancestor of this
+command. Without it, a lease is only ever released by 'treehouse return'.
 
 Worktrees are cut from the branch treehouse infers from the repository. Pass
 --base to cut this one from a different branch, or set base_branch in
@@ -94,6 +103,7 @@ filters make the pass skip conservatively.`,
 func init() {
 	getCmd.Flags().BoolVar(&getLease, "lease", false, "Durably lease a worktree without opening a subshell; print only its path to stdout")
 	getCmd.Flags().StringVar(&getLeaseHolder, "lease-holder", "", "Optional label recorded as the lease holder (defaults to $TREEHOUSE_LEASE_HOLDER)")
+	getCmd.Flags().Int32Var(&getHolderPID, "lease-holder-pid", 0, "PID of the long-lived process holding the lease, an ancestor of this command; the lease is freed once it exits and the worktree is safe (defaults to $TREEHOUSE_LEASE_HOLDER_PID)")
 	getCmd.Flags().BoolVar(&getJSON, "json", false, "Print lease allocation as JSON (requires --lease)")
 	getCmd.Flags().BoolVar(&getNoFetch, "no-fetch", false, "Skip fetching origin before acquiring; use existing local refs")
 	getCmd.Flags().StringVarP(&getBranch, "branch", "b", "", "Create and check out a new Git branch at the acquired commit (fails if it already exists)")
@@ -114,6 +124,14 @@ func getRunE(cmd *cobra.Command, args []string) error {
 	}
 	if getJSON && !getLease {
 		return fmt.Errorf("--json requires --lease")
+	}
+	if cmd.Flags().Changed("lease-holder-pid") {
+		if !getLease {
+			return fmt.Errorf("--lease-holder-pid requires --lease")
+		}
+		if getHolderPID <= 0 {
+			return fmt.Errorf("invalid lease holder PID %d", getHolderPID)
+		}
 	}
 
 	var manifest []byte
@@ -300,6 +318,14 @@ func getLeaseRunE(repoRoot, poolDir string, cfg config.Config, options pool.Acqu
 	if holder == "" {
 		holder = os.Getenv("TREEHOUSE_LEASE_HOLDER")
 	}
+	options.LeaseHolderPID = getHolderPID
+	if options.LeaseHolderPID == 0 {
+		pid, err := leaseHolderPIDFromEnv()
+		if err != nil {
+			return err
+		}
+		options.LeaseHolderPID = pid
+	}
 
 	lease, err := pool.AcquireLeaseInfoWithOptions(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate, holder, options)
 	if err != nil {
@@ -314,6 +340,21 @@ func getLeaseRunE(repoRoot, poolDir string, cfg config.Config, options pool.Acqu
 	// The bare path is the only thing on stdout, so callers can capture it.
 	fmt.Fprintln(os.Stdout, lease.Path)
 	return nil
+}
+
+// leaseHolderPIDFromEnv reads $TREEHOUSE_LEASE_HOLDER_PID, which a harness
+// sets once so every get --lease its agent runs names the agent as holder.
+// Unset or empty declares no holder; anything else must be a positive PID.
+func leaseHolderPIDFromEnv() (int32, error) {
+	value := os.Getenv("TREEHOUSE_LEASE_HOLDER_PID")
+	if value == "" {
+		return 0, nil
+	}
+	pid, err := strconv.ParseInt(value, 10, 32)
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("invalid TREEHOUSE_LEASE_HOLDER_PID %q: want the PID of the process holding the lease", value)
+	}
+	return int32(pid), nil
 }
 
 // killLingeringProcesses terminates any process whose cwd is within the given

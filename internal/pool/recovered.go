@@ -7,12 +7,19 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/treehouse/v3/internal/process"
 	"github.com/kunchenguid/treehouse/v3/internal/vcs"
 )
 
+// holderLiveness judges a lease's declared holder process.
+var holderLiveness = process.IdentityLiveness
+
 // recoverQuarantinedEntries runs under the state lock before every pool
-// operation, so a recovered entry proven safe is freed whichever command runs
-// next. An unreadable state is left for the operation itself to report.
+// operation, so a recovered entry, or a lease whose declared holder process is
+// proven gone, is freed whichever command runs next once recoverSafeEntry
+// proves the slot safe. A live holder, a lease without a declared holder, and
+// a holder whose liveness cannot be read all keep the lease untouched. An
+// unreadable state is left for the operation itself to report.
 func recoverQuarantinedEntries(poolDir string) error {
 	state, err := ReadState(poolDir)
 	if err != nil {
@@ -21,13 +28,23 @@ func recoverQuarantinedEntries(poolDir string) error {
 	changed := false
 	for i := range state.Worktrees {
 		wt := &state.Worktrees[i]
-		if !wt.Leased || wt.LeaseHolder != RecoveredLeaseHolder {
+		if !wt.Leased {
+			continue
+		}
+		recovered := wt.LeaseHolder == RecoveredLeaseHolder
+		if !recovered && wt.LeaseHolderPID == 0 {
 			continue
 		}
 		if _, err := os.Stat(wt.Path); err != nil {
 			continue
 		}
+		if !recovered && holderLiveness(wt.LeaseHolderPID, wt.LeaseHolderStart) != process.LivenessGone {
+			continue
+		}
 		reason := recoverSafeEntry(poolDir, wt)
+		if reason != "" && !recovered {
+			reason = fmt.Sprintf("its holder process %d exited, but %s", wt.LeaseHolderPID, reason)
+		}
 		if reason == "" {
 			releaseEntry(wt)
 			changed = true
@@ -42,12 +59,13 @@ func recoverQuarantinedEntries(poolDir string) error {
 	return WriteState(poolDir, state)
 }
 
-// recoverSafeEntry proves a 3.0.0-style recovered slot safe to free: nothing,
-// including the caller and its ancestors, uses it, it has no tracked edits,
-// including inside submodules or behind skip-worktree or assume-unchanged,
-// and its HEAD is safely reachable. Untracked files are moved into a kept
-// backup first where the platform supports it. It returns "" when the slot may
-// be freed, and otherwise why it stays quarantined.
+// recoverSafeEntry proves a 3.0.0-style recovered slot, or one whose lease
+// holder is gone, safe to free: nothing, including the caller and its
+// ancestors, uses it, it has no tracked edits, including inside submodules or
+// behind skip-worktree or assume-unchanged, and its HEAD is safely reachable.
+// Untracked files are moved into a kept backup first where the platform
+// supports it. It returns "" when the slot may be freed, and otherwise why it
+// stays quarantined.
 func recoverSafeEntry(poolDir string, wt *WorktreeEntry) string {
 	if wt.RecoveryError != "" {
 		return "its VCS marker could not be read, so it cannot be verified automatically"

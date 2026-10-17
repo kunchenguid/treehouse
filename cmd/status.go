@@ -35,6 +35,7 @@ type statusJSONWorktree struct {
 	Flavor         string              `json:"flavor,omitempty"`
 	LeaseID        string              `json:"lease_id"`
 	LeaseHolder    string              `json:"lease_holder"`
+	LeaseHolderPID int32               `json:"lease_holder_pid,omitempty"`
 	LeasedAt       *time.Time          `json:"leased_at"`
 	Processes      []statusJSONProcess `json:"processes"`
 }
@@ -116,11 +117,20 @@ var statusCmd = &cobra.Command{
 			if wt.BranchErr != "" {
 				line += yellow(fmt.Sprintf("  (branch unreadable: %s)", wt.BranchErr))
 			}
-			if wt.Status == pool.StatusLeased && wt.LeaseHolder != "" {
-				line += fmt.Sprintf("  (held by %s)", wt.LeaseHolder)
+			if wt.Status == pool.StatusLeased {
+				switch {
+				case wt.LeaseHolder != "" && wt.LeaseHolderPID != 0:
+					line += fmt.Sprintf("  (held by %s, pid %d)", wt.LeaseHolder, wt.LeaseHolderPID)
+				case wt.LeaseHolder != "":
+					line += fmt.Sprintf("  (held by %s)", wt.LeaseHolder)
+				case wt.LeaseHolderPID != 0:
+					line += fmt.Sprintf("  (held by pid %d)", wt.LeaseHolderPID)
+				}
 			}
 			if wt.LeaseHolder == pool.RecoveredLeaseHolder {
 				line += yellow(fmt.Sprintf("  (recovery held: %s; inspect it, then free it with: treehouse return %s)", wt.RecoveryReason, quoteReturnPath(wt.Path)))
+			} else if wt.RecoveryReason != "" {
+				line += yellow(fmt.Sprintf("  (kept leased: %s; inspect it, then free it with: treehouse return %s)", wt.RecoveryReason, quoteReturnPath(wt.Path)))
 			}
 			if wt.RecoveryBackup != "" {
 				line += yellow(fmt.Sprintf("  (recovered untracked files kept in %s)", ui.PrettyPath(wt.RecoveryBackup)))
@@ -188,6 +198,7 @@ func writeStatusJSON(worktrees []pool.WorktreeStatus) error {
 			Flavor:         wt.Flavor,
 			LeaseID:        wt.LeaseID,
 			LeaseHolder:    wt.LeaseHolder,
+			LeaseHolderPID: wt.LeaseHolderPID,
 			Processes:      make([]statusJSONProcess, 0, len(wt.Processes)),
 		}
 		if !wt.LeasedAt.IsZero() {

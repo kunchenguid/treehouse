@@ -49,6 +49,8 @@ type WorktreeStatus struct {
 	LeaseHolder string
 	// LeasedAt records when the current lease was acquired.
 	LeasedAt time.Time
+	// LeaseHolderPID is the process declared as the lease holder, or 0.
+	LeaseHolderPID int32
 	// Branch is the branch this slot currently has checked out. It is empty
 	// for a detached HEAD (reported separately as Detached), for a jj slot,
 	// for a markerless slot, and for a slot whose branch could not be read
@@ -81,6 +83,9 @@ type LeaseInfo struct {
 	LeaseID     string    `json:"lease_id"`
 	LeaseHolder string    `json:"lease_holder"`
 	LeasedAt    time.Time `json:"leased_at"`
+	// LeaseHolderPID is the process declared as the lease holder; omitted for
+	// a lease without one.
+	LeaseHolderPID int32 `json:"lease_holder_pid,omitempty"`
 	// BaseBranch is the branch this acquisition was cut from, explicit or
 	// inferred, and is never persisted: it describes one acquisition, and the
 	// next reset resolves the branch again. Acquisition always populates it,
@@ -121,6 +126,12 @@ type AcquireOptions struct {
 	// APFSSharing opts in to tracked-file copy-on-write sharing for fresh Git
 	// slots only, before hooks and publication. Reuse and return never run it.
 	APFSSharing bool
+	// LeaseHolderPID declares the long-lived process that holds a lease, so
+	// the lease can be freed once that process is proven gone and the slot
+	// is safe. It must be an ancestor of the calling process (see
+	// process.VerifyHolder) and is only valid for a lease acquisition. Zero
+	// declares none, and such a lease is only ever released by return.
+	LeaseHolderPID int32
 }
 
 // acquireOptions controls how Acquire reserves the worktree it hands out.
@@ -144,6 +155,10 @@ type acquireOptions struct {
 	lease bool
 	// leaseHolder is an optional label stored with a lease.
 	leaseHolder string
+	// holderPID is the declared lease holder process, and holderStart its
+	// verified process.StartStamp.
+	holderPID   int32
+	holderStart int64
 	// hookStdout/hookStderr receive post-create hook output. Lease mode routes
 	// hook stdout to stderr so it cannot contaminate machine-readable CLI output.
 	hookStdout io.Writer
@@ -167,6 +182,7 @@ func AcquireWithOptions(repoRoot, poolDir string, poolSize int, postCreate []str
 		includeManifest: options.IncludeManifest,
 		apfsSharing:     options.APFSSharing,
 		uniqueLeaf:      options.UniqueLeaf,
+		holderPID:       options.LeaseHolderPID,
 		hookStdout:      os.Stdout,
 		hookStderr:      os.Stderr,
 	})
@@ -201,6 +217,7 @@ func AcquireLeaseInfoWithOptions(repoRoot, poolDir string, poolSize int, postCre
 		uniqueLeaf:      options.UniqueLeaf,
 		lease:           true,
 		leaseHolder:     holder,
+		holderPID:       options.LeaseHolderPID,
 		hookStdout:      os.Stderr,
 		hookStderr:      os.Stderr,
 	})
@@ -384,6 +401,18 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		if err := vcs.ValidateBranchName(repoRoot, opts.branch); err != nil {
 			return LeaseInfo{}, fmt.Errorf("invalid branch %q: %w", opts.branch, err)
 		}
+	}
+	// Verified before anything touches the pool, and read once: the start
+	// recorded is the one proven to belong to an ancestor of this process.
+	if opts.holderPID != 0 {
+		if !opts.lease {
+			return LeaseInfo{}, fmt.Errorf("a lease holder process can only be declared for a lease")
+		}
+		start, err := process.VerifyHolder(opts.holderPID)
+		if err != nil {
+			return LeaseInfo{}, err
+		}
+		opts.holderStart = start
 	}
 
 	// Said out loud rather than resolved silently: a template names the leaf
@@ -817,11 +846,12 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 
 func leaseInfoFromEntry(wt WorktreeEntry, baseBranch string) LeaseInfo {
 	return LeaseInfo{
-		Path:        wt.Path,
-		LeaseID:     wt.LeaseID,
-		LeaseHolder: wt.LeaseHolder,
-		LeasedAt:    wt.LeasedAt,
-		BaseBranch:  baseBranch,
+		Path:           wt.Path,
+		LeaseID:        wt.LeaseID,
+		LeaseHolder:    wt.LeaseHolder,
+		LeasedAt:       wt.LeasedAt,
+		LeaseHolderPID: wt.LeaseHolderPID,
+		BaseBranch:     baseBranch,
 	}
 }
 
@@ -891,6 +921,8 @@ func markAcquired(wt *WorktreeEntry, opts acquireOptions) error {
 		wt.LeaseID = leaseID
 		wt.LeaseHolder = opts.leaseHolder
 		wt.LeasedAt = time.Now()
+		wt.LeaseHolderPID = opts.holderPID
+		wt.LeaseHolderStart = opts.holderStart
 		// A lease is process-independent, so it carries no owner reservation.
 		wt.OwnerPID = 0
 		wt.OwnerStartedAt = 0
@@ -1232,6 +1264,7 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 				ws.LeaseID = wt.LeaseID
 				ws.LeaseHolder = wt.LeaseHolder
 				ws.LeasedAt = wt.LeasedAt
+				ws.LeaseHolderPID = wt.LeaseHolderPID
 			case owned:
 				ws.Status = StatusInUse
 			case scanErr != nil:
@@ -1453,6 +1486,8 @@ func clearLease(wt *WorktreeEntry) {
 	wt.LeaseID = ""
 	wt.LeaseHolder = ""
 	wt.LeasedAt = time.Time{}
+	wt.LeaseHolderPID = 0
+	wt.LeaseHolderStart = 0
 	wt.RecoveryReason = ""
 }
 
