@@ -91,13 +91,10 @@ func TestAcquireLeaseRecordsVerifiedHolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lease.LeaseHolderPID != parent {
-		t.Fatalf("lease holder PID = %d, want %d", lease.LeaseHolderPID, parent)
-	}
 	if wt := entryFor(t, poolDir, lease.Path); wt.LeaseHolderPID != parent || wt.LeaseHolderStart != want {
 		t.Fatalf("recorded holder = %d/%d, want %d/%d", wt.LeaseHolderPID, wt.LeaseHolderStart, parent, want)
 	}
-	if st := statusOf(t, poolDir, lease.Path); st.Status != StatusLeased || st.LeaseHolderPID != parent {
+	if st := statusOf(t, poolDir, lease.Path); st.Status != StatusLeased || st.LeaseID != lease.LeaseID {
 		t.Fatalf("status = %+v", st)
 	}
 }
@@ -132,7 +129,7 @@ func TestHolderPIDRequiresALease(t *testing.T) {
 func TestExitedHolderLeaseIsFreedWhenSafe(t *testing.T) {
 	_, poolDir, path := exitedHolderFixture(t)
 	for range 2 {
-		if st := statusOf(t, poolDir, path); st.Status != StatusAvailable || st.LeaseID != "" || st.LeaseHolderPID != 0 || st.RecoveryReason != "" {
+		if st := statusOf(t, poolDir, path); st.Status != StatusAvailable || st.LeaseID != "" || st.RecoveryReason != "" {
 			t.Fatalf("status = %+v", st)
 		}
 	}

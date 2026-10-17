@@ -16,14 +16,12 @@ type holderStatusResult struct {
 	Path           string `json:"path"`
 	Status         string `json:"status"`
 	LeaseID        string `json:"lease_id"`
-	LeaseHolderPID int32  `json:"lease_holder_pid"`
 	RecoveryReason string `json:"recovery_reason"`
 }
 
 type holderLeaseResult struct {
-	Path           string `json:"path"`
-	LeaseID        string `json:"lease_id"`
-	LeaseHolderPID int32  `json:"lease_holder_pid"`
+	Path    string `json:"path"`
+	LeaseID string `json:"lease_id"`
 }
 
 type shellLease struct {
@@ -69,11 +67,37 @@ func holderStatus(t *testing.T, repoDir, homeDir string) []holderStatusResult {
 	return statuses
 }
 
+// recordedHolderPID reads the holder PID persisted for the slot at path from
+// the pool state file, the only place the holder identity is recorded.
+func recordedHolderPID(t *testing.T, path string) int32 {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(path)), "treehouse-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state struct {
+		Worktrees []struct {
+			Path           string `json:"path"`
+			LeaseHolderPID int32  `json:"lease_holder_pid"`
+		} `json:"worktrees"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatalf("state file %q: %v", data, err)
+	}
+	for _, wt := range state.Worktrees {
+		if wt.Path == path {
+			return wt.LeaseHolderPID
+		}
+	}
+	t.Fatalf("state file has no entry for %s:\n%s", path, data)
+	return 0
+}
+
 func TestGetLeaseFromAnExitedHolderIsFreedByTheNextCommand(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	lease := leaseFromExitingShell(t, repoDir, homeDir, ":")
 	statuses := holderStatus(t, repoDir, homeDir)
-	if len(statuses) != 1 || statuses[0].Path != lease.Path || statuses[0].Status != "available" || statuses[0].LeaseID != "" || statuses[0].LeaseHolderPID != 0 {
+	if len(statuses) != 1 || statuses[0].Path != lease.Path || statuses[0].Status != "available" || statuses[0].LeaseID != "" || recordedHolderPID(t, lease.Path) != 0 {
 		t.Fatalf("status after the holder exited = %+v", statuses)
 	}
 	path, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease")
@@ -87,35 +111,23 @@ func TestGetLeaseHolderStillRunningKeepsTheLease(t *testing.T) {
 	// The test process starts treehouse, so it is the caller's parent and
 	// stays alive for the whole test.
 	self := strconv.Itoa(os.Getpid())
-	for name, args := range map[string]struct {
-		flags []string
-		env   []string
-	}{
-		"flag":        {flags: []string{"--lease-holder-pid", self}},
-		"environment": {env: []string{"TREEHOUSE_LEASE_HOLDER_PID=" + self}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			out, stderr, code := runTreehouse(t, repoDir, homeDir, args.env, append([]string{"get", "--lease", "--json"}, args.flags...)...)
-			if code != 0 {
-				t.Fatalf("get --lease failed (code %d): %s", code, stderr)
-			}
-			var lease holderLeaseResult
-			if err := json.Unmarshal([]byte(out), &lease); err != nil {
-				t.Fatal(err)
-			}
-			if lease.LeaseHolderPID != int32(os.Getpid()) {
-				t.Fatalf("lease holder PID = %d, want %s", lease.LeaseHolderPID, self)
-			}
-			for _, st := range holderStatus(t, repoDir, homeDir) {
-				if st.Path == lease.Path && (st.Status != "leased" || st.LeaseID != lease.LeaseID || st.LeaseHolderPID != lease.LeaseHolderPID) {
-					t.Fatalf("status = %+v, want lease %+v kept", st, lease)
-				}
-			}
-			human, _, _ := runTreehouse(t, repoDir, homeDir, nil, "status")
-			if !strings.Contains(human, "pid "+self) {
-				t.Fatalf("status does not show the holder PID:\n%s", human)
-			}
-		})
+	out, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease", "--json", "--lease-holder-pid", self)
+	if code != 0 {
+		t.Fatalf("get --lease failed (code %d): %s", code, stderr)
+	}
+	var lease holderLeaseResult
+	if err := json.Unmarshal([]byte(out), &lease); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "lease_holder_pid") {
+		t.Fatalf("get --lease --json exposes the holder PID: %s", out)
+	}
+	if got := recordedHolderPID(t, lease.Path); got != int32(os.Getpid()) {
+		t.Fatalf("recorded holder PID = %d, want %s", got, self)
+	}
+	statuses := holderStatus(t, repoDir, homeDir)
+	if len(statuses) != 1 || statuses[0].Path != lease.Path || statuses[0].Status != "leased" || statuses[0].LeaseID != lease.LeaseID {
+		t.Fatalf("status = %+v, want lease %+v kept", statuses, lease)
 	}
 }
 
@@ -128,7 +140,7 @@ func TestGetLeaseWithoutHolderPIDIsNeverFreedAutomatically(t *testing.T) {
 		t.Fatalf("get --lease: %v %s", err, out)
 	}
 	statuses := holderStatus(t, repoDir, homeDir)
-	if len(statuses) != 1 || statuses[0].Status != "leased" || statuses[0].LeaseHolderPID != 0 {
+	if len(statuses) != 1 || statuses[0].Status != "leased" || recordedHolderPID(t, statuses[0].Path) != 0 {
 		t.Fatalf("status = %+v", statuses)
 	}
 }
@@ -137,7 +149,7 @@ func TestExitedHolderLeaseOnUnsafeSlotIsKeptWithAReason(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	lease := leaseFromExitingShell(t, repoDir, homeDir, `echo edit >> "$p/README.md"`)
 	statuses := holderStatus(t, repoDir, homeDir)
-	if len(statuses) != 1 || statuses[0].Status != "leased" || statuses[0].LeaseHolderPID != int32(lease.ShellPID) ||
+	if len(statuses) != 1 || statuses[0].Status != "leased" || recordedHolderPID(t, lease.Path) != int32(lease.ShellPID) ||
 		!strings.Contains(statuses[0].RecoveryReason, "holder process "+strconv.Itoa(lease.ShellPID)+" exited") ||
 		!strings.Contains(statuses[0].RecoveryReason, "tracked changes") {
 		t.Fatalf("status = %+v", statuses)
@@ -162,17 +174,16 @@ func TestLeaseHolderPIDIsRefusedWhenItCannotBeHonored(t *testing.T) {
 		_ = stranger.Wait()
 	})
 	for name, tc := range map[string]struct {
-		env  []string
 		args []string
 		want string
 	}{
 		"without --lease":           {args: []string{"get", "--lease-holder-pid", strconv.Itoa(os.Getpid())}, want: "requires --lease"},
-		"not a number":              {args: []string{"get", "--lease"}, env: []string{"TREEHOUSE_LEASE_HOLDER_PID=abc"}, want: "TREEHOUSE_LEASE_HOLDER_PID"},
+		"not a number":              {args: []string{"get", "--lease", "--lease-holder-pid", "abc"}, want: "invalid argument"},
 		"not an ancestor":           {args: []string{"get", "--lease", "--lease-holder-pid", strconv.Itoa(stranger.Process.Pid)}, want: "not an ancestor"},
 		"zero names no holder here": {args: []string{"get", "--lease", "--lease-holder-pid", "0"}, want: "invalid lease holder PID"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, stderr, code := runTreehouse(t, repoDir, homeDir, tc.env, tc.args...)
+			out, stderr, code := runTreehouse(t, repoDir, homeDir, nil, tc.args...)
 			if code == 0 || !strings.Contains(stderr, tc.want) {
 				t.Fatalf("code %d, stdout %q, stderr %q; want a refusal mentioning %q", code, out, stderr, tc.want)
 			}

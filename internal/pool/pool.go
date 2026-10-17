@@ -49,8 +49,6 @@ type WorktreeStatus struct {
 	LeaseHolder string
 	// LeasedAt records when the current lease was acquired.
 	LeasedAt time.Time
-	// LeaseHolderPID is the process declared as the lease holder, or 0.
-	LeaseHolderPID int32
 	// Branch is the branch this slot currently has checked out. It is empty
 	// for a detached HEAD (reported separately as Detached), for a jj slot,
 	// for a markerless slot, and for a slot whose branch could not be read
@@ -83,9 +81,6 @@ type LeaseInfo struct {
 	LeaseID     string    `json:"lease_id"`
 	LeaseHolder string    `json:"lease_holder"`
 	LeasedAt    time.Time `json:"leased_at"`
-	// LeaseHolderPID is the process declared as the lease holder; omitted for
-	// a lease without one.
-	LeaseHolderPID int32 `json:"lease_holder_pid,omitempty"`
 	// BaseBranch is the branch this acquisition was cut from, explicit or
 	// inferred, and is never persisted: it describes one acquisition, and the
 	// next reset resolves the branch again. Acquisition always populates it,
@@ -846,12 +841,11 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 
 func leaseInfoFromEntry(wt WorktreeEntry, baseBranch string) LeaseInfo {
 	return LeaseInfo{
-		Path:           wt.Path,
-		LeaseID:        wt.LeaseID,
-		LeaseHolder:    wt.LeaseHolder,
-		LeasedAt:       wt.LeasedAt,
-		LeaseHolderPID: wt.LeaseHolderPID,
-		BaseBranch:     baseBranch,
+		Path:        wt.Path,
+		LeaseID:     wt.LeaseID,
+		LeaseHolder: wt.LeaseHolder,
+		LeasedAt:    wt.LeasedAt,
+		BaseBranch:  baseBranch,
 	}
 }
 
@@ -1264,7 +1258,6 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 				ws.LeaseID = wt.LeaseID
 				ws.LeaseHolder = wt.LeaseHolder
 				ws.LeasedAt = wt.LeasedAt
-				ws.LeaseHolderPID = wt.LeaseHolderPID
 			case owned:
 				ws.Status = StatusInUse
 			case scanErr != nil:
