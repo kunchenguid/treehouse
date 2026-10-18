@@ -105,7 +105,7 @@ never touched. --return cannot be combined with --prune-orphans.`,
 }
 
 func init() {
-	pruneCmd.Flags().BoolVar(&pruneYes, "yes", false, "Delete listed prune candidates instead of doing a dry run")
+	pruneCmd.Flags().BoolVar(&pruneYes, "yes", false, "Delete listed prune candidates (with --return, return them) instead of doing a dry run")
 	pruneCmd.Flags().BoolVar(&pruneAll, "all", false, "Sweep every managed pool under the user-level treehouse root")
 	pruneCmd.Flags().BoolVar(&pruneGlobal, "global", false, "Alias for --all")
 	pruneCmd.Flags().BoolVar(&pruneOrphans, "prune-orphans", false, "Include backing-repository-missing orphaned worktrees in prune candidates")

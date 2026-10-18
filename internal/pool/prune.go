@@ -661,6 +661,8 @@ func executePruneReturn(poolDir string, plan prunePlan, options PruneOptions) (P
 	return result, nil
 }
 
+var resetPruneReturnWorktree = vcs.ResetWorktreeToRefWithSeededPaths
+
 // returnPruneCandidate re-proves one planned candidate and, when it still
 // qualifies, resets it onto the base it parks on and releases its entry the
 // way 'treehouse return' does: seeded ignored files are removed through the
@@ -693,7 +695,7 @@ func returnPruneCandidate(poolDir string, context pruneContext, wt *WorktreeEntr
 	if !wt.SeedInventoryKnown {
 		seededPaths = nil
 	}
-	if err := vcs.ResetWorktreeToRefWithSeededPaths(wt.Path, target, head, true, seededPaths); err != nil {
+	if err := resetPruneReturnWorktree(wt.Path, target, head, true, seededPaths); err != nil {
 		return worktree, newPruneSkipped(wt.Name, wt.Path, pruneSkipReturnFailed, "worktree changed or could not be reset", err.Error()), true
 	}
 	wt.BaseBranch = parkBase

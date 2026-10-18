@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/kunchenguid/treehouse/v3/internal/vcs"
@@ -448,6 +449,70 @@ func TestPruneReturn_RechecksSlotThatGainedWorkAfterPlanning(t *testing.T) {
 	}
 	assertUntouched(t, f, result, head)
 	assertFileContents(t, filepath.Join(f.wtPath, "late.txt"), "late work\n")
+}
+
+// The reset runs after the under-lock landing proof, outside any lock a
+// worktree process honors; a commit or an edit that lands in that window must
+// make the reset refuse rather than discard work nothing proved landed.
+func TestPruneReturn_RefusesResetAfterLateWork(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		work func(t *testing.T, wtPath string)
+		file string
+		want string
+	}{
+		{
+			name: "new commit",
+			work: func(t *testing.T, wtPath string) {
+				if err := os.WriteFile(filepath.Join(wtPath, "late.txt"), []byte("late commit\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, wtPath, "add", "late.txt")
+				runGit(t, wtPath, "commit", "-m", "late commit")
+			},
+			file: "late.txt",
+			want: "late commit\n",
+		},
+		{
+			name: "dirtied tracked file",
+			work: func(t *testing.T, wtPath string) {
+				if err := os.WriteFile(filepath.Join(wtPath, "feature.txt"), []byte("late edit\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			file: "feature.txt",
+			want: "late edit\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newWorkedSlot(t)
+			landBySquash(t, f)
+			before := slotEntry(t, f.poolDir, f.wtPath)
+
+			var head string
+			origReset := resetPruneReturnWorktree
+			resetPruneReturnWorktree = func(worktreePath, ref, expectedHead string, requireClean bool, seededPaths []string) error {
+				tc.work(t, worktreePath)
+				head = gitOut(t, worktreePath, "rev-parse", "HEAD")
+				return origReset(worktreePath, ref, expectedHead, requireClean, seededPaths)
+			}
+			t.Cleanup(func() { resetPruneReturnWorktree = origReset })
+
+			result := pruneReturn(t, f, false)
+			if head == "" {
+				t.Fatalf("reset was never reached, got %#v", result)
+			}
+			if !hasSkippedCategory(result.Skipped, f.wtPath, pruneSkipReturnFailed) {
+				t.Fatalf("expected return failed skip, got %#v", result.Skipped)
+			}
+			assertUntouched(t, f, result, head)
+			assertFileContents(t, filepath.Join(f.wtPath, tc.file), tc.want)
+			assertFileContents(t, filepath.Join(f.wtPath, filepath.FromSlash(pruneReturnDependency)), "module.exports = 1\n")
+			if after := slotEntry(t, f.poolDir, f.wtPath); !reflect.DeepEqual(after, before) {
+				t.Fatalf("refused slot entry must not be released, before=%#v after=%#v", before, after)
+			}
+		})
+	}
 }
 
 func TestPruneReturn_RechecksSlotLeasedAfterPlanning(t *testing.T) {
