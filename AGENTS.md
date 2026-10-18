@@ -34,7 +34,7 @@ All code must work on Windows:
 - Use `filepath` helpers, never a hardcoded `/` separator.
 - Do not assume `/bin/sh` or `$SHELL`; follow `internal/shell/shell.go` (`%COMSPEC%` on Windows).
 - Isolate Unix-only syscalls behind `_unix.go`/`_windows.go` build tags (see `internal/pool/lock_*.go`).
-- Use `gopsutil` for process data, not platform-specific process APIs.
+- Use `gopsutil` for process data, not platform-specific process APIs. Exception: holder identity in `internal/process/identity_*` reads Linux `/proc/<pid>/stat` start ticks and uses `kill(pid, 0)` for existence, because gopsutil's Linux `CreateTime` moves with wall-clock steps (see the holder entry in docs/design.md).
 
 ## Contribution gate
 
