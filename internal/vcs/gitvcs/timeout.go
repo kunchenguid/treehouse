@@ -27,6 +27,9 @@ var gitTimeoutWarnings io.Writer = os.Stderr
 
 // gitWaitDelay caps how long Wait blocks on output pipes after the deadline
 // kills git, since a hook or credential helper it spawned can keep them open.
+// It is armed only at the deadline: exec starts the WaitDelay timer when git
+// exits normally too, which would fail a successful command whose hook left a
+// child holding a pipe.
 var gitWaitDelay = 5 * time.Second
 
 // gitTimeout is read once per process so an unparsable value warns once
@@ -71,7 +74,10 @@ func newGitCmd(dir string, args ...string) *gitCmd {
 		ctx, cancel = context.WithTimeout(context.Background(), timeout)
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.WaitDelay = gitWaitDelay
+	cmd.Cancel = func() error {
+		cmd.WaitDelay = gitWaitDelay
+		return cmd.Process.Kill()
+	}
 	if dir != "" {
 		cmd.Dir = dir
 	}

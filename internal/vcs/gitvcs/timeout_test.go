@@ -139,3 +139,20 @@ func TestTimedOutLsRemoteIsOriginAccessError(t *testing.T) {
 		t.Errorf("IsOriginAccessError(%q) = false; a stalled ls-remote must read as an unreachable origin", err)
 	}
 }
+
+func TestSuccessfulGitOutlivedByPipeHolderSucceeds(t *testing.T) {
+	repo := recoveryRepo(t)
+	for _, timeout := range []string{"1m", "0"} {
+		setGitTimeoutEnv(t, timeout)
+		old := gitWaitDelay
+		gitWaitDelay = 100 * time.Millisecond
+		t.Cleanup(func() { gitWaitDelay = old })
+
+		// Git exits at once, but the background sleep it left behind, like a
+		// post-checkout hook's child, holds stdout open past the wait delay.
+		out, err := runGit(repo, "-c", "alias.linger=!sleep 1 & echo ok", "linger")
+		if err != nil || out != "ok" {
+			t.Errorf("%s=%s: got %q, %v; want ok, nil for a git that exited 0 within its deadline", GitTimeoutEnvVar, timeout, out, err)
+		}
+	}
+}
