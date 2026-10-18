@@ -10,7 +10,8 @@ import (
 
 // StartStamp returns an opaque value that stays the same for as long as the
 // process holding pid lives and differs for any later process given that PID.
-// It is comparable only with stamps read on the same machine. ErrNoProcess
+// It is comparable only with stamps read on the same machine and in the same
+// PID namespace. ErrNoProcess
 // means the PID is free.
 func StartStamp(pid int32) (int64, error) {
 	if pid <= 0 {
