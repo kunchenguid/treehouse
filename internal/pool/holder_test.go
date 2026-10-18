@@ -404,3 +404,61 @@ func TestExitedHolderLeaseIsReclaimedOnceUnderConcurrentAcquires(t *testing.T) {
 	}
 	assertStillLeased(t, poolDir, path, results[won].LeaseID)
 }
+
+func TestHolderExitingWhilePostCreateHooksRunKeepsTheLease(t *testing.T) {
+	repo, poolDir := setupLocalRepo(t)
+	signals := t.TempDir()
+	started := filepath.Join(signals, "started")
+	release := filepath.Join(signals, "release")
+	// The hook leaves the worktree first, so no process scan sees it there:
+	// only the acquiring command's own reservation can keep the slot.
+	hook := "cd / && touch '" + started + "' && while [ ! -f '" + release + "' ]; do sleep 0.05; done"
+	type result struct {
+		lease LeaseInfo
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		lease, err := AcquireLeaseInfoWithOptions(repo, poolDir, 1, []string{hook}, "agent", AcquireOptions{LeaseHolderPID: int32(os.Getppid())})
+		done <- result{lease, err}
+	}()
+	t.Cleanup(func() { _ = os.WriteFile(release, nil, 0o644) })
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("post_create hook never started")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	state, err := ReadState(poolDir)
+	if err != nil || len(state.Worktrees) != 1 {
+		t.Fatalf("state while hooks run = %+v, %v", state, err)
+	}
+	path, leaseID := state.Worktrees[0].Path, state.Worktrees[0].LeaseID
+	pid, stamp := exitedHolder(t)
+	setHolder(t, poolDir, path, pid, stamp)
+
+	if st := statusOf(t, poolDir, path); st.Status != StatusLeased || st.LeaseID != leaseID {
+		t.Fatalf("status while hooks run = %+v, want lease %s kept", st, leaseID)
+	}
+	if _, err := AcquireWithOptions(repo, poolDir, 1, nil, AcquireOptions{SkipFetch: true}); err == nil {
+		t.Fatal("another get acquired the slot while its acquiring command was still running hooks")
+	}
+
+	if err := os.WriteFile(release, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if r.err != nil || r.lease.Path != path || r.lease.LeaseID != leaseID {
+		t.Fatalf("acquisition = %+v, %v", r.lease, r.err)
+	}
+	if wt := entryFor(t, poolDir, path); wt.OwnerPID != 0 || wt.OwnerStartedAt != 0 {
+		t.Fatalf("reservation outlived the hooks: %#v", wt)
+	}
+	if st := statusOf(t, poolDir, path); st.Status != StatusAvailable {
+		t.Fatalf("status after the hooks finished = %+v, want the exited holder's lease freed", st)
+	}
+}

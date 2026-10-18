@@ -834,6 +834,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 	}
 	if runPostCreate {
 		hooks.Run(postCreate, acquired.Path, opts.hookStdout, opts.hookStderr)
+		if opts.holderPID != 0 {
+			endSetupReservation(poolDir, acquired)
+		}
 	}
 
 	return acquired, nil
@@ -917,12 +920,43 @@ func markAcquired(wt *WorktreeEntry, opts acquireOptions) error {
 		wt.LeasedAt = time.Now()
 		wt.LeaseHolderPID = opts.holderPID
 		wt.LeaseHolderStart = opts.holderStart
-		// A lease is process-independent, so it carries no owner reservation.
+		// A lease is process-independent, so it carries no owner reservation,
+		// except that a lease whose declared holder may exit stays reserved by
+		// this command until its post_create hooks finish
+		// (endSetupReservation): the holder exiting mid-setup must not free a
+		// slot this command is still preparing.
 		wt.OwnerPID = 0
 		wt.OwnerStartedAt = 0
+		if opts.holderPID != 0 {
+			return reserveOwner(wt)
+		}
 		return nil
 	}
 	return reserveOwner(wt)
+}
+
+// endSetupReservation drops the owner reservation markAcquired gave a lease
+// with a declared holder, once its post_create hooks have finished. It touches
+// the entry only while it still carries this acquisition's lease and this
+// process's reservation. A failure is left alone: the reservation names this
+// process, which exits right after, and a dead owner is cleared by healState
+// and never keeps a holder lease.
+func endSetupReservation(poolDir string, lease LeaseInfo) {
+	_ = WithStateLock(poolDir, func() error {
+		state, err := ReadState(poolDir)
+		if err != nil {
+			return err
+		}
+		for i := range state.Worktrees {
+			wt := &state.Worktrees[i]
+			if wt.Path == lease.Path && wt.Leased && wt.LeaseID == lease.LeaseID && wt.OwnerPID == int32(os.Getpid()) {
+				wt.OwnerPID = 0
+				wt.OwnerStartedAt = 0
+				return WriteState(poolDir, state)
+			}
+		}
+		return nil
+	})
 }
 
 // ErrLeasePreconditionFailed reports that a conditional release no longer

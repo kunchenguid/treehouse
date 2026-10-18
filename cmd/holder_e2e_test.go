@@ -173,6 +173,15 @@ func TestLeaseHolderPIDIsRefusedWhenItCannotBeHonored(t *testing.T) {
 		_ = stranger.Process.Kill()
 		_ = stranger.Wait()
 	})
+	exited := exec.Command("true")
+	if err := exited.Run(); err != nil {
+		t.Skipf("cannot run true: %v", err)
+	}
+	excludePath := filepath.Join(repoDir, ".git", "info", "exclude")
+	excludeBefore, excludeErr := os.ReadFile(excludePath)
+	// An in-project root, so a refusal that reached EnsureExcluded would
+	// create the root and its .gitignore and edit .git/info/exclude.
+	inProjectRoot := filepath.Join(repoDir, ".treehouse")
 	for name, tc := range map[string]struct {
 		args []string
 		want string
@@ -180,12 +189,24 @@ func TestLeaseHolderPIDIsRefusedWhenItCannotBeHonored(t *testing.T) {
 		"without --lease":           {args: []string{"get", "--lease-holder-pid", strconv.Itoa(os.Getpid())}, want: "requires --lease"},
 		"not a number":              {args: []string{"get", "--lease", "--lease-holder-pid", "abc"}, want: "invalid argument"},
 		"not an ancestor":           {args: []string{"get", "--lease", "--lease-holder-pid", strconv.Itoa(stranger.Process.Pid)}, want: "not an ancestor"},
+		"exited":                    {args: []string{"get", "--lease", "--lease-holder-pid", strconv.Itoa(exited.Process.Pid)}, want: "lease holder process"},
 		"zero names no holder here": {args: []string{"get", "--lease", "--lease-holder-pid", "0"}, want: "invalid lease holder PID"},
+		"negative":                  {args: []string{"get", "--lease", "--lease-holder-pid=-1"}, want: "invalid lease holder PID"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, stderr, code := runTreehouse(t, repoDir, homeDir, nil, tc.args...)
+			out, stderr, code := runTreehouse(t, repoDir, homeDir, nil, append(tc.args, "--root", ".")...)
 			if code == 0 || !strings.Contains(stderr, tc.want) {
 				t.Fatalf("code %d, stdout %q, stderr %q; want a refusal mentioning %q", code, out, stderr, tc.want)
+			}
+			if _, err := os.Stat(inProjectRoot); !os.IsNotExist(err) {
+				t.Fatalf("refusal created the in-project pool root %s: %v", inProjectRoot, err)
+			}
+			if _, err := os.Stat(filepath.Join(inProjectRoot, ".gitignore")); !os.IsNotExist(err) {
+				t.Fatalf("refusal wrote the pool root's .gitignore: %v", err)
+			}
+			excludeAfter, err := os.ReadFile(excludePath)
+			if (err == nil) != (excludeErr == nil) || string(excludeAfter) != string(excludeBefore) {
+				t.Fatalf("refusal changed .git/info/exclude: %q (%v), was %q (%v)", excludeAfter, err, excludeBefore, excludeErr)
 			}
 		})
 	}

@@ -130,8 +130,10 @@ func getRunE(cmd *cobra.Command, args []string) error {
 		if !getLease {
 			return fmt.Errorf("--lease-holder-pid requires --lease")
 		}
-		if getHolderPID <= 0 {
-			return fmt.Errorf("invalid lease holder PID %d", getHolderPID)
+		// Before EnsureExcluded and the pool, so a refusal writes nothing;
+		// acquire verifies again and records the start it proves.
+		if _, err := process.VerifyHolder(getHolderPID); err != nil {
+			return err
 		}
 	}
 
