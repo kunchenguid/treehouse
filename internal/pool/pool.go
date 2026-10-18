@@ -356,6 +356,30 @@ func freeTemplatedSlot(repoRoot, poolDir string, state State, poolSize int, opts
 		len(occupied), occupied[0], occupied[len(occupied)-1], repoRoot)
 }
 
+func reclaimEmptySlotDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cannot inspect leftover slot path %s: %w", path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("leftover slot path %s is not an ordinary directory; inspect it before retrying 'treehouse get'", path)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return fmt.Errorf("cannot inspect leftover slot directory %s: %w", path, err)
+	}
+	if len(entries) != 0 {
+		return fmt.Errorf("leftover slot directory %s is not empty; inspect and move its files before retrying 'treehouse get'", path)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("cannot remove empty leftover slot directory %s: %w", path, err)
+	}
+	return nil
+}
+
 // acquisitionCommonGitDir returns a physical clone identity: the file the
 // common Git dir resolves to after symlinks, compared with os.SameFile so
 // neither a symlink alias nor letter case on a case-insensitive filesystem
@@ -639,17 +663,13 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			return fmt.Errorf("all %d worktrees are in use or dirty (max_trees = %d). Run 'treehouse status' to see details, or increase max_trees in treehouse.toml", len(state.Worktrees), poolSize)
 		}
 
-		// A templated path can point anywhere, including at a directory another
-		// pool or checkout already owns - two pools whose templates agree would
-		// otherwise register the same worktree and each feel free to delete it.
-		// Occupied candidates are skipped rather than adopted. Only the templated
-		// path is checked: the built-in layout keeps whatever AddWorktree does with
-		// a leftover directory today.
 		if opts.worktreePath != "" {
 			name, wtPath, err = freeTemplatedSlot(repoRoot, poolDir, state, poolSize, opts)
 			if err != nil {
 				return err
 			}
+		} else if err := reclaimEmptySlotDirectory(wtPath); err != nil {
+			return err
 		}
 
 		if err := os.MkdirAll(filepath.Dir(wtPath), 0755); err != nil {
