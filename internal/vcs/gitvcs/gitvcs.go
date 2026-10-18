@@ -177,7 +177,7 @@ func CheckedOutBranch(worktreePath string) (string, error) {
 	cmd := newGitCmd(worktreePath, "symbolic-ref", "-q", "--short", "HEAD")
 	defer cmd.cancel()
 	out, err := cmd.Output()
-	if derr := cmd.deadlineErr(); derr != nil {
+	if derr := cmd.deadlineErr(err); derr != nil {
 		return "", derr
 	}
 	if err == nil {
@@ -269,7 +269,7 @@ func LocalBranchExists(repoRoot, branch string) (bool, error) {
 	cmd := newGitCmd(repoRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 	defer cmd.cancel()
 	err := cmd.Run()
-	if derr := cmd.deadlineErr(); derr != nil {
+	if derr := cmd.deadlineErr(err); derr != nil {
 		return false, derr
 	}
 	if err != nil {
@@ -292,7 +292,7 @@ func CreateBranch(worktreePath, branch string) error {
 			cmd := newGitCmd(dir, args...)
 			defer cmd.cancel()
 			out, err := cmd.CombinedOutput()
-			if derr := cmd.deadlineErr(); derr != nil {
+			if derr := cmd.deadlineErr(err); derr != nil {
 				return strings.TrimSpace(string(out)), derr
 			}
 			if err != nil {
@@ -714,7 +714,7 @@ func HasUnseededBranchCreationOutput(worktreePath string, seededPaths []string) 
 	defer hooksPath.cancel()
 	var configuredHooksPath string
 	out, err := hooksPath.Output()
-	if derr := hooksPath.deadlineErr(); derr != nil {
+	if derr := hooksPath.deadlineErr(err); derr != nil {
 		return true, derr
 	}
 	if err == nil {
@@ -1327,7 +1327,7 @@ func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 	cmd := newGitCmd(worktreePath, "merge-base", "--is-ancestor", "HEAD", ref)
 	defer cmd.cancel()
 	out, err := cmd.CombinedOutput()
-	if derr := cmd.deadlineErr(); derr != nil {
+	if derr := cmd.deadlineErr(err); derr != nil {
 		return false, derr
 	}
 	if err == nil {
@@ -1343,7 +1343,7 @@ func isHeadContentMergedIntoRef(worktreePath, ref string) (bool, error) {
 	cmd := newGitCmd(worktreePath, "merge-base", "HEAD", ref)
 	defer cmd.cancel()
 	out, err := cmd.CombinedOutput()
-	if derr := cmd.deadlineErr(); derr != nil {
+	if derr := cmd.deadlineErr(err); derr != nil {
 		return false, derr
 	}
 	if err != nil {
@@ -1451,7 +1451,7 @@ func execGit(dir string, pinSubmoduleRecurse bool, args ...string) ([]byte, erro
 	cmd := newGitCmd(dir, gitArgs...)
 	defer cmd.cancel()
 	out, err := cmd.Output()
-	if derr := cmd.deadlineErr(); derr != nil {
+	if derr := cmd.deadlineErr(err); derr != nil {
 		return nil, derr
 	}
 	if err != nil {
@@ -1546,7 +1546,7 @@ func gitOutputEnv(dir string, env []string, stdin []byte, args ...string) ([]byt
 	}
 	cmd.Stdin = bytes.NewReader(stdin)
 	out, err := cmd.Output()
-	if derr := cmd.deadlineErr(); derr != nil {
+	if derr := cmd.deadlineErr(err); derr != nil {
 		return nil, derr
 	}
 	return out, err

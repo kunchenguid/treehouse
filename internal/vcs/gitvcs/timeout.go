@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -11,14 +12,17 @@ import (
 )
 
 // GitTimeoutEnvVar bounds how long any single git subprocess may run. The
-// value is a Go duration ("90s", "5m"); "0" turns the limit off. An unset or
-// unparsable value uses defaultGitTimeout.
+// value is a Go duration ("90s", "45m"); "0" turns the limit off. An unset
+// value uses defaultGitTimeout; an unparsable one warns on stderr and uses it.
 const GitTimeoutEnvVar = "TREEHOUSE_GIT_TIMEOUT"
 
-// defaultGitTimeout is long enough for a large fetch on a slow link and short
-// enough that a git process stuck on a stale lock or a credential prompt fails
+// defaultGitTimeout is long enough for a large checkout, an LFS download, or a
+// slow hook, and short enough that a git process stuck on a stale lock or a credential prompt fails
 // loudly instead of hanging get or return forever.
-const defaultGitTimeout = 5 * time.Minute
+const defaultGitTimeout = 30 * time.Minute
+
+// gitTimeoutWarnings receives the unparsable-value warning.
+var gitTimeoutWarnings io.Writer = os.Stderr
 
 // gitWaitDelay caps how long Wait blocks on output pipes after the deadline
 // kills git, since a hook or credential helper it spawned can keep them open.
@@ -34,15 +38,16 @@ func gitTimeout() time.Duration {
 	}
 	d, err := time.ParseDuration(value)
 	if err != nil || d < 0 {
+		fmt.Fprintf(gitTimeoutWarnings, "treehouse: ignoring %s=%q (want a duration like 90s or 45m, or 0 to disable); using %s\n", GitTimeoutEnvVar, value, defaultGitTimeout)
 		return defaultGitTimeout
 	}
 	return d
 }
 
 // gitCmd is a git subprocess bounded by the configured timeout. Callers must
-// call cancel when done and check deadlineErr before interpreting an exit
-// status: a killed git reports an exit code that would otherwise read as an
-// ordinary failure.
+// call cancel when done and pass the run error to deadlineErr before
+// interpreting an exit status: a killed git reports an exit code that would
+// otherwise read as an ordinary failure.
 type gitCmd struct {
 	*exec.Cmd
 	ctx     context.Context
@@ -69,9 +74,10 @@ func newGitCmd(dir string, args ...string) *gitCmd {
 var ErrGitTimeout = errors.New("git command timed out")
 
 // deadlineErr returns a diagnostic error when the deadline killed git, and nil
-// otherwise.
-func (c *gitCmd) deadlineErr() error {
-	if !errors.Is(c.ctx.Err(), context.DeadlineExceeded) {
+// otherwise. A command that returned no error finished in time, even if the
+// deadline passed just afterwards.
+func (c *gitCmd) deadlineErr(runErr error) error {
+	if runErr == nil || !errors.Is(c.ctx.Err(), context.DeadlineExceeded) {
 		return nil
 	}
 	return fmt.Errorf("%w: git %s did not finish within %s; another git process or a stale lock may be holding the repository (check `git rev-parse --git-path index.lock`), or set %s to change the limit",

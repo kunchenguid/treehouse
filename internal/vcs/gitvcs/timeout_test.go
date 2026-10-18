@@ -1,6 +1,8 @@
 package gitvcs
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -8,6 +10,10 @@ import (
 )
 
 func TestGitTimeoutFromEnv(t *testing.T) {
+	var warnings bytes.Buffer
+	old := gitTimeoutWarnings
+	gitTimeoutWarnings = &warnings
+	t.Cleanup(func() { gitTimeoutWarnings = old })
 	for _, tc := range []struct {
 		value string
 		want  time.Duration
@@ -22,6 +28,30 @@ func TestGitTimeoutFromEnv(t *testing.T) {
 		if got := gitTimeout(); got != tc.want {
 			t.Errorf("%s=%q: got %s, want %s", GitTimeoutEnvVar, tc.value, got, tc.want)
 		}
+	}
+	if defaultGitTimeout != 30*time.Minute {
+		t.Errorf("defaultGitTimeout = %s, want 30m", defaultGitTimeout)
+	}
+	for _, bad := range []string{"not-a-duration", "-5s"} {
+		if !strings.Contains(warnings.String(), bad) {
+			t.Errorf("no warning for %s=%q; got %q", GitTimeoutEnvVar, bad, warnings.String())
+		}
+	}
+	if n := strings.Count(warnings.String(), "\n"); n != 2 {
+		t.Errorf("got %d warning lines, want 2 (valid values must not warn): %q", n, warnings.String())
+	}
+}
+
+func TestDeadlineErrIgnoresCommandThatSucceeded(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-ctx.Done()
+	cmd := &gitCmd{ctx: ctx, cancel: cancel, args: []string{"status"}, timeout: time.Nanosecond}
+	if err := cmd.deadlineErr(nil); err != nil {
+		t.Fatalf("deadlineErr(nil) after the deadline = %v; want nil for a command that finished", err)
+	}
+	if err := cmd.deadlineErr(errors.New("signal: killed")); !errors.Is(err, ErrGitTimeout) {
+		t.Fatalf("deadlineErr(killed) = %v; want ErrGitTimeout", err)
 	}
 }
 
