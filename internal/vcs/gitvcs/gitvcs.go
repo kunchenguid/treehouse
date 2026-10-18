@@ -174,9 +174,12 @@ func branchRef(repoRoot, branch string) string {
 // returns an error instead of masquerading as a detached HEAD, so callers can
 // tell the two apart.
 func CheckedOutBranch(worktreePath string) (string, error) {
-	cmd := exec.Command("git", "symbolic-ref", "-q", "--short", "HEAD")
-	cmd.Dir = worktreePath
+	cmd := newGitCmd(worktreePath, "symbolic-ref", "-q", "--short", "HEAD")
+	defer cmd.cancel()
 	out, err := cmd.Output()
+	if derr := cmd.deadlineErr(); derr != nil {
+		return "", derr
+	}
 	if err == nil {
 		return strings.TrimSpace(string(out)), nil
 	}
@@ -263,9 +266,13 @@ func ValidateBranchName(repoRoot, branch string) error {
 }
 
 func LocalBranchExists(repoRoot, branch string) (bool, error) {
-	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
-	cmd.Dir = repoRoot
-	if err := cmd.Run(); err != nil {
+	cmd := newGitCmd(repoRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	defer cmd.cancel()
+	err := cmd.Run()
+	if derr := cmd.deadlineErr(); derr != nil {
+		return false, derr
+	}
+	if err != nil {
 		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
 			return false, nil
 		}
@@ -282,9 +289,12 @@ var ErrBranchCreated = errors.New("branch created before checkout failed")
 func CreateBranch(worktreePath, branch string) error {
 	return createBranch(worktreePath, branch, func(dir string, args ...string) (string, error) {
 		if args[0] == "checkout" {
-			cmd := exec.Command("git", args...)
-			cmd.Dir = dir
+			cmd := newGitCmd(dir, args...)
+			defer cmd.cancel()
 			out, err := cmd.CombinedOutput()
+			if derr := cmd.deadlineErr(); derr != nil {
+				return strings.TrimSpace(string(out)), derr
+			}
 			if err != nil {
 				return strings.TrimSpace(string(out)), fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 			}
@@ -700,10 +710,14 @@ func RemoveCleanWorktree(repoRoot, path string) error {
 // checkout ran, but inspects reference-transaction hooks and worktree output.
 func HasUnseededBranchCreationOutput(worktreePath string, seededPaths []string) (bool, error) {
 	// A configured hooks path can be relative to the invocation directory.
-	hooksPath := exec.Command("git", "config", "--get", "core.hooksPath")
-	hooksPath.Dir = worktreePath
+	hooksPath := newGitCmd(worktreePath, "config", "--get", "core.hooksPath")
+	defer hooksPath.cancel()
 	var configuredHooksPath string
-	if out, err := hooksPath.Output(); err == nil {
+	out, err := hooksPath.Output()
+	if derr := hooksPath.deadlineErr(); derr != nil {
+		return true, derr
+	}
+	if err == nil {
 		configuredHooksPath = strings.TrimSpace(string(out))
 	} else if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
 		return true, err
@@ -1310,9 +1324,12 @@ func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error
 // detects a squash merge without treating unrelated target-branch changes as a
 // mismatch.
 func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
-	cmd := exec.Command("git", "merge-base", "--is-ancestor", "HEAD", ref)
-	cmd.Dir = worktreePath
+	cmd := newGitCmd(worktreePath, "merge-base", "--is-ancestor", "HEAD", ref)
+	defer cmd.cancel()
 	out, err := cmd.CombinedOutput()
+	if derr := cmd.deadlineErr(); derr != nil {
+		return false, derr
+	}
 	if err == nil {
 		return true, nil
 	}
@@ -1323,9 +1340,12 @@ func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 }
 
 func isHeadContentMergedIntoRef(worktreePath, ref string) (bool, error) {
-	cmd := exec.Command("git", "merge-base", "HEAD", ref)
-	cmd.Dir = worktreePath
+	cmd := newGitCmd(worktreePath, "merge-base", "HEAD", ref)
+	defer cmd.cancel()
 	out, err := cmd.CombinedOutput()
+	if derr := cmd.deadlineErr(); derr != nil {
+		return false, derr
+	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			return false, fmt.Errorf("git merge-base HEAD %s returned no common ancestor", ref)
@@ -1428,11 +1448,12 @@ func execGit(dir string, pinSubmoduleRecurse bool, args ...string) ([]byte, erro
 	if pinSubmoduleRecurse {
 		gitArgs = append([]string{"-c", "submodule.recurse=false"}, args...)
 	}
-	cmd := exec.Command("git", gitArgs...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
+	cmd := newGitCmd(dir, gitArgs...)
+	defer cmd.cancel()
 	out, err := cmd.Output()
+	if derr := cmd.deadlineErr(); derr != nil {
+		return nil, derr
+	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(exitErr.Stderr)))
@@ -1518,12 +1539,15 @@ func gitOutput(dir string, stdin []byte, args ...string) ([]byte, error) {
 }
 
 func gitOutputEnv(dir string, env []string, stdin []byte, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
+	cmd := newGitCmd(dir, args...)
+	defer cmd.cancel()
 	if env != nil {
 		cmd.Env = env
 	}
 	cmd.Stdin = bytes.NewReader(stdin)
 	out, err := cmd.Output()
+	if derr := cmd.deadlineErr(); derr != nil {
+		return nil, derr
+	}
 	return out, err
 }
