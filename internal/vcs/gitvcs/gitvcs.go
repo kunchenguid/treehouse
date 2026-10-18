@@ -1449,6 +1449,7 @@ func execGit(dir string, pinSubmoduleRecurse bool, args ...string) ([]byte, erro
 		gitArgs = append([]string{"-c", "submodule.recurse=false"}, args...)
 	}
 	cmd := newGitCmd(dir, gitArgs...)
+	cmd.args = args
 	defer cmd.cancel()
 	out, err := cmd.Output()
 	if derr := cmd.deadlineErr(err); derr != nil {

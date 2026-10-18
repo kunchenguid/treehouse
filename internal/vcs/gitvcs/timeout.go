@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,7 +29,14 @@ var gitTimeoutWarnings io.Writer = os.Stderr
 // kills git, since a hook or credential helper it spawned can keep them open.
 var gitWaitDelay = 5 * time.Second
 
-func gitTimeout() time.Duration {
+// gitTimeout is read once per process so an unparsable value warns once
+// rather than on every git subprocess. Tests that change the environment
+// call resetGitTimeout.
+var gitTimeout = sync.OnceValue(parseGitTimeout)
+
+func resetGitTimeout() { gitTimeout = sync.OnceValue(parseGitTimeout) }
+
+func parseGitTimeout() time.Duration {
 	value := strings.TrimSpace(os.Getenv(GitTimeoutEnvVar))
 	if value == "" {
 		return defaultGitTimeout

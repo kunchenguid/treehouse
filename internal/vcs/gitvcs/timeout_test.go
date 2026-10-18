@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+func setGitTimeoutEnv(t *testing.T, value string) {
+	t.Helper()
+	t.Setenv(GitTimeoutEnvVar, value)
+	resetGitTimeout()
+	t.Cleanup(resetGitTimeout)
+}
+
 func TestGitTimeoutFromEnv(t *testing.T) {
 	var warnings bytes.Buffer
 	old := gitTimeoutWarnings
@@ -24,7 +31,7 @@ func TestGitTimeoutFromEnv(t *testing.T) {
 		{"not-a-duration", defaultGitTimeout},
 		{"-5s", defaultGitTimeout},
 	} {
-		t.Setenv(GitTimeoutEnvVar, tc.value)
+		setGitTimeoutEnv(t, tc.value)
 		if got := gitTimeout(); got != tc.want {
 			t.Errorf("%s=%q: got %s, want %s", GitTimeoutEnvVar, tc.value, got, tc.want)
 		}
@@ -39,6 +46,24 @@ func TestGitTimeoutFromEnv(t *testing.T) {
 	}
 	if n := strings.Count(warnings.String(), "\n"); n != 2 {
 		t.Errorf("got %d warning lines, want 2 (valid values must not warn): %q", n, warnings.String())
+	}
+}
+
+func TestGitTimeoutWarnsOncePerProcess(t *testing.T) {
+	var warnings bytes.Buffer
+	old := gitTimeoutWarnings
+	gitTimeoutWarnings = &warnings
+	t.Cleanup(func() { gitTimeoutWarnings = old })
+	setGitTimeoutEnv(t, "not-a-duration")
+
+	repo := recoveryRepo(t)
+	for range 3 {
+		if _, err := CheckedOutBranch(repo); err != nil {
+			t.Fatalf("CheckedOutBranch: %v", err)
+		}
+	}
+	if n := strings.Count(warnings.String(), "\n"); n != 1 {
+		t.Errorf("got %d warning lines across several git commands, want 1: %q", n, warnings.String())
 	}
 }
 
@@ -57,20 +82,28 @@ func TestDeadlineErrIgnoresCommandThatSucceeded(t *testing.T) {
 
 func TestStalledGitFailsWithTimeoutDiagnostic(t *testing.T) {
 	repo := recoveryRepo(t)
-	t.Setenv(GitTimeoutEnvVar, "300ms")
+	setGitTimeoutEnv(t, "300ms")
 	old := gitWaitDelay
 	gitWaitDelay = 200 * time.Millisecond
 	t.Cleanup(func() { gitWaitDelay = old })
 
+	const stall = 4 * time.Second
 	start := time.Now()
+	// The deadline kills git but not the sleep it started, which keeps the
+	// repository as its working directory; Windows cannot remove the temp
+	// repository until it exits.
+	t.Cleanup(func() { time.Sleep(time.Until(start.Add(stall + 500*time.Millisecond))) })
 	// A shell alias stands in for any git subprocess that never returns: a
 	// hung credential helper, hook, or network stall.
-	_, err := runGit(repo, "-c", "alias.stall=!sleep 30", "stall")
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
+	_, err := runGit(repo, "-c", "alias.stall=!sleep 4", "stall")
+	if elapsed := time.Since(start); elapsed > stall-time.Second {
 		t.Fatalf("stalled git returned after %s; want the deadline to stop it", elapsed)
 	}
 	if !errors.Is(err, ErrGitTimeout) {
 		t.Fatalf("got %v, want ErrGitTimeout", err)
+	}
+	if strings.Contains(err.Error(), "submodule.recurse") {
+		t.Errorf("timeout error %q reports the injected -c pair instead of the caller's command", err)
 	}
 	for _, want := range []string{"index.lock", GitTimeoutEnvVar} {
 		if !strings.Contains(err.Error(), want) {
@@ -81,9 +114,28 @@ func TestStalledGitFailsWithTimeoutDiagnostic(t *testing.T) {
 
 func TestGitWithinDeadlineIsUnaffected(t *testing.T) {
 	repo := recoveryRepo(t)
-	t.Setenv(GitTimeoutEnvVar, "1m")
+	setGitTimeoutEnv(t, "1m")
 	branch, err := CheckedOutBranch(repo)
 	if err != nil || branch != "feature" {
 		t.Fatalf("CheckedOutBranch = %q, %v; want feature, nil", branch, err)
+	}
+}
+
+func TestTimedOutLsRemoteIsOriginAccessError(t *testing.T) {
+	repo := recoveryRepo(t)
+	mustGit(t, repo, "config", "protocol.ext.allow", "always")
+	setGitTimeoutEnv(t, "300ms")
+	old := gitWaitDelay
+	gitWaitDelay = 200 * time.Millisecond
+	t.Cleanup(func() { gitWaitDelay = old })
+
+	start := time.Now()
+	t.Cleanup(func() { time.Sleep(time.Until(start.Add(4500 * time.Millisecond))) })
+	_, _, err := remoteDefaultBranch(repo, "ext::sleep 4")
+	if !errors.Is(err, ErrGitTimeout) {
+		t.Fatalf("got %v, want ErrGitTimeout", err)
+	}
+	if !IsOriginAccessError(err) {
+		t.Errorf("IsOriginAccessError(%q) = false; a stalled ls-remote must read as an unreachable origin", err)
 	}
 }
