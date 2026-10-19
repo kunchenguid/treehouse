@@ -159,16 +159,17 @@ func TestSuccessfulGitOutlivedByPipeHolderSucceeds(t *testing.T) {
 
 func TestPipeHolderOutlivingDeadlineFailsWithTimeout(t *testing.T) {
 	repo := recoveryRepo(t)
-	setGitTimeoutEnv(t, "300ms")
+	setGitTimeoutEnv(t, "2s")
 
-	const linger = 4 * time.Second
+	const hold = 4 * time.Second
 	start := time.Now()
-	t.Cleanup(func() { time.Sleep(time.Until(start.Add(linger + 500*time.Millisecond))) })
-	// Git exits at once, but the background sleep it left behind holds stdout
-	// open well past the deadline.
-	_, err := runGit(repo, "-c", "alias.linger=!sleep 4 & echo ok", "linger")
-	if elapsed := time.Since(start); elapsed > linger-time.Second {
-		t.Fatalf("git returned after %s; want the timeout to bound a pipe held open after git exited", elapsed)
+	t.Cleanup(func() { time.Sleep(time.Until(start.Add(time.Second + hold + 500*time.Millisecond))) })
+	// Git uses part of the budget, then exits. The background sleep it left
+	// behind, like a hook child, holds stdout past the original deadline.
+	// A WaitDelay restarted at git's exit would still be running here.
+	_, err := runGit(repo, "-c", "alias.linger=!sleep 1; sleep 4 & echo ok", "linger")
+	if elapsed := time.Since(start); elapsed > 2700*time.Millisecond {
+		t.Fatalf("git returned after %s; want the original deadline to bound a pipe held open after git exited", elapsed)
 	}
 	if !errors.Is(err, ErrGitTimeout) {
 		t.Fatalf("got %v, want ErrGitTimeout", err)

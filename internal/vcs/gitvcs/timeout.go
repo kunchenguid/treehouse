@@ -25,12 +25,10 @@ const defaultGitTimeout = 30 * time.Minute
 // gitTimeoutWarnings receives the unparsable-value warning.
 var gitTimeoutWarnings io.Writer = os.Stderr
 
-// gitWaitDelay caps how long Wait blocks on output pipes after the deadline
-// kills git, since a hook or credential helper it spawned can keep them open.
-// Until the deadline the cap is the full timeout instead: exec starts the
-// WaitDelay timer when git exits normally too, so a short cap would fail a
-// successful command whose hook left a child holding a pipe, and no cap would
-// let that child hang the caller past the deadline.
+// gitWaitDelay caps how long Wait drains copy goroutines after the deadline
+// kills git. It is not the bound on a hook child that inherited an output
+// pipe: exec starts WaitDelay when git exits normally too, and stops watching
+// the context then, so Output and CombinedOutput wait on pipes they own.
 var gitWaitDelay = 5 * time.Second
 
 // gitTimeout is read once per process so an unparsable value warns once
@@ -84,6 +82,89 @@ func newGitCmd(dir string, args ...string) *gitCmd {
 		cmd.Dir = dir
 	}
 	return &gitCmd{Cmd: cmd, ctx: ctx, cancel: cancel, args: args, timeout: timeout}
+}
+
+func (c *gitCmd) Output() ([]byte, error)         { return c.collect(false) }
+func (c *gitCmd) CombinedOutput() ([]byte, error) { return c.collect(true) }
+
+// collect waits until git's output pipes close or the configured deadline
+// passes, whichever comes first. The pipes are *os.File values so Wait
+// returns when git itself exits; a child that inherited a pipe cannot end
+// the wait early or extend it past the deadline. A disabled timeout has no
+// deadline and waits until the pipes close.
+func (c *gitCmd) collect(combined bool) ([]byte, error) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	defer pr.Close()
+	er, ew := pr, pw
+	if !combined {
+		if er, ew, err = os.Pipe(); err != nil {
+			pw.Close()
+			return nil, err
+		}
+		defer er.Close()
+	}
+	c.Stdout, c.Stderr = pw, ew
+	if err = c.Start(); err != nil {
+		pw.Close()
+		if ew != pw {
+			ew.Close()
+		}
+		return nil, err
+	}
+	pw.Close()
+	if ew != pw {
+		ew.Close()
+	}
+	done := make(chan struct {
+		b   []byte
+		err error
+	}, 1)
+	go func() {
+		b, se, e1, e2 := readBoth(pr, er)
+		err := c.Wait()
+		if ee, ok := err.(*exec.ExitError); ok && er != pr {
+			ee.Stderr = se
+		} else if err == nil {
+			err = errors.Join(e1, e2)
+		}
+		done <- struct {
+			b   []byte
+			err error
+		}{b, err}
+	}()
+	select {
+	case r := <-done:
+		return r.b, r.err
+	case <-c.ctx.Done():
+	}
+	if c.Process != nil {
+		_ = c.Process.Kill()
+	}
+	pr.Close()
+	if er != pr {
+		er.Close()
+	}
+	r := <-done
+	if r.err == nil {
+		return r.b, nil
+	}
+	return nil, c.ctx.Err()
+}
+
+func readBoth(out, errPipe *os.File) (stdout, stderr []byte, err1, err2 error) {
+	if errPipe == out {
+		stdout, err1 = io.ReadAll(out)
+		return stdout, nil, err1, nil
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); stdout, err1 = io.ReadAll(out) }()
+	go func() { defer wg.Done(); stderr, err2 = io.ReadAll(errPipe) }()
+	wg.Wait()
+	return stdout, stderr, err1, err2
 }
 
 // ErrGitTimeout marks a git subprocess that was killed at the deadline.
