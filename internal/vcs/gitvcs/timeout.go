@@ -162,9 +162,57 @@ func readBoth(out, errPipe *os.File) (stdout, stderr []byte, err1, err2 error) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); stdout, err1 = io.ReadAll(out) }()
-	go func() { defer wg.Done(); stderr, err2 = io.ReadAll(errPipe) }()
+	go func() {
+		defer wg.Done()
+		saved := &prefixSuffixSaver{n: stderrSaveLimit}
+		_, err2 = io.Copy(saved, errPipe)
+		stderr = saved.Bytes()
+	}()
 	wg.Wait()
 	return stdout, stderr, err1, err2
+}
+
+// stderrSaveLimit bounds the stderr kept from each end, matching what
+// exec.Cmd.Output keeps for ExitError.Stderr, so a noisy hook cannot grow
+// memory while its pipe is still drained.
+const stderrSaveLimit = 32 << 10
+
+// prefixSuffixSaver keeps the first and last n bytes written to it and
+// counts what it drops in between.
+type prefixSuffixSaver struct {
+	n       int
+	prefix  []byte
+	suffix  []byte
+	skipped int64
+}
+
+func (w *prefixSuffixSaver) Write(p []byte) (int, error) {
+	total := len(p)
+	if room := w.n - len(w.prefix); room > 0 {
+		take := min(room, len(p))
+		w.prefix = append(w.prefix, p[:take]...)
+		p = p[take:]
+	}
+	if len(p) > w.n {
+		w.skipped += int64(len(w.suffix) + len(p) - w.n)
+		w.suffix = append(w.suffix[:0], p[len(p)-w.n:]...)
+		return total, nil
+	}
+	if over := len(w.suffix) + len(p) - w.n; over > 0 {
+		w.skipped += int64(over)
+		w.suffix = append(w.suffix[:0], w.suffix[over:]...)
+	}
+	w.suffix = append(w.suffix, p...)
+	return total, nil
+}
+
+func (w *prefixSuffixSaver) Bytes() []byte {
+	if w.skipped == 0 {
+		return append(w.prefix, w.suffix...)
+	}
+	b := append([]byte(nil), w.prefix...)
+	b = fmt.Appendf(b, "\n... omitting %d bytes ...\n", w.skipped)
+	return append(b, w.suffix...)
 }
 
 // ErrGitTimeout marks a git subprocess that was killed at the deadline.

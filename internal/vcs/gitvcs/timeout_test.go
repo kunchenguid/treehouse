@@ -175,3 +175,37 @@ func TestPipeHolderOutlivingDeadlineFailsWithTimeout(t *testing.T) {
 		t.Fatalf("got %v, want ErrGitTimeout", err)
 	}
 }
+
+func TestPrefixSuffixSaverBoundsStderr(t *testing.T) {
+	w := &prefixSuffixSaver{n: 4}
+	for _, chunk := range []string{"ab", "cdef", "ghijklmn", "o", "pq"} {
+		if n, err := w.Write([]byte(chunk)); n != len(chunk) || err != nil {
+			t.Fatalf("Write(%q) = %d, %v; want %d, nil", chunk, n, err, len(chunk))
+		}
+	}
+	if got, want := string(w.Bytes()), "abcd\n... omitting 9 bytes ...\nnopq"; got != want {
+		t.Errorf("Bytes() = %q, want %q", got, want)
+	}
+	short := &prefixSuffixSaver{n: 4}
+	_, _ = short.Write([]byte("abcdef"))
+	if got := string(short.Bytes()); got != "abcdef" {
+		t.Errorf("Bytes() = %q, want abcdef with nothing omitted", got)
+	}
+}
+
+func TestNoisyFailingGitKeepsBoundedStderr(t *testing.T) {
+	repo := recoveryRepo(t)
+	setGitTimeoutEnv(t, "1m")
+	// A noisy hook stands behind any git command that fails after writing far
+	// more stderr than the error needs.
+	_, err := runGit(repo, "-c", "alias.noisy=!yes noise | head -c 600000 >&2; exit 3", "noisy")
+	if err == nil {
+		t.Fatal("noisy failing git returned nil error")
+	}
+	if n := len(err.Error()); n > 2*stderrSaveLimit+200 {
+		t.Errorf("error carries %d bytes of stderr; want at most about %d", n, 2*stderrSaveLimit)
+	}
+	if !strings.Contains(err.Error(), "omitting") || !strings.HasSuffix(err.Error(), "noise") {
+		t.Errorf("error does not keep stderr's prefix and suffix: ...%q", err.Error()[max(0, len(err.Error())-80):])
+	}
+}
