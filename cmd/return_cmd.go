@@ -118,7 +118,7 @@ and return it by name.`,
 		// with nothing in the exit status to detect it.
 		if errors.Is(err, errReturnAbortedNonTTY) {
 			return withExitCode(ExitNotReturned, fmt.Errorf(
-				"🌳 worktree not returned: it has uncommitted changes and the confirmation could not be answered (stdin reached EOF); prune will not reclaim this slot. Use treehouse return --force %s to clean and return it",
+				"🌳 worktree not returned: it has uncommitted changes and no confirmation was received on stdin; prune will not reclaim this slot. Use treehouse return --force %s to clean and return it",
 				quoteReturnPath(target.path)))
 		}
 		if errors.Is(err, errReturnAborted) {
