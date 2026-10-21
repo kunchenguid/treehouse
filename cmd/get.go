@@ -57,11 +57,18 @@ handed over in detached HEAD. Pass -b/--branch to create and check out a new
 Git branch at the acquired commit. A base that cannot be resolved is an error,
 never a silent fall back to the inferred default.
 
-Pass --include-file <path> to replace committed .worktreeinclude for this
-acquisition. Relative paths use the current directory; patterns inside the file
-select ignored, untracked files from the main checkout root. A missing or
-unreadable file fails before a worktree is created or reset. An empty file
-seeds nothing. Without the flag, only the committed manifest is used.
+Default seed rules layer the Git-configured worktree.includeFile, the source
+clone's $GIT_COMMON_DIR/info/worktreeinclude, then committed .worktreeinclude at
+the destination revision (highest priority). Personal layers are opt-in; no XDG
+manifest is discovered implicitly. Patterns use Git ignore syntax relative to
+the main checkout root, intersected with Git's standard ignored-file selection.
+Later ! rules negate earlier matches, except beneath already matched directories.
+Persistent-layer read errors fail during seeding (remove or quarantine the slot).
+
+Pass --include-file <path> to replace every include layer for this acquisition,
+bypassing their discovery and errors. Relative flag paths use the current
+directory; patterns still use the main checkout root. A missing or unreadable
+file fails before a worktree is created or reset. An empty file seeds nothing.
 
 Every pool slot normally lives in a directory named after the repository, so
 tooling that derives per-checkout identity from the working directory's last
@@ -98,7 +105,7 @@ func init() {
 	getCmd.Flags().BoolVar(&getNoFetch, "no-fetch", false, "Skip fetching origin before acquiring; use existing local refs")
 	getCmd.Flags().StringVarP(&getBranch, "branch", "b", "", "Create and check out a new Git branch at the acquired commit (fails if it already exists)")
 	getCmd.Flags().StringVar(&getBase, "base", "", "Branch to cut this worktree from, overriding base_branch in config (default: inferred from the repository)")
-	getCmd.Flags().StringVar(&getIncludeFile, "include-file", "", "Replace committed .worktreeinclude with this file (relative to the current directory)")
+	getCmd.Flags().StringVar(&getIncludeFile, "include-file", "", "Replace all include layers with this file (relative to the current directory)")
 	getCmd.Flags().BoolVar(&getUniqueLeaf, "unique-leaf", false, "Name a newly created worktree directory <repo>-<slot> instead of <repo>, overriding unique_leaf in config")
 	getCmd.Flags().StringVar(&getWorktreePath, "worktree-path", "", "Template for a newly created worktree's directory, overriding worktree_path in config (default: {pool}/{slot}/{repo})")
 	getCmd.Flags().StringVar(&getAPFSSharing, "apfs-sharing", "", "Share tracked data in fresh Git slots on macOS/APFS: off (default) or fresh; overrides TREEHOUSE_APFS_SHARING and config")

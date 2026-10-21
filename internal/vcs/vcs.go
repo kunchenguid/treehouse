@@ -61,8 +61,9 @@ type Backend interface {
 	AddWorktree(repoRoot, path, branch string) error
 	// SeedWorktree copies backend-specific ignored files into a new or recycled
 	// worktree and returns their paths so cleanup need not trust mutable worktree
-	// metadata. A nil manifest uses committed .worktreeinclude at the destination
-	// HEAD; a non-nil manifest replaces it, with an empty slice selecting nothing.
+	// metadata. A nil manifest layers user, clone, and destination-committed
+	// include rules; a non-nil manifest replaces all layers, with an empty slice
+	// selecting nothing.
 	SeedWorktree(repoRoot, worktreePath string, manifest []byte) ([]string, error)
 	// PruneWorktrees clears bookkeeping for worktrees whose directories no
 	// longer exist. It never touches live worktrees or their data.
@@ -548,6 +549,18 @@ func ResetWorktreeWithSeededPaths(worktreePath, branch string, seededPaths []str
 // SeedWorktree delegates to Backend.SeedWorktree with the supplied manifest.
 func SeedWorktree(repoRoot, worktreePath string, manifest []byte) ([]string, error) {
 	return backendFor(repoRoot).SeedWorktree(repoRoot, worktreePath, manifest)
+}
+
+// SeedWorktreeWithCommonGitDir reuses common-directory metadata already read by
+// acquisition. Backends that do not need it keep their ordinary seeding path.
+func SeedWorktreeWithCommonGitDir(repoRoot, worktreePath, sourceCommonDir string, manifest []byte) ([]string, error) {
+	backend := backendFor(repoRoot)
+	if seeded, ok := backend.(interface {
+		SeedWorktreeWithCommonGitDir(string, string, string, []byte) ([]string, error)
+	}); ok {
+		return seeded.SeedWorktreeWithCommonGitDir(repoRoot, worktreePath, sourceCommonDir, manifest)
+	}
+	return backend.SeedWorktree(repoRoot, worktreePath, manifest)
 }
 
 func JJSeedAuthenticationIdentity(worktreePath string) (string, error) {

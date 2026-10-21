@@ -1,11 +1,15 @@
 package gitvcs
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +24,113 @@ func TestRepoRootFromCommonGitDirHandlesForwardSlashPath(t *testing.T) {
 	want := filepath.Clean(filepath.FromSlash("C:/Users/runner/AppData/Local/Temp/repo"))
 	if root != want {
 		t.Fatalf("expected repo root %q, got %q", want, root)
+	}
+}
+
+func TestCommonGitDirEnvFallsBackForOlderGitWithSourceEnvironment(t *testing.T) {
+	repo := t.TempDir()
+	mustGit(t, "", "init", repo)
+	logPath, _ := installGitWrapper(t, true)
+	metadata := filepath.Join(repo, ".git")
+	t.Setenv("PATH", filepath.Dir(logPath)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	env := append(os.Environ(), "GIT_DIR="+metadata)
+	got, err := commonGitDirEnv(t.TempDir(), env)
+	if err != nil {
+		t.Fatalf("commonGitDirEnv failed through older-Git fallback: %v", err)
+	}
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInfo, err := os.Stat(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("common Git directory = %q, want source GIT_DIR %q", got, metadata)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(calls) != 2 || strings.Contains(calls[1], "--path-format=absolute") {
+		t.Fatalf("expected one rejected path-format call followed by the source-environment fallback, got %q", data)
+	}
+}
+
+func TestSeedLayersReusesKnownCommonDirectory(t *testing.T) {
+	isolateIncludeConfig(t)
+	repo, worktree := setupSeedWorktree(t, "selected.env\n")
+	writeTestFile(t, repo, "selected.env", "selected\n")
+	common, err := CommonGitDir(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath, _ := installGitWrapper(t, true)
+	t.Setenv("PATH", filepath.Dir(logPath)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	got, err := selectedSeedPathsEnvWithCommonDir(repo, worktree, nil, "", nil, common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "selected.env\x00" {
+		t.Fatalf("selected paths = %q, want selected.env", got)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "rev-parse") {
+		t.Fatalf("known source common directory still triggered Git discovery: %s", data)
+	}
+	configCalls := 0
+	for _, call := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.HasPrefix(call, "config ") {
+			configCalls++
+		}
+	}
+	if configCalls != 1 {
+		t.Fatalf("layer resolution used %d Git config lookups, want 1: %s", configCalls, data)
+	}
+}
+
+func TestMainRepoRootUsesOneCommonDirectoryQuery(t *testing.T) {
+	repo, worktree := setupSeedWorktree(t, "")
+	logPath, _ := installGitWrapper(t, false)
+	t.Setenv("PATH", filepath.Dir(logPath)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, olderGit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("olderGit=%t", olderGit), func(t *testing.T) {
+			if olderGit {
+				t.Setenv("TREEHOUSE_REJECT_PATH_FORMAT", "1")
+			}
+			if err := os.WriteFile(logPath, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got := mainRepoRoot(worktree)
+			gotInfo, err := os.Stat(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantInfo, err := os.Stat(repo)
+			if err != nil || !os.SameFile(gotInfo, wantInfo) {
+				t.Fatalf("main root = %q, want %q: %v", got, repo, err)
+			}
+			data, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := strings.Split(strings.TrimSpace(string(data)), "\n")
+			wantCalls := 1
+			if olderGit {
+				wantCalls = 2
+			}
+			if len(calls) != wantCalls || !strings.Contains(calls[0], "--path-format=absolute") {
+				t.Fatalf("common-directory discovery = %q, want absolute query first and %d calls", data, wantCalls)
+			}
+			if olderGit && strings.Contains(calls[1], "--path-format=absolute") {
+				t.Fatalf("older Git did not fall back to the relative query: %s", data)
+			}
+		})
 	}
 }
 
@@ -1378,6 +1489,362 @@ func TestSeedWorktreeIgnoresDirtyCommittedManifest(t *testing.T) {
 	}
 }
 
+// isolateIncludeConfig prevents host policy from authorizing seeds in fixtures.
+func isolateIncludeConfig(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	for _, key := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_CONFIG", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_PARAMETERS"} {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	return home
+}
+
+func assertSeedInventory(t *testing.T, repo, worktree string, manifest []byte, want ...string) {
+	t.Helper()
+	got, err := SeedWorktreeWithInventory(repo, worktree, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("seed inventory = %q, want %q", got, want)
+	}
+	for _, name := range got {
+		source, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertTestFile(t, worktree, name, string(source))
+	}
+}
+
+func TestSeedLayersUnconfiguredParity(t *testing.T) {
+	isolateIncludeConfig(t)
+	repo, worktree := setupSeedWorktree(t, "selected.env\nnested/**\n!nested/private.env\n")
+	for _, name := range []string{"selected.env", "nested/public.env", "nested/private.env", "unselected.env"} {
+		writeTestFile(t, repo, name, "bytes for "+name+"\x00\r\n")
+	}
+	assertSeedInventory(t, repo, worktree, nil, "nested/public.env", "selected.env")
+	for _, name := range []string{"nested/public.env", "selected.env"} {
+		data, err := os.ReadFile(filepath.Join(worktree, filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("%s %x", name, sha256.Sum256(data))
+	}
+}
+
+func TestSeedLayersDiscoveryAndPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name, user, clone, repository string
+		want                          []string
+	}{
+		{"absent", "", "", "", nil},
+		{"user alone", "user.env", "", "", []string{"user.env"}},
+		{"clone alone", "", "clone.env", "", []string{"clone.env"}},
+		{"clone negates user", "conflict.env", "!conflict.env", "", nil},
+		{"repository negates user", "conflict.env", "", "!conflict.env", nil},
+		{"repository negates clone", "", "conflict.env", "!conflict.env", nil},
+		{"repository readds", "conflict.env", "!conflict.env", "conflict.env", []string{"conflict.env"}},
+		{"additions", "user.env", "clone.env", "repository.env", []string{"user.env", "clone.env", "repository.env"}},
+		{"excluded parent", "nested/", "!nested/private.env", "", []string{"nested/private.env", "nested/public.env"}},
+		{"traversable parent", "nested/**", "!nested/private.env", "", []string{"nested/public.env"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := isolateIncludeConfig(t)
+			writeTestFile(t, home, "xdg/git/worktreeinclude", "secret.env\n")
+			repo, worktree := setupSeedWorktree(t, tc.repository)
+			if tc.repository == "" {
+				mustGit(t, repo, "rm", "-f", ".worktreeinclude")
+				mustGit(t, repo, "commit", "-m", "no committed manifest")
+				mustGit(t, worktree, "reset", "--hard", "main")
+			}
+			// Neither an untracked nor a dirty source manifest supplies policy.
+			writeTestFile(t, repo, ".worktreeinclude", "secret.env\n")
+			for _, name := range []string{"user.env", "clone.env", "repository.env", "conflict.env", "secret.env", "nested/private.env", "nested/public.env"} {
+				writeTestFile(t, repo, name, name+"\n")
+			}
+			if tc.user != "" {
+				writeTestFile(t, repo, "personal include", tc.user)
+				mustGit(t, repo, "config", "worktree.includeFile", "personal include")
+			}
+			if tc.clone != "" {
+				common, err := CommonGitDir(repo)
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeTestFile(t, common, "info/worktreeinclude", tc.clone)
+			}
+			assertSeedInventory(t, repo, worktree, nil, tc.want...)
+		})
+	}
+}
+
+func TestSeedLayersMatchOrderedGitFiles(t *testing.T) {
+	isolateIncludeConfig(t)
+	layers := []string{
+		"\xef\xbb\xbf# comment\r\n/space name.env\r\n/anchored.env\r\nnested/**\r\n*break.env\r\nremove.env", // no LF
+		"\xef\xbb\xbf!remove.env\r\n!nested/private.env\r\n\\#hash.env\r\n\\!bang.env",                       // per-file BOM
+		"\xef\xbb\xbfrepository.env\ntrailing\\ \n",
+	}
+	repo, worktree := setupSeedWorktree(t, layers[2])
+	mustGit(t, repo, "config", "core.autocrlf", "false")
+	for _, name := range []string{"space name.env", "anchored.env", "nested/anchored.env", "nested/public.env", "nested/private.env", "remove.env", "repository.env", "#hash.env", "!bang.env", "line\nbreak.env", "trailing "} {
+		if runtime.GOOS == "windows" && (strings.Contains(name, "\n") || strings.HasSuffix(name, " ")) {
+			continue // Windows filenames cannot contain LF or end with spaces.
+		}
+		writeTestFile(t, repo, name, "raw\x00\r\n"+name)
+	}
+	paths := make([]string, len(layers))
+	args := []string{"ls-files", "-z", "--others", "--ignored"}
+	for i, layer := range layers {
+		paths[i] = filepath.Join(t.TempDir(), "include")
+		if err := os.WriteFile(paths[i], []byte(layer), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		args = append(args, "--exclude-from="+paths[i])
+	}
+	mustGit(t, repo, "config", "worktree.includeFile", paths[0])
+	common, err := CommonGitDir(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, common, "info/worktreeinclude", layers[1])
+	oracle, err := gitOutput(repo, nil, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := selectedSeedPathsEnv(repo, worktree, nil, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, oracle) {
+		t.Fatalf("combined matcher = %q, ordered Git files = %q", got, oracle)
+	}
+}
+
+func TestSeedLayersInvalidDestinationRevisionRemainsAnError(t *testing.T) {
+	isolateIncludeConfig(t)
+	repo, worktree := setupSeedWorktree(t, "")
+	if _, err := selectedSeedPathsEnv(repo, worktree, nil, "refs/heads/missing", nil); err == nil {
+		t.Fatal("missing destination revision must remain a seeding error")
+	}
+}
+
+func TestSeedLayersDanglingCloneSidecarIsAnError(t *testing.T) {
+	isolateIncludeConfig(t)
+	repo, worktree := setupSeedWorktree(t, "")
+	common, err := CommonGitDir(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecar := filepath.Join(common, "info", "worktreeinclude")
+	if err := os.Symlink(filepath.Join(common, "missing-worktreeinclude"), sidecar); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := selectedSeedPathsEnv(repo, worktree, nil, "", nil); err == nil || !strings.Contains(err.Error(), "read clone include") {
+		t.Fatalf("dangling clone sidecar error = %v, want persistent-layer read error", err)
+	}
+	if err := os.Remove(sidecar); err != nil {
+		t.Fatal(err)
+	}
+	got, err := selectedSeedPathsEnv(repo, worktree, nil, "", nil)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("absent clone sidecar = %q, %v; want no rules", got, err)
+	}
+	if err := os.Symlink(filepath.Join(common, "missing-worktreeinclude"), sidecar); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	got, err = selectedSeedPathsEnv(repo, worktree, nil, "", []byte{})
+	if err != nil || len(got) != 0 {
+		t.Fatalf("empty explicit override = %q, %v; want sidecar bypass", got, err)
+	}
+}
+
+func TestSeedLayersConfigLookup(t *testing.T) {
+	for _, mode := range []string{"tilde", "relative spaces", "include", "includeIf", "scope", "command config", "empty file", "missing", "empty value", "directory", "malformed"} {
+		t.Run(mode, func(t *testing.T) {
+			home := isolateIncludeConfig(t)
+			repo, worktree := setupSeedWorktree(t, "")
+			writeTestFile(t, repo, "selected.env", "selected\n")
+			writeTestFile(t, home, "personal include", "selected.env")
+			path := filepath.Join(home, "personal include")
+			wantError := ""
+			switch mode {
+			case "tilde":
+				path = "~/personal include"
+			case "relative spaces":
+				writeTestFile(t, repo, " policy file", "selected.env")
+				path = " policy file" // whitespace is part of the path, not padding.
+			case "include", "includeIf":
+				included := filepath.Join(home, "included config")
+				mustGit(t, repo, "config", "--file", included, "worktree.includeFile", path)
+				key := "include.path"
+				if mode == "includeIf" {
+					common, err := CommonGitDir(repo)
+					if err != nil {
+						t.Fatal(err)
+					}
+					common, err = filepath.EvalSymlinks(common)
+					if err != nil {
+						t.Fatal(err)
+					}
+					// Git appends ** to a trailing /; match the gitdir itself instead.
+					key = "includeIf.gitdir:" + filepath.ToSlash(common) + ".path"
+				}
+				mustGit(t, repo, "config", "--global", key, included)
+			case "scope":
+				mustGit(t, repo, "config", "--global", "worktree.includeFile", "missing-global")
+			case "command config":
+				t.Setenv("GIT_CONFIG_COUNT", "1")
+				t.Setenv("GIT_CONFIG_KEY_0", "worktree.includeFile")
+				t.Setenv("GIT_CONFIG_VALUE_0", path)
+				path = "missing-local"
+			case "empty file":
+				writeTestFile(t, home, "personal include", "")
+			case "missing":
+				path += "-missing"
+				wantError = "worktree.includeFile"
+			case "empty value":
+				path = ""
+				wantError = "worktree.includeFile"
+			case "directory":
+				path = home // deterministic unreadability even as root.
+				wantError = "worktree.includeFile"
+			case "malformed":
+				writeTestFile(t, home, ".gitconfig", "[invalid\n")
+				wantError = "worktree.includeFile"
+			}
+			if mode != "include" && mode != "includeIf" && mode != "malformed" {
+				mustGit(t, repo, "config", "worktree.includeFile", path)
+			}
+			got, err := SeedWorktreeWithInventory(repo, worktree, nil)
+			if wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), wantError) {
+					t.Fatalf("expected %s error, got inventory %q, error %v", wantError, got, err)
+				}
+				return
+			}
+			want := []string{"selected.env"}
+			if mode == "empty file" {
+				want = nil
+			}
+			if err != nil || !slices.Equal(got, want) {
+				t.Fatalf("inventory %q, error %v; want %q", got, err, want)
+			}
+		})
+	}
+}
+
+func TestSeedLayersSourceContextAndDestinationRevision(t *testing.T) {
+	isolateIncludeConfig(t)
+	repo, worktree := setupSeedWorktree(t, "old.env\n")
+	writeTestFile(t, repo, ".worktreeinclude", "new.env\n")
+	mustGit(t, repo, "add", "-f", ".worktreeinclude")
+	mustGit(t, repo, "commit", "-m", "new policy")
+	mustGit(t, repo, "config", "extensions.worktreeConfig", "true")
+	writeTestFile(t, repo, "source.include", "personal.env\n")
+	mustGit(t, repo, "config", "--worktree", "worktree.includeFile", "source.include")
+	mustGit(t, worktree, "config", "--worktree", "worktree.includeFile", "broken-destination")
+	common, err := CommonGitDir(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, common, "info/worktreeinclude", "clone.env\n")
+	// The private linked-worktree gitdir must not be used as the clone layer.
+	private, err := gitOutput(worktree, nil, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, strings.TrimSpace(string(private)), "info/worktreeinclude", "secret.env\n")
+	for _, name := range []string{"old.env", "new.env", "personal.env", "clone.env", "secret.env"} {
+		writeTestFile(t, repo, name, name)
+	}
+	nested := filepath.Join(worktree, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := FindMainRepoRootFrom(nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSeedInventory(t, root, worktree, nil, "old.env", "personal.env", "clone.env")
+}
+
+func TestSeedLayersNonstandardMetadataAndIndependentIgnore(t *testing.T) {
+	isolateIncludeConfig(t)
+	repo, worktree := setupSeedWorktree(t, "")
+	// Relocate the source metadata and let Git rewrite its gitfile.
+	metadata := filepath.Join(t.TempDir(), "shared metadata")
+	mustGit(t, "", "init", "--separate-git-dir="+metadata, repo)
+	writeTestFile(t, repo, ".gitignore", "repository.env\n!unignored.env\n")
+	writeTestFile(t, metadata, "info/exclude", "clone.env\nunselected.env\n")
+	globalIgnore := filepath.Join(t.TempDir(), "global ignore")
+	if err := os.WriteFile(globalIgnore, []byte("global.env\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "config", "core.excludesFile", globalIgnore)
+	writeTestFile(t, metadata, "info/worktreeinclude", "*.env\n!unselected.env\n")
+	writeTestFile(t, repo, "tracked.env", "indexed")
+	mustGit(t, repo, "add", "-f", "tracked.env")
+	writeTestFile(t, repo, "tracked.env", "modified")
+	for _, name := range []string{"repository.env", "clone.env", "global.env", "unselected.env", "unignored.env"} {
+		writeTestFile(t, repo, name, name)
+	}
+	// Selection can run independently of the old worktree backlink after relocation.
+	got, err := selectedSeedPathsEnv(repo, "", nil, "HEAD", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "clone.env\x00global.env\x00repository.env\x00"
+	if string(got) != want {
+		t.Fatalf("eligible paths %q, want %q (worktree %s)", got, want, worktree)
+	}
+}
+
+func TestSeedLayersOverrideBypassesBrokenDefaults(t *testing.T) {
+	for _, broken := range []string{"configured file", "clone directory", "committed directory"} {
+		t.Run(broken, func(t *testing.T) {
+			isolateIncludeConfig(t)
+			repo, worktree := setupSeedWorktree(t, "default.env\n")
+			switch broken {
+			case "configured file":
+				mustGit(t, repo, "config", "worktree.includeFile", "missing")
+			case "clone directory":
+				common, err := CommonGitDir(repo)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Join(common, "info", "worktreeinclude"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			case "committed directory":
+				mustGit(t, repo, "rm", "-f", ".worktreeinclude")
+				writeTestFile(t, repo, ".worktreeinclude/child", "not a blob")
+				mustGit(t, repo, "add", "-f", ".worktreeinclude/child")
+				mustGit(t, repo, "commit", "-m", "invalid manifest")
+				mustGit(t, worktree, "reset", "--hard", "main")
+			}
+			writeTestFile(t, repo, "explicit.env", "explicit\n")
+			assertSeedInventory(t, repo, worktree, []byte{})
+			assertSeedInventory(t, repo, worktree, []byte("explicit.env"), "explicit.env")
+			if _, err := selectedSeedPathsEnv(repo, worktree, nil, "", nil); err == nil {
+				t.Fatal("broken default must fail when override is removed")
+			}
+		})
+	}
+}
+
 func setupSeedWorktree(t *testing.T, manifest string) (string, string) {
 	t.Helper()
 	base := t.TempDir()
@@ -1426,6 +1893,63 @@ func assertGitCheckoutFile(t *testing.T, root, name, want string) {
 		t.Fatalf("%s = %q, want %q", name, data, want)
 	}
 }
+func installGitWrapper(t *testing.T, rejectPathFormat bool) (string, string) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	source := filepath.Join(root, "main.go")
+	code := `package main
+import (
+  "fmt"
+  "os"
+  "os/exec"
+  "strings"
+)
+func main() {
+  args := os.Args[1:]
+  if log := os.Getenv("TREEHOUSE_GIT_LOG"); log != "" {
+    f, err := os.OpenFile(log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+    if err != nil { panic(err) }
+    _, _ = fmt.Fprintln(f, strings.Join(args, " "))
+    _ = f.Close()
+  }
+  if os.Getenv("TREEHOUSE_REJECT_PATH_FORMAT") == "1" {
+    for _, arg := range args {
+      if arg == "--path-format=absolute" { os.Exit(129) }
+    }
+  }
+  cmd := exec.Command(os.Getenv("TREEHOUSE_REAL_GIT"), args...)
+  cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+  if err := cmd.Run(); err != nil {
+    if exit, ok := err.(*exec.ExitError); ok { os.Exit(exit.ExitCode()) }
+    fmt.Fprintln(os.Stderr, err)
+    os.Exit(1)
+  }
+}`
+	if err := os.WriteFile(source, []byte(code), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	name := "git"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	wrapper := filepath.Join(root, name)
+	cmd := exec.Command("go", "build", "-o", wrapper, source)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build git wrapper: %v\n%s", err, output)
+	}
+	logPath := filepath.Join(root, "git.log")
+	t.Setenv("TREEHOUSE_REAL_GIT", realGit)
+	t.Setenv("TREEHOUSE_GIT_LOG", logPath)
+	if rejectPathFormat {
+		t.Setenv("TREEHOUSE_REJECT_PATH_FORMAT", "1")
+	}
+	return logPath, wrapper
+}
+
 func mustGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)

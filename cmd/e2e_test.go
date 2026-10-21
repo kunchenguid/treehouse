@@ -831,6 +831,99 @@ func TestGetIncludeFileReplacesCommittedManifest(t *testing.T) {
 	}
 }
 
+func TestGetIncludeLayersAndOverride(t *testing.T) {
+	repo, home := setupTestRepo(t)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+	gitCmd(t, repo, "config", "core.autocrlf", "false")
+	for name, contents := range map[string]string{
+		".gitignore": "*.seed\n", ".worktreeinclude": "repository.seed\nuser.seed\n",
+		"repository.seed": "repository\n", "user.seed": "user\n", "clone.seed": "clone\n", "explicit.seed": "explicit\n", "veto.seed": "veto\n",
+		"personal.include": "user.seed\nveto.seed\n",
+	} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCmd(t, repo, "add", ".gitignore", ".worktreeinclude")
+	gitCmd(t, repo, "commit", "-m", "layered include policy")
+	gitCmd(t, repo, "push", "origin", "main")
+	gitCmd(t, repo, "config", "worktree.includeFile", "personal.include")
+	common := gitCmd(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	sidecar := filepath.Join(common, "info", "worktreeinclude")
+	// Clone negations remove user selections; the repository re-adds user.seed.
+	if err := os.WriteFile(sidecar, []byte("!user.seed\n!veto.seed\nclone.seed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Invoke from a nested directory in a linked checkout, but read source policy.
+	linked := filepath.Join(t.TempDir(), "linked")
+	gitCmd(t, repo, "worktree", "add", "--detach", linked)
+	nested := filepath.Join(linked, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code := runTreehouseFromDir(t, repo, nested, home, nil, "get", "--lease", "--json")
+	if code != 0 {
+		t.Fatalf("layered get: %s", stderr)
+	}
+	var lease leaseJSONResult
+	if err := json.Unmarshal([]byte(stdout), &lease); err != nil {
+		t.Fatal(err)
+	}
+	assertSeeds := func(want ...string) {
+		t.Helper()
+		selected := map[string]bool{}
+		for _, name := range want {
+			selected[name] = true
+		}
+		for _, name := range []string{"repository.seed", "user.seed", "clone.seed", "explicit.seed", "veto.seed"} {
+			data, err := os.ReadFile(filepath.Join(lease.Path, name))
+			if selected[name] {
+				if err != nil || string(data) != strings.TrimSuffix(name, ".seed")+"\n" {
+					t.Fatalf("seed %s = %q, %v", name, data, err)
+				}
+			} else if !os.IsNotExist(err) {
+				t.Fatalf("unexpected seed %s = %q, %v", name, data, err)
+			}
+		}
+	}
+	returnSlot := func() {
+		t.Helper()
+		if _, stderr, code := runTreehouse(t, repo, home, nil, "return", lease.Path); code != 0 {
+			t.Fatalf("return: %s", stderr)
+		}
+	}
+	assertSeeds("repository.seed", "user.seed", "clone.seed")
+	returnSlot()
+	// Both personal layers now fail to read. Overrides must not inspect either.
+	if err := os.Remove(filepath.Join(repo, "personal.include")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(sidecar); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(sidecar, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, manifest := range []string{"explicit.seed\n", ""} {
+		if err := os.WriteFile(filepath.Join(nested, "override.include"), []byte(manifest), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, code = runTreehouseFromDir(t, repo, nested, home, nil, "get", "--lease", "--include-file", "override.include")
+		if code != 0 || strings.TrimSpace(stdout) != lease.Path {
+			t.Fatalf("override reuse: stdout=%q stderr=%s", stdout, stderr)
+		}
+		if manifest == "" {
+			assertSeeds()
+		} else {
+			assertSeeds("explicit.seed")
+		}
+		returnSlot()
+	}
+}
+
 func TestGetIncludeFileReadFailureLeavesPoolUntouched(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	// A directory is unreadable as a manifest even when tests run as root.

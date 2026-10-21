@@ -586,6 +586,152 @@ func TestAcquire_ManifestOverrideRefreshesAndRemovesSeedsOnReuse(t *testing.T) {
 	assertFileContents(t, filepath.Join(empty, "unmanaged.seed"), "keep\n")
 }
 
+func isolateSeedConfig(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+}
+
+func TestAcquire_PersonalLayersRefreshAndInventoryCleanup(t *testing.T) {
+	isolateSeedConfig(t)
+	repo, poolDir := setupLocalRepo(t)
+	write := func(root, name, data string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, name), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(repo, ".gitignore", "*.seed\n")
+	runGit(t, repo, "add", ".gitignore")
+	runGit(t, repo, "commit", "-m", "ignore seeds without repository manifest")
+	common, err := gitvcs.CommonGitDir(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personal := t.TempDir()
+	write(personal, "include", "first.seed\n")
+	runGit(t, repo, "config", "worktree.includeFile", filepath.Join(personal, "include"))
+	write(filepath.Join(common, "info"), "worktreeinclude", "clone.seed\n")
+	write(repo, "first.seed", "first\n")
+	write(repo, "second.seed", "second\n")
+	write(repo, "clone.seed", "clone\n")
+	path, err := Acquire(repo, poolDir, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFileContents(t, filepath.Join(path, "first.seed"), "first\n")
+	assertFileContents(t, filepath.Join(path, "clone.seed"), "clone\n")
+	write(path, "unmanaged.seed", "keep\n")
+	write(personal, "include", "second.seed\n")
+	if err := os.Remove(filepath.Join(common, "info", "worktreeinclude")); err != nil {
+		t.Fatal(err)
+	}
+	clearOwnerReservation(t, poolDir, path)
+	reused, err := Acquire(repo, poolDir, 1, nil)
+	if err != nil || reused != path {
+		t.Fatalf("reuse = %q, %v; want %q", reused, err, path)
+	}
+	for _, name := range []string{"first.seed", "clone.seed"} {
+		if _, err := os.Stat(filepath.Join(path, name)); !os.IsNotExist(err) {
+			t.Fatalf("old inventory path %s survived reuse: %v", name, err)
+		}
+	}
+	assertFileContents(t, filepath.Join(path, "second.seed"), "second\n")
+	if err := os.Remove(filepath.Join(personal, "include")); err != nil {
+		t.Fatal(err)
+	}
+	// Return must not resolve a now-broken personal policy.
+	if err := Release(poolDir, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(path, "second.seed")); !os.IsNotExist(err) {
+		t.Fatalf("old inventory path survived return: %v", err)
+	}
+	assertFileContents(t, filepath.Join(path, "unmanaged.seed"), "keep\n")
+	runGit(t, repo, "config", "--unset", "worktree.includeFile")
+	reused, err = Acquire(repo, poolDir, 1, nil)
+	if err != nil || reused != path {
+		t.Fatalf("reuse after removing personal layers = %q, %v", reused, err)
+	}
+	assertFileContents(t, filepath.Join(path, "unmanaged.seed"), "keep\n")
+}
+
+func TestAcquire_PersistentLayerReadErrorsRemoveOrQuarantine(t *testing.T) {
+	for _, reused := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reused=%t", reused), func(t *testing.T) {
+			isolateSeedConfig(t)
+			repo, poolDir := setupLocalRepo(t)
+			path := ""
+			if reused {
+				var err error
+				path, err = Acquire(repo, poolDir, 1, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := Release(poolDir, path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Each failure returns the fixture to its original available state;
+			// share repository setup and the initial acquisition across layers.
+			for _, layer := range []string{"user", "clone"} {
+				t.Run(layer, func(t *testing.T) {
+					if layer == "user" {
+						runGit(t, repo, "config", "worktree.includeFile", "missing.include")
+						t.Cleanup(func() { runGit(t, repo, "config", "--unset", "worktree.includeFile") })
+					} else {
+						common, err := gitvcs.CommonGitDir(repo)
+						if err != nil {
+							t.Fatal(err)
+						}
+						sidecar := filepath.Join(common, "info", "worktreeinclude")
+						if err := os.Mkdir(sidecar, 0o755); err != nil {
+							t.Fatal(err)
+						}
+						t.Cleanup(func() {
+							if err := os.Remove(sidecar); err != nil {
+								t.Fatal(err)
+							}
+						})
+					}
+					if _, err := Acquire(repo, poolDir, 1, nil); err == nil {
+						t.Fatal("unreadable persistent layer must fail acquisition")
+					}
+					state, err := ReadState(poolDir)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !reused {
+						if len(state.Worktrees) != 0 {
+							t.Fatalf("fresh failed slot was not removed: %#v", state.Worktrees)
+						}
+						out := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain")
+						listed, err := out.Output()
+						if err != nil || strings.Count(string(listed), "worktree ") != 1 {
+							t.Fatalf("fresh failure left registered worktree: %s, %v", listed, err)
+						}
+						return
+					}
+					if len(state.Worktrees) != 1 || !state.Worktrees[0].Leased || state.Worktrees[0].Path != path {
+						t.Fatalf("reused failed slot not quarantined: %#v", state.Worktrees)
+					}
+					if _, err := Acquire(repo, poolDir, 1, nil); err == nil {
+						t.Fatal("failed-seeding quarantine was reused")
+					}
+					if err := Release(poolDir, path); err != nil {
+						t.Fatalf("named return should not reread bad layers: %v", err)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestAcquire_IgnoresDirtyAndUntrackedWorktreeInclude(t *testing.T) {
 	repoDir, poolDir := setupLocalRepo(t)
 	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("*.env\n"), 0o644); err != nil {
@@ -1105,7 +1251,7 @@ func TestAcquire_QuarantinesReusedWorktreeAfterPartialSeedFailure(t *testing.T) 
 		t.Fatal(err)
 	}
 	oldSeedWorktree := seedWorktree
-	seedWorktree = func(_ string, path string, _ []byte) ([]string, error) {
+	seedWorktree = func(_ string, path, _ string, _ []byte) ([]string, error) {
 		if err := os.WriteFile(filepath.Join(path, "partial.env"), []byte("partial\n"), 0o644); err != nil {
 			return nil, err
 		}
@@ -1147,7 +1293,7 @@ func TestAcquire_RemovesPartialSeedsWhenQuarantineWriteFails(t *testing.T) {
 	}
 
 	oldSeedWorktree := seedWorktree
-	seedWorktree = func(_ string, path string, _ []byte) ([]string, error) {
+	seedWorktree = func(_ string, path, _ string, _ []byte) ([]string, error) {
 		if err := os.WriteFile(filepath.Join(path, "partial.env"), []byte("partial\n"), 0o644); err != nil {
 			return nil, err
 		}
@@ -1179,7 +1325,7 @@ func TestAcquire_QuarantinesNewWorktreeWhenSeedCleanupFails(t *testing.T) {
 	repoDir, poolDir := setupLocalRepo(t)
 	oldSeedWorktree := seedWorktree
 	oldRemoveWorktree := removeWorktree
-	seedWorktree = func(string, string, []byte) ([]string, error) { return nil, errors.New("seeding failed") }
+	seedWorktree = func(string, string, string, []byte) ([]string, error) { return nil, errors.New("seeding failed") }
 	removeWorktree = func(string, string) error { return errors.New("cleanup failed") }
 	t.Cleanup(func() {
 		seedWorktree = oldSeedWorktree
@@ -1233,11 +1379,11 @@ func TestAcquire_SeedingDoesNotFollowWorktreeSymlinks(t *testing.T) {
 	}
 	seeded := filepath.Join(wtPath, ".env")
 	oldSeedWorktree := seedWorktree
-	seedWorktree = func(repoRoot, path string, manifest []byte) ([]string, error) {
+	seedWorktree = func(repoRoot, path, commonDir string, manifest []byte) ([]string, error) {
 		if err := os.Symlink(sentinel, filepath.Join(path, ".env")); err != nil {
 			return nil, err
 		}
-		return oldSeedWorktree(repoRoot, path, manifest)
+		return oldSeedWorktree(repoRoot, path, commonDir, manifest)
 	}
 	t.Cleanup(func() { seedWorktree = oldSeedWorktree })
 

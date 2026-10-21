@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -59,10 +60,13 @@ func GetDefaultBranch(repoRoot string) (string, error) {
 
 func mainRepoRoot(repoRoot string) string {
 	mainRoot := repoRoot
-	if dir, err := runGit(repoRoot, "rev-parse", "--git-common-dir"); err == nil {
-		if d, err2 := runGit(repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"); err2 == nil {
-			dir = d
-		}
+	// Ask for the absolute path first: modern Git needs only one process.
+	// Keep the existing relative-path query for Git without --path-format.
+	dir, err := runGit(repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		dir, err = runGit(repoRoot, "rev-parse", "--git-common-dir")
+	}
+	if err == nil {
 		if root, ok := repoRootFromCommonGitDir(dir); ok {
 			mainRoot = root
 		}
@@ -84,6 +88,22 @@ func CommonGitDir(dir string) (string, error) {
 		}
 	}
 	p := filepath.Clean(filepath.FromSlash(out))
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(dir, p)
+	}
+	return p, nil
+}
+
+func commonGitDirEnv(dir string, env []string) (string, error) {
+	out, err := gitOutputEnv(dir, env, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		// Older git without --path-format falls back to a possibly-relative path.
+		out, err = gitOutputEnv(dir, env, nil, "rev-parse", "--git-common-dir")
+		if err != nil {
+			return "", err
+		}
+	}
+	p := filepath.Clean(filepath.FromSlash(strings.TrimSpace(string(out))))
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(dir, p)
 	}
@@ -338,8 +358,8 @@ func PruneWorktrees(repoRoot string) error {
 	return err
 }
 
-// SeedWorktree copies ignored files selected by manifest, or by the committed
-// .worktreeinclude at the destination HEAD when manifest is nil.
+// SeedWorktree copies ignored files selected by manifest, or by the layered
+// user, clone, and destination-committed include rules when manifest is nil.
 func SeedWorktree(repoRoot, worktreePath string, manifest []byte) error {
 	_, err := SeedWorktreeWithInventory(repoRoot, worktreePath, manifest)
 	return err
@@ -348,7 +368,11 @@ func SeedWorktree(repoRoot, worktreePath string, manifest []byte) error {
 // SeedWorktreeWithInventory returns the paths it copied so the pool can remove
 // them later without trusting mutable content in the acquired worktree.
 func SeedWorktreeWithInventory(repoRoot, worktreePath string, manifest []byte) ([]string, error) {
-	return seedWorktreeWithInventory(repoRoot, worktreePath, nil, nil, "", manifest)
+	return SeedWorktreeWithInventoryWithCommonGitDir(repoRoot, worktreePath, "", manifest)
+}
+
+func SeedWorktreeWithInventoryWithCommonGitDir(repoRoot, worktreePath, sourceCommonDir string, manifest []byte) ([]string, error) {
+	return seedWorktreeWithInventory(repoRoot, worktreePath, nil, nil, "", manifest, sourceCommonDir)
 }
 
 func SeedWorktreeWithInventoryFromGitStore(repoRoot, worktreePath, gitDir, ref string, manifest []byte) ([]string, error) {
@@ -360,11 +384,11 @@ func SeedWorktreeWithInventoryFromGitStore(repoRoot, worktreePath, gitDir, ref s
 	if trackedOutput == nil {
 		trackedOutput = []byte{}
 	}
-	return seedWorktreeWithInventory(repoRoot, worktreePath, env, trackedOutput, ref, manifest)
+	return seedWorktreeWithInventory(repoRoot, worktreePath, env, trackedOutput, ref, manifest, gitDir)
 }
 
-func seedWorktreeWithInventory(repoRoot, worktreePath string, gitEnv []string, trackedOutput []byte, manifestRef string, manifest []byte) ([]string, error) {
-	selected, err := selectedSeedPathsEnv(repoRoot, worktreePath, gitEnv, manifestRef, manifest)
+func seedWorktreeWithInventory(repoRoot, worktreePath string, gitEnv []string, trackedOutput []byte, manifestRef string, manifest []byte, sourceCommonDir string) ([]string, error) {
+	selected, err := selectedSeedPathsEnvWithCommonDir(repoRoot, worktreePath, gitEnv, manifestRef, manifest, sourceCommonDir)
 	if err != nil || len(selected) == 0 {
 		return nil, err
 	}
@@ -524,10 +548,14 @@ func worktreeCaseInsensitive(worktreePath string) (bool, error) {
 const worktreeIncludeName = ".worktreeinclude"
 
 func selectedSeedPathsEnv(repoRoot, worktreePath string, gitEnv []string, manifestRef string, manifest []byte) ([]byte, error) {
-	// An explicitly empty override must not fall back to repository selections.
+	return selectedSeedPathsEnvWithCommonDir(repoRoot, worktreePath, gitEnv, manifestRef, manifest, "")
+}
+
+func selectedSeedPathsEnvWithCommonDir(repoRoot, worktreePath string, gitEnv []string, manifestRef string, manifest []byte, sourceCommonDir string) ([]byte, error) {
+	// A non-nil override bypasses discovery and errors in every default layer.
 	if manifest == nil {
 		var err error
-		manifest, err = committedWorktreeInclude(repoRoot, worktreePath, gitEnv, manifestRef)
+		manifest, err = defaultWorktreeInclude(repoRoot, worktreePath, gitEnv, manifestRef, sourceCommonDir)
 		if err != nil {
 			return nil, err
 		}
@@ -536,6 +564,77 @@ func selectedSeedPathsEnv(repoRoot, worktreePath string, gitEnv []string, manife
 		return nil, nil
 	}
 	return selectedSeedPathsWithManifestEnv(repoRoot, manifest, gitEnv)
+}
+
+// defaultWorktreeInclude snapshots all layers in Git precedence order: user,
+// clone, then repository. Metadata and configuration belong to the source;
+// only the committed manifest belongs to the destination revision.
+func defaultWorktreeInclude(repoRoot, worktreePath string, gitEnv []string, ref, sourceCommonDir string) ([]byte, error) {
+	var manifest []byte
+	configured, err := gitOutputEnv(repoRoot, gitEnv, nil,
+		"config", "--null", "--path", "--get", "worktree.includeFile")
+	if err != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			return nil, fmt.Errorf("resolve worktree.includeFile: %w", err)
+		}
+	} else {
+		filename := string(bytes.TrimSuffix(configured, []byte{0}))
+		if filename == "" {
+			return nil, fmt.Errorf("worktree.includeFile is empty: configure a manifest path or unset the key")
+		}
+		filename = filepath.FromSlash(filename)
+		if !filepath.IsAbs(filename) {
+			filename = filepath.Join(repoRoot, filename)
+		}
+		layer, err := os.ReadFile(filename)
+		if err != nil {
+			return nil, fmt.Errorf("read worktree.includeFile %q: %w", filename, err)
+		}
+		manifest = appendIncludeLayer(manifest, layer)
+	}
+
+	commonDir := sourceCommonDir
+	if commonDir == "" {
+		var err error
+		commonDir, err = commonGitDirEnv(repoRoot, gitEnv)
+		if err != nil {
+			return nil, fmt.Errorf("resolve include common Git directory: %w", err)
+		}
+	}
+	commonDir = filepath.Clean(filepath.FromSlash(commonDir))
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(repoRoot, commonDir)
+	}
+	filename := filepath.Join(commonDir, "info", "worktreeinclude")
+	var layer []byte
+	if _, err := os.Lstat(filename); err == nil {
+		layer, err = os.ReadFile(filename)
+		if err != nil {
+			return nil, fmt.Errorf("read clone include %q: %w", filename, err)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("read clone include %q: %w", filename, err)
+	}
+	manifest = appendIncludeLayer(manifest, layer)
+
+	layer, err = committedWorktreeInclude(repoRoot, worktreePath, gitEnv, ref)
+	if err != nil {
+		return nil, err
+	}
+	return appendIncludeLayer(manifest, layer), nil
+}
+
+// Git strips a BOM at the beginning of each exclude file. Preserve that and
+// line boundaries when presenting multiple files as a single pattern stream;
+// leave all other bytes (including spaces, escapes, and CRLF) to Git.
+func appendIncludeLayer(manifest, layer []byte) []byte {
+	layer = bytes.TrimPrefix(layer, []byte{0xef, 0xbb, 0xbf})
+	manifest = append(manifest, layer...)
+	if len(layer) > 0 && layer[len(layer)-1] != '\n' {
+		manifest = append(manifest, '\n')
+	}
+	return manifest
 }
 
 // committedWorktreeInclude returns the blob of .worktreeinclude at the commit
@@ -550,28 +649,60 @@ func committedWorktreeInclude(repoRoot, worktreePath string, gitEnv []string, re
 			gitEnv = nil
 		}
 	}
-	listed, err := gitOutputEnv(dir, gitEnv, nil, "ls-tree", "-z", "--name-only", "--full-tree", ref, "--", worktreeIncludeName)
+	// Batch mode resolves the revision and the path's existence, type, and
+	// contents in one Git process. The separate revision query preserves the
+	// old ls-tree behavior: an invalid revision is an error, while a missing
+	// path is an absent optional layer.
+	input := []byte(ref + "^{commit}\n" + ref + ":" + worktreeIncludeName + "\n")
+	response, err := gitOutputEnv(dir, gitEnv, input, "cat-file", "--batch")
 	if err != nil {
 		return nil, err
 	}
-	found := false
-	for _, name := range bytes.Split(bytes.TrimSuffix(listed, []byte{0}), []byte{0}) {
-		if string(name) == worktreeIncludeName {
-			found = true
-			break
-		}
+	_, _, response, missingRevision, err := readCatFileBatch(response)
+	if err != nil {
+		return nil, err
 	}
-	if !found {
+	if missingRevision {
+		return nil, fmt.Errorf("git cat-file could not resolve revision %q", ref)
+	}
+	header, content, _, missingPath, err := readCatFileBatch(response)
+	if err != nil {
+		return nil, err
+	}
+	if missingPath {
 		return nil, nil
 	}
-	kind, err := gitOutputEnv(dir, gitEnv, nil, "cat-file", "-t", ref+":"+worktreeIncludeName)
-	if err != nil {
-		return nil, err
+	if len(header) != 3 {
+		return nil, fmt.Errorf("git cat-file --batch returned malformed output")
 	}
-	if strings.TrimSpace(string(kind)) != "blob" {
+	if header[1] != "blob" {
 		return nil, fmt.Errorf("committed %s is not a file", worktreeIncludeName)
 	}
-	return gitOutputEnv(dir, gitEnv, nil, "cat-file", "blob", ref+":"+worktreeIncludeName)
+	return content, nil
+}
+
+func readCatFileBatch(response []byte) ([]string, []byte, []byte, bool, error) {
+	headerEnd := bytes.IndexByte(response, '\n')
+	if headerEnd < 0 {
+		return nil, nil, nil, false, fmt.Errorf("git cat-file --batch returned malformed output")
+	}
+	header := strings.Fields(string(response[:headerEnd]))
+	if len(header) == 2 && header[1] == "missing" {
+		return header, nil, response[headerEnd+1:], true, nil
+	}
+	if len(header) != 3 {
+		return nil, nil, nil, false, fmt.Errorf("git cat-file --batch returned malformed output")
+	}
+	size, err := strconv.ParseInt(header[2], 10, 64)
+	if err != nil || size < 0 {
+		return nil, nil, nil, false, fmt.Errorf("git cat-file --batch returned malformed output")
+	}
+	contentStart := headerEnd + 1
+	contentEnd := int64(contentStart) + size
+	if contentEnd < int64(contentStart) || contentEnd+1 > int64(len(response)) {
+		return nil, nil, nil, false, fmt.Errorf("git cat-file --batch returned truncated output")
+	}
+	return header, response[contentStart:contentEnd], response[contentEnd+1:], false, nil
 }
 
 func selectedSeedPathsWithManifest(repoRoot string, manifest []byte) ([]byte, error) {
@@ -1465,6 +1596,9 @@ func (*Backend) AddWorktree(repoRoot, path, branch string) error {
 }
 func (*Backend) SeedWorktree(repoRoot, worktreePath string, manifest []byte) ([]string, error) {
 	return SeedWorktreeWithInventory(repoRoot, worktreePath, manifest)
+}
+func (*Backend) SeedWorktreeWithCommonGitDir(repoRoot, worktreePath, sourceCommonDir string, manifest []byte) ([]string, error) {
+	return SeedWorktreeWithInventoryWithCommonGitDir(repoRoot, worktreePath, sourceCommonDir, manifest)
 }
 func (*Backend) PruneWorktrees(repoRoot string) error { return PruneWorktrees(repoRoot) }
 func (*Backend) RemoveWorktree(repoRoot, path string) error {

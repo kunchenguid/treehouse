@@ -115,7 +115,7 @@ type AcquireOptions struct {
 	// Empty keeps the built-in {pool}/{slot}/{repo} layout. It is read only when
 	// a slot is created, so it never moves a worktree already in the pool.
 	WorktreePath string
-	// IncludeManifest replaces the committed manifest; nil keeps the default,
+	// IncludeManifest replaces all include layers; nil keeps the layered default,
 	// while a non-nil empty slice explicitly disables seeding.
 	IncludeManifest []byte
 	// APFSSharing opts in to tracked-file copy-on-write sharing for fresh Git
@@ -207,7 +207,7 @@ func AcquireLeaseInfoWithOptions(repoRoot, poolDir string, poolSize int, postCre
 }
 
 var (
-	seedWorktree       = vcs.SeedWorktree
+	seedWorktree       = vcs.SeedWorktreeWithCommonGitDir
 	removeWorktree     = vcs.RemoveWorktree
 	createBranch       = vcs.CreateBranch
 	writeState         = WriteState
@@ -431,7 +431,11 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		return LeaseInfo{}, err
 	}
 	// An unverifiable requester identity disables reuse, not allocation.
-	commonDir, identityErr := acquisitionCommonGitDir(repoRoot)
+	sourceCommonDir, identityErr := vcs.CommonGitDir(repoRoot)
+	var commonDir os.FileInfo
+	if identityErr == nil {
+		commonDir, identityErr = os.Stat(sourceCommonDir)
+	}
 
 	if opts.branch != "" {
 		exists, err := vcs.LocalBranchExists(repoRoot, opts.branch)
@@ -564,7 +568,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			}
 			// Keep partial ignored files away from later acquisitions until a
 			// human verifies and explicitly returns the worktree.
-			seededPaths, err = seedWorktree(repoRoot, wt.Path, opts.includeManifest)
+			seededPaths, err = seedWorktree(repoRoot, wt.Path, sourceCommonDir, opts.includeManifest)
 			if err != nil {
 				// Remove every path the failed seed operation reports before relying
 				// on another state write to preserve that partial inventory.
@@ -701,7 +705,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		if err := vcs.AddWorktree(repoRoot, wtPath, branch); err != nil {
 			return fmt.Errorf("failed to create worktree: %w", err)
 		}
-		seededPaths, err := seedWorktree(repoRoot, wtPath, opts.includeManifest)
+		seededPaths, err := seedWorktree(repoRoot, wtPath, sourceCommonDir, opts.includeManifest)
 		if err != nil {
 			// A failed removal leaves a real Git worktree behind. Keep it in
 			// state as quarantined so later acquisitions cannot reuse its slot.
