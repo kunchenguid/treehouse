@@ -213,9 +213,11 @@ func bulkReturnPreconditions(wt pool.WorktreeStatus) pool.ReleasePreconditions {
 // it is the only reason it is not reported available. `treehouse enter` is
 // documented to leave pool state untouched, so resetting such a slot - and
 // counting it among the held worktrees returned - would break that promise.
-// Everything else (leased, in-use, dirty, unverified, and a "you're here" slot
-// that is any of those underneath) is a slot somebody is holding, which is
-// exactly what a bulk return exists to reclaim.
+// An idle locked slot is a target only when its HEAD.lock is Treehouse-owned,
+// which return can recover; an anonymous lock needs manual inspection and is
+// skipped. Everything else (leased, in-use, dirty, unverified, and a "you're
+// here" slot that is any of those underneath) is a slot somebody is holding,
+// which is exactly what a bulk return exists to reclaim.
 //
 // That is deliberately WIDER than the other bulk verbs: prune skips a leased
 // slot and destroy removes one only when its exact path is named with
@@ -234,6 +236,8 @@ func returnableStatus(wt pool.WorktreeStatus) bool {
 	switch wt.Status {
 	case pool.StatusAvailable, pool.StatusDamaged:
 		return false
+	case pool.StatusLocked:
+		return wt.LockOwned
 	default:
 		return true
 	}

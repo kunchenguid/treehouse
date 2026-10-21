@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kunchenguid/treehouse/v3/internal/hooks"
@@ -23,6 +24,7 @@ const (
 	StatusLeased    = "leased"
 	StatusHere      = "you're here"
 	StatusDamaged   = "damaged"
+	StatusLocked    = "locked"
 	// StatusUnverified is a slot whose process table could not be read: the
 	// question "is anything running here?" has no answer, so nothing decided
 	// from the process list (in-use) or from its absence (damaged, dirty,
@@ -62,6 +64,11 @@ type WorktreeStatus struct {
 	// instead of leaving Branch empty, so a read failure is never mistaken for
 	// a detached HEAD.
 	BranchErr string
+	// LockError explains a HEAD.lock obstruction independently of leases.
+	LockError string
+	// LockOwned reports that LockError is a Treehouse-owned HEAD.lock, which
+	// return can recover; anonymous locks need manual inspection.
+	LockOwned bool
 	// RecoveryReason explains why a recovered lease was kept quarantined.
 	RecoveryReason string
 	// RecoveryBackup is the non-empty folder recovery moved this slot's
@@ -485,6 +492,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		otherFlavor := 0
 		otherClone := 0
 		unverifiedClone := 0
+		var lockErrors []string
 		for i, wt := range state.Worktrees {
 			if wt.Destroying || wt.Leased || ownerAlive(wt) {
 				continue
@@ -535,6 +543,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			// than let ResetWorktree discard the work.
 			dirty, err := vcs.IsDirty(wt.Path)
 			if err != nil || dirty {
+				if lockErr := vcs.HeadLockError(wt.Path); errors.Is(lockErr, vcs.ErrWorktreeLocked) {
+					lockErrors = append(lockErrors, lockErr.Error())
+				}
 				continue
 			}
 			safe, resetRef, head, err := vcs.IsWorktreeSafeToReset(wt.Path, branch)
@@ -552,6 +563,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 				seededPaths = nil
 			}
 			if err := vcs.ResetWorktreeToRefWithSeededPaths(wt.Path, resetRef, head, true, seededPaths); err != nil {
+				if errors.Is(err, vcs.ErrWorktreeLocked) {
+					lockErrors = append(lockErrors, err.Error())
+				}
 				continue
 			}
 			state.Worktrees[i].BaseBranch = opts.baseBranch
@@ -650,6 +664,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 
 		// No available worktree — create new if pool allows
 		if len(state.Worktrees) >= poolSize {
+			if len(lockErrors) > 0 {
+				return fmt.Errorf("all %d worktrees are in use, dirty, or locked (max_trees = %d): %s. Run 'treehouse status' to see details", len(state.Worktrees), poolSize, strings.Join(lockErrors, "; "))
+			}
 			if otherFlavor > 0 {
 				return fmt.Errorf("all %d worktrees are in use, dirty, or hold the other backend's worktrees (%d %s-flavored; the repository selects %s). Run 'treehouse status' to see details, destroy old-flavor worktrees to migrate the pool, or increase max_trees in treehouse.toml", len(state.Worktrees), otherFlavor, map[string]string{"git": "jj", "jj": "git"}[wantFlavor], wantFlavor)
 			}
@@ -1239,12 +1256,17 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 			if branchErr != nil {
 				ws.BranchErr = branchErr.Error()
 			}
-			// The slot is classified WITHOUT the cwd, which is then laid over
-			// the answer. The ranking the operator sees is unchanged - leased
-			// and a live owner reservation still outrank "you're here", and it
-			// still outranks everything below - but the classification it hides
-			// is now known, so a caller can tell a slot somebody holds from one
-			// whose only claim is the shell standing in it.
+			locked := false
+			if lockErr := vcs.HeadLockError(wt.Path); lockErr != nil {
+				ws.LockError = lockErr.Error()
+				locked = errors.Is(lockErr, vcs.ErrWorktreeLocked)
+				ws.LockOwned = errors.Is(lockErr, vcs.ErrWorktreeLockOwned)
+				if wt.Leased && ws.LockOwned {
+					ws.LockError = strings.Replace(ws.LockError, "retry get or return", "run return", 1)
+				}
+			}
+			// Classify before overlaying the caller's cwd, so HeldOnlyByCwd
+			// distinguishes a held slot from an otherwise available one.
 			owned := ownerAlive(wt)
 			switch {
 			case wt.Leased:
@@ -1260,18 +1282,20 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 				ws.Status = StatusInUse
 			case ws.Flavor == "":
 				ws.Status = StatusDamaged
+			case locked:
+				ws.Status = StatusLocked
 			default:
 				if dirty, _ := vcs.IsDirty(wt.Path); dirty {
 					ws.Status = StatusDirty
 				}
 			}
-			// Damaged is not overlaid. A missing marker is a different kind of
+			// Damaged and locked are not overlaid. A missing marker is a different kind of
 			// fact from the reservations above: it says the slot's own contents
 			// cannot be judged at all, which is what `destroy` - not `return` -
 			// answers, and standing in such a slot does not make it any more
 			// readable. The recovery-scan case below already forces damaged
 			// back over the overlay for exactly this reason.
-			if !wt.Leased && !owned && ws.Status != StatusDamaged && process.WorktreeContainsCwd(wt.Path, cwd) {
+			if !wt.Leased && !owned && ws.Status != StatusDamaged && ws.Status != StatusLocked && process.WorktreeContainsCwd(wt.Path, cwd) {
 				ws.HeldOnlyByCwd = ws.Status == StatusAvailable
 				ws.Status = StatusHere
 			}

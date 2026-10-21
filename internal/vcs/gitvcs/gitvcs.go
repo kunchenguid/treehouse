@@ -785,7 +785,8 @@ func ResetWorktreeWithSeededPaths(worktreePath, branch string, seededPaths []str
 // expectedHead is the worktree HEAD recorded at check time.
 //
 // The re-read and the destructive update run while holding git's own
-// HEAD.lock (O_CREAT|O_EXCL). Concurrent git processes that would change
+// HEAD.lock (published exclusively; see head_lock.go for crash recovery).
+// Concurrent git processes that would change
 // HEAD (commit, checkout, merge, rebase) cannot create that lock, so they
 // cannot sneak a new commit in after the comparison. When requireClean is
 // set, dirtiness is re-checked under that lock before read-tree/clean, so
@@ -825,17 +826,11 @@ func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean boo
 		return err
 	}
 	lockPath := headPath + ".lock"
-	lf, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0666)
+	lf, unlock, err := openHeadLock(worktreePath, headPath)
 	if err != nil {
-		return fmt.Errorf("cannot lock worktree HEAD: %w", err)
+		return err
 	}
-	held := true
-	defer func() {
-		_ = lf.Close()
-		if held {
-			_ = os.Remove(lockPath)
-		}
-	}()
+	defer unlock()
 
 	head, err := worktreeHead(worktreePath)
 	if err != nil {
@@ -880,7 +875,6 @@ func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean boo
 	if err := replaceFile(lockPath, headPath); err != nil {
 		return err
 	}
-	held = false
 	return nil
 }
 
@@ -1226,7 +1220,19 @@ func authenticateLinkedWorktree(root *os.Root, worktreePath string) error {
 }
 
 func DetachWorktree(worktreePath string) error {
-	_, err := runGit(worktreePath, "checkout", "--detach")
+	headPath, err := gitPath(worktreePath, "HEAD")
+	if err != nil {
+		return err
+	}
+	guard, err := takeHeadGuard(headPath)
+	if err != nil {
+		return err
+	}
+	defer guard.Close()
+	if err := recoverHeadLock(worktreePath, headPath); err != nil {
+		return err
+	}
+	_, err = runGit(worktreePath, "checkout", "--detach")
 	return err
 }
 

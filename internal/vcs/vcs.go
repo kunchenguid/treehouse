@@ -386,6 +386,20 @@ func LocalBranchExists(repoRoot, branch string) (bool, error) {
 // Callers must preserve the worktree for possible post-checkout hook output.
 var ErrBranchCreated = gitvcs.ErrBranchCreated
 
+var (
+	ErrWorktreeLocked    = gitvcs.ErrHeadLocked
+	ErrWorktreeLockOwned = gitvcs.ErrHeadLockOwned
+)
+
+// HeadLockError reports a Git slot's HEAD lock without changing it. It never
+// reads a jj or markerless slot through the enclosing Git repository.
+func HeadLockError(worktreePath string) error {
+	if WorktreeBackendName(worktreePath) != "git" {
+		return nil
+	}
+	return gitvcs.HeadLockError(worktreePath)
+}
+
 // CreateBranch creates and checks out a new Git branch at worktreePath's
 // current HEAD. Branch creation is deliberately Git-only; jj bookmarks have
 // different ownership semantics and are not implied by this operation.

@@ -30,6 +30,7 @@ type statusJSONWorktree struct {
 	Branch         string              `json:"branch"`
 	Detached       bool                `json:"detached,omitempty"`
 	BranchErr      string              `json:"branch_error,omitempty"`
+	LockError      string              `json:"lock_error,omitempty"`
 	RecoveryReason string              `json:"recovery_reason,omitempty"`
 	RecoveryBackup string              `json:"recovery_backup,omitempty"`
 	Flavor         string              `json:"flavor,omitempty"`
@@ -102,6 +103,8 @@ var statusCmd = &cobra.Command{
 				status = red(wt.Status)
 			case pool.StatusUnverified:
 				status = red(wt.Status)
+			case pool.StatusLocked:
+				status = yellow(wt.Status)
 			}
 
 			// "%-4s  %-11s  " = 4 + 2 + 11 + 2 = 19 chars before path
@@ -115,6 +118,9 @@ var statusCmd = &cobra.Command{
 			}
 			if wt.BranchErr != "" {
 				line += yellow(fmt.Sprintf("  (branch unreadable: %s)", wt.BranchErr))
+			}
+			if wt.LockError != "" {
+				line += yellow(fmt.Sprintf("  (%s)", wt.LockError))
 			}
 			if wt.Status == pool.StatusLeased && wt.LeaseHolder != "" {
 				line += fmt.Sprintf("  (held by %s)", wt.LeaseHolder)
@@ -183,6 +189,7 @@ func writeStatusJSON(worktrees []pool.WorktreeStatus) error {
 			Branch:         wt.Branch,
 			Detached:       wt.Detached,
 			BranchErr:      wt.BranchErr,
+			LockError:      wt.LockError,
 			RecoveryReason: wt.RecoveryReason,
 			RecoveryBackup: wt.RecoveryBackup,
 			Flavor:         wt.Flavor,
