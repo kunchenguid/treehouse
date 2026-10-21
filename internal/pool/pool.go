@@ -121,6 +121,12 @@ type AcquireOptions struct {
 	// APFSSharing opts in to tracked-file copy-on-write sharing for fresh Git
 	// slots only, before hooks and publication. Reuse and return never run it.
 	APFSSharing bool
+	// LeaseHolderPID declares the long-lived process that holds a lease, so
+	// the lease can be freed once that process is proven gone and the slot
+	// is safe. It must be an ancestor of the calling process (see
+	// process.VerifyHolder) and is only valid for a lease acquisition. Zero
+	// declares none, and such a lease is only ever released by return.
+	LeaseHolderPID int32
 }
 
 // acquireOptions controls how Acquire reserves the worktree it hands out.
@@ -144,6 +150,10 @@ type acquireOptions struct {
 	lease bool
 	// leaseHolder is an optional label stored with a lease.
 	leaseHolder string
+	// holderPID is the declared lease holder process, and holderStart its
+	// verified process.StartStamp.
+	holderPID   int32
+	holderStart int64
 	// hookStdout/hookStderr receive post-create hook output. Lease mode routes
 	// hook stdout to stderr so it cannot contaminate machine-readable CLI output.
 	hookStdout io.Writer
@@ -167,6 +177,7 @@ func AcquireWithOptions(repoRoot, poolDir string, poolSize int, postCreate []str
 		includeManifest: options.IncludeManifest,
 		apfsSharing:     options.APFSSharing,
 		uniqueLeaf:      options.UniqueLeaf,
+		holderPID:       options.LeaseHolderPID,
 		hookStdout:      os.Stdout,
 		hookStderr:      os.Stderr,
 	})
@@ -201,6 +212,7 @@ func AcquireLeaseInfoWithOptions(repoRoot, poolDir string, poolSize int, postCre
 		uniqueLeaf:      options.UniqueLeaf,
 		lease:           true,
 		leaseHolder:     holder,
+		holderPID:       options.LeaseHolderPID,
 		hookStdout:      os.Stderr,
 		hookStderr:      os.Stderr,
 	})
@@ -408,6 +420,18 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		if err := vcs.ValidateBranchName(repoRoot, opts.branch); err != nil {
 			return LeaseInfo{}, fmt.Errorf("invalid branch %q: %w", opts.branch, err)
 		}
+	}
+	// Verified before anything touches the pool, and read once: the start
+	// recorded is the one proven to belong to an ancestor of this process.
+	if opts.holderPID != 0 {
+		if !opts.lease {
+			return LeaseInfo{}, fmt.Errorf("a lease holder process can only be declared for a lease")
+		}
+		start, err := process.VerifyHolder(opts.holderPID)
+		if err != nil {
+			return LeaseInfo{}, err
+		}
+		opts.holderStart = start
 	}
 
 	// Said out loud rather than resolved silently: a template names the leaf
@@ -830,6 +854,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 	}
 	if runPostCreate {
 		hooks.Run(postCreate, acquired.Path, opts.hookStdout, opts.hookStderr)
+		if opts.holderPID != 0 {
+			endSetupReservation(poolDir, acquired)
+		}
 	}
 
 	return acquired, nil
@@ -911,12 +938,45 @@ func markAcquired(wt *WorktreeEntry, opts acquireOptions) error {
 		wt.LeaseID = leaseID
 		wt.LeaseHolder = opts.leaseHolder
 		wt.LeasedAt = time.Now()
-		// A lease is process-independent, so it carries no owner reservation.
+		wt.LeaseHolderPID = opts.holderPID
+		wt.LeaseHolderStart = opts.holderStart
+		// A lease is process-independent, so it carries no owner reservation,
+		// except that a lease whose declared holder may exit stays reserved by
+		// this command until its post_create hooks finish
+		// (endSetupReservation): the holder exiting mid-setup must not free a
+		// slot this command is still preparing.
 		wt.OwnerPID = 0
 		wt.OwnerStartedAt = 0
+		if opts.holderPID != 0 {
+			return reserveOwner(wt)
+		}
 		return nil
 	}
 	return reserveOwner(wt)
+}
+
+// endSetupReservation drops the owner reservation markAcquired gave a lease
+// with a declared holder, once its post_create hooks have finished. It touches
+// the entry only while it still carries this acquisition's lease and this
+// process's reservation. A failure is left alone: the reservation names this
+// process, which exits right after, and a dead owner is cleared by healState
+// and never keeps a holder lease.
+func endSetupReservation(poolDir string, lease LeaseInfo) {
+	_ = WithStateLock(poolDir, func() error {
+		state, err := ReadState(poolDir)
+		if err != nil {
+			return err
+		}
+		for i := range state.Worktrees {
+			wt := &state.Worktrees[i]
+			if wt.Path == lease.Path && wt.Leased && wt.LeaseID == lease.LeaseID && wt.OwnerPID == int32(os.Getpid()) {
+				wt.OwnerPID = 0
+				wt.OwnerStartedAt = 0
+				return WriteState(poolDir, state)
+			}
+		}
+		return nil
+	})
 }
 
 // ErrLeasePreconditionFailed reports that a conditional release no longer
@@ -1473,6 +1533,8 @@ func clearLease(wt *WorktreeEntry) {
 	wt.LeaseID = ""
 	wt.LeaseHolder = ""
 	wt.LeasedAt = time.Time{}
+	wt.LeaseHolderPID = 0
+	wt.LeaseHolderStart = 0
 	wt.RecoveryReason = ""
 }
 

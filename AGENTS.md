@@ -19,7 +19,7 @@ User-facing behavior: [README.md](README.md). Settings and precedence: [treehous
 
 - Acquire reuse, prune, and destroy fail closed on unproven dirtiness, merge state, ownership, or slot marker; `return` may reset a dirty tree after confirmation.
 - No daemon; state tracks membership, short-lived reservations, and durable leases, not process-derived long-term usage.
-- Only `return` clears ordinary leases. Recovered leases are auto-freed only when process-free, tracked-clean, and landed on a remote-tracking ref or slot base; on Unix, untracked files are moved into a kept backup beside the pool; on Windows they keep the slot leased. Unsafe or unverifiable recoveries remain leased; `status` explains how to inspect and return by name. Unknown seeded ignored files may remain when reused; `return --all` skips quarantined entries.
+- Only `return` clears ordinary leases. Recovered leases, and leases whose declared holder process is proven gone (PID plus start stamp), are auto-freed only when process-free, tracked-clean, and landed on a remote-tracking ref or slot base; on Unix, untracked files are moved into a kept backup beside the pool; on Windows they keep the slot leased. Unsafe or unverifiable recoveries remain leased; `status` explains how to inspect and return by name. Unknown seeded ignored files may remain when reused; `return --all` skips quarantined entries.
 - All VCS operations go through `internal/vcs`; per-slot operations dispatch on the slot's own marker, never the configured backend. Git is the default; jj is strict opt-in.
 - One base branch per slot is shared by acquire, parking, prune, and destroy; `WorktreeEntry.BaseBranch` records only an explicitly requested base.
 - Prune and destroy are dry-run unless `--yes`; each risk class needs its own opt-in flag, and there is no cross-pool destroy.
@@ -34,7 +34,7 @@ All code must work on Windows:
 - Use `filepath` helpers, never a hardcoded `/` separator.
 - Do not assume `/bin/sh` or `$SHELL`; follow `internal/shell/shell.go` (`%COMSPEC%` on Windows).
 - Isolate Unix-only syscalls behind `_unix.go`/`_windows.go` build tags (see `internal/pool/lock_*.go`).
-- Use `gopsutil` for process data, not platform-specific process APIs.
+- Use `gopsutil` for process data, not platform-specific process APIs. Exception: holder identity in `internal/process/identity_*` reads Linux `/proc/<pid>/stat` start ticks and uses `kill(pid, 0)` for existence, because gopsutil's Linux `CreateTime` moves with wall-clock steps (see the holder entry in docs/design.md).
 
 ## Contribution gate
 
