@@ -42,34 +42,51 @@ func StartedAt(pid int32) (int64, bool) {
 // FindProcessesInWorktree returns processes whose current directory is the
 // worktree root or a descendant after absolute path and symlink resolution.
 func FindProcessesInWorktree(worktreePath string) ([]ProcessInfo, error) {
+	byWorktree, err := FindProcessesInWorktrees([]string{worktreePath})
+	return byWorktree[worktreePath], err
+}
+
+// FindProcessesInWorktrees reads each process cwd once for the entire listing.
+// Matching still resolves symlinks on both sides and includes nested roots.
+func FindProcessesInWorktrees(worktreePaths []string) (map[string][]ProcessInfo, error) {
+	result := make(map[string][]ProcessInfo, len(worktreePaths))
+	if len(worktreePaths) == 0 {
+		return result, nil
+	}
+	roots := make(map[string]string, len(worktreePaths))
+	for _, worktreePath := range worktreePaths {
+		abs, err := filepath.Abs(worktreePath)
+		if err != nil {
+			return nil, err
+		}
+		roots[worktreePath] = resolvePath(abs)
+	}
 	procs, err := process.Processes()
 	if err != nil {
 		return nil, err
 	}
-
-	absWorktree, err := filepath.Abs(worktreePath)
-	if err != nil {
-		return nil, err
-	}
-	absWorktree = resolvePath(absWorktree)
-
-	var result []ProcessInfo
-
 	for _, p := range procs {
 		cwd, err := p.Cwd()
+		if err != nil || cwd == "" {
+			continue
+		}
+		absCwd, err := filepath.Abs(cwd)
 		if err != nil {
 			continue
 		}
-		if !cwdWithinWorktree(absWorktree, cwd) {
-			continue
+		absCwd = resolvePath(absCwd)
+		var info *ProcessInfo
+		for worktreePath, root := range roots {
+			if !resolvedCwdWithinWorktree(root, absCwd) {
+				continue
+			}
+			if info == nil {
+				name, _ := p.Name()
+				info = &ProcessInfo{PID: p.Pid, Name: name}
+			}
+			result[worktreePath] = append(result[worktreePath], *info)
 		}
-		name, _ := p.Name()
-		result = append(result, ProcessInfo{
-			PID:  p.Pid,
-			Name: name,
-		})
 	}
-
 	return result, nil
 }
 
@@ -103,8 +120,10 @@ func cwdWithinWorktree(absWorktree, cwd string) bool {
 	if err != nil {
 		return false
 	}
-	absCwd = resolvePath(absCwd)
+	return resolvedCwdWithinWorktree(absWorktree, resolvePath(absCwd))
+}
 
+func resolvedCwdWithinWorktree(absWorktree, absCwd string) bool {
 	rel, err := filepath.Rel(absWorktree, absCwd)
 	if err != nil {
 		return false

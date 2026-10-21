@@ -4588,11 +4588,21 @@ func swapListProcessSeams(
 	scan func(string) ([]process.ProcessInfo, error),
 	filter func([]process.ProcessInfo) ([]process.ProcessInfo, error),
 ) func() {
-	origScan, origFilter := findProcessesInWorktree, dropProtectedProcesses
-	findProcessesInWorktree = scan
+	origScan, origFilter := findProcessesInWorktrees, dropProtectedProcesses
+	findProcessesInWorktrees = func(paths []string) (map[string][]process.ProcessInfo, error) {
+		result := make(map[string][]process.ProcessInfo, len(paths))
+		for _, path := range paths {
+			procs, err := scan(path)
+			if err != nil {
+				return nil, err
+			}
+			result[path] = procs
+		}
+		return result, nil
+	}
 	dropProtectedProcesses = filter
 	return func() {
-		findProcessesInWorktree = origScan
+		findProcessesInWorktrees = origScan
 		dropProtectedProcesses = origFilter
 	}
 }

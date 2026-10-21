@@ -1404,7 +1404,10 @@ func readTree(repoRoot, ref string) (map[string]string, error) {
 
 // IsDirty reports tracked or untracked changes, ignoring status.showUntrackedFiles.
 func IsDirty(worktreePath string) (bool, error) {
-	out, err := runGit(worktreePath, "status", "--porcelain", "--untracked-files=all")
+	// A boolean dirty check needs only directory-level untracked output, which
+	// lets Git use its untracked cache when configured. Renames are dirty
+	// regardless of how their paths are paired.
+	out, err := runGit(worktreePath, "--no-optional-locks", "status", "--porcelain", "--untracked-files=normal", "--no-renames")
 	if err != nil {
 		return false, err
 	}

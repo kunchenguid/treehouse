@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -13,7 +14,7 @@ import (
 // FindProcessesInWorktree should match a process whose cwd resolves to the
 // same real path as the worktree, even when the caller passes a symlinked
 // worktree path. This also covers macOS /tmp -> /private/tmp.
-func TestFindProcessesInWorktree_ResolvesSymlinks(t *testing.T) {
+func TestFindProcessesInWorktrees_ResolvesSymlinksAndSeparatesRoots(t *testing.T) {
 	realDir := t.TempDir()
 
 	linkDir := filepath.Join(t.TempDir(), "link")
@@ -33,21 +34,18 @@ func TestFindProcessesInWorktree_ResolvesSymlinks(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	procs, err := FindProcessesInWorktree(linkDir)
+	roots := []string{linkDir, realDir, filepath.Dir(realDir), realDir + "-sibling"}
+	byWorktree, err := FindProcessesInWorktrees(roots)
 	if err != nil {
-		t.Fatalf("FindProcessesInWorktree: %v", err)
+		t.Fatalf("FindProcessesInWorktrees: %v", err)
 	}
-
-	var found bool
-	for _, p := range procs {
-		if int(p.PID) == cmd.Process.Pid {
-			found = true
-			break
+	for i, root := range roots {
+		found := slices.ContainsFunc(byWorktree[root], func(p ProcessInfo) bool {
+			return int(p.PID) == cmd.Process.Pid
+		})
+		if want := i < 3; found != want {
+			t.Fatalf("pid %d in %q: found=%v want=%v; processes=%v", cmd.Process.Pid, root, found, want, byWorktree[root])
 		}
-	}
-	if !found {
-		t.Fatalf("expected to find pid %d via symlinked path %q, got %v",
-			cmd.Process.Pid, linkDir, procs)
 	}
 }
 
