@@ -1,0 +1,257 @@
+package pool
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/kunchenguid/treehouse/v3/internal/process"
+)
+
+// commitInSlot leaves a slot clean but holding one commit that is not merged
+// into main, with its owner reservation gone (a pane closed under the owner).
+func commitInSlot(t *testing.T, poolDir, wtPath string) string {
+	t.Helper()
+	runGit(t, wtPath, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(wtPath, "feature.txt"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, wtPath, "add", "feature.txt")
+	runGit(t, wtPath, "commit", "-m", "wip")
+	clearOwnerReservation(t, poolDir, wtPath)
+	return gitOut(t, wtPath, "rev-parse", "HEAD")
+}
+
+func quietListProcesses(t *testing.T) {
+	t.Helper()
+	t.Cleanup(swapListProcessSeams(
+		func(string) ([]process.ProcessInfo, error) { return nil, nil },
+		func([]process.ProcessInfo) ([]process.ProcessInfo, error) { return nil, nil },
+	))
+}
+
+func listOne(t *testing.T, poolDir string) WorktreeStatus {
+	t.Helper()
+	statuses, err := ListWithMergeState(poolDir, func() string { return "" })
+	if err != nil {
+		t.Fatalf("ListWithMergeState failed: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected one worktree, got %#v", statuses)
+	}
+	return statuses[0]
+}
+
+// status and get must agree: a clean slot holding commits that are not merged
+// into the base is skipped by get, so status may not call it available.
+func TestList_ReportsUnlandedSlotThatAcquireSkips(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	quietListProcesses(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	head := commitInSlot(t, poolDir, wtPath)
+
+	if got := listOne(t, poolDir).Status; got != StatusUnlanded {
+		t.Fatalf("status = %q, want %q", got, StatusUnlanded)
+	}
+
+	_, err = Acquire(repoDir, poolDir, 1, nil)
+	if err == nil {
+		t.Fatal("expected acquire to skip the unlanded slot and report a full pool")
+	}
+	for _, want := range []string{"1 unlanded", `"main"`, StatusUnlanded} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("pool-full error %q does not mention %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "in use or dirty (max_trees") {
+		t.Errorf("pool-full error fell back to the generic message: %v", err)
+	}
+	if got := gitOut(t, wtPath, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("unlanded HEAD %s was moved to %s", head, got)
+	}
+}
+
+// A slot that was merely parked, or whose work has since landed on the base,
+// is still available, and get still reuses it.
+func TestList_ReportsLandedSlotAvailable(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	quietListProcesses(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	clearOwnerReservation(t, poolDir, wtPath)
+	if got := listOne(t, poolDir).Status; got != StatusAvailable {
+		t.Fatalf("pristine slot status = %q, want %q", got, StatusAvailable)
+	}
+
+	head := commitInSlot(t, poolDir, wtPath)
+	runGit(t, repoDir, "merge", "--ff-only", head)
+	runGit(t, repoDir, "push", "origin", "main")
+	if got := listOne(t, poolDir).Status; got != StatusAvailable {
+		t.Fatalf("landed slot status = %q, want %q", got, StatusAvailable)
+	}
+	reused, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatalf("expected the landed slot to be reused: %v", err)
+	}
+	if reused != wtPath {
+		t.Fatalf("reused %s, want %s", reused, wtPath)
+	}
+}
+
+// Dirty keeps its own, more urgent, label.
+func TestList_DirtyOutranksUnlanded(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	quietListProcesses(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	commitInSlot(t, poolDir, wtPath)
+	if err := os.WriteFile(filepath.Join(wtPath, "scratch.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := listOne(t, poolDir).Status; got != StatusDirty {
+		t.Fatalf("status = %q, want %q", got, StatusDirty)
+	}
+}
+
+// Standing in an unlanded slot must not make it a bulk-return target: it was
+// "held only by cwd" while it read available, and still is.
+func TestList_UnlandedSlotUnderCwdIsHeldOnlyByCwd(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	quietListProcesses(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	commitInSlot(t, poolDir, wtPath)
+	t.Chdir(wtPath)
+
+	got := listOne(t, poolDir)
+	if got.Status != StatusHere || !got.HeldOnlyByCwd {
+		t.Fatalf("got status %q, HeldOnlyByCwd %v; want %q and true", got.Status, got.HeldOnlyByCwd, StatusHere)
+	}
+}
+
+// Regression: status must judge a slot against the SAME base acquire would
+// use, not always the repository default. A slot cut from main, holding a
+// commit merged only into develop, reads unlanded against the repository
+// default but available once the configured base (resolved the same way
+// AcquireWithOptions resolves it) is passed through - and get indeed reuses
+// it, so the two must agree.
+func TestList_HonorsConfiguredBaseBranch(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	runGit(t, repoDir, "branch", "develop")
+	quietListProcesses(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	head := commitInSlot(t, poolDir, wtPath)
+
+	runGit(t, repoDir, "checkout", "develop")
+	runGit(t, repoDir, "merge", "--ff-only", head)
+	runGit(t, repoDir, "push", "origin", "develop")
+	runGit(t, repoDir, "checkout", "main")
+
+	if got := listOne(t, poolDir).Status; got != StatusUnlanded {
+		t.Fatalf("status against the repository default = %q, want %q", got, StatusUnlanded)
+	}
+
+	resolved, err := ResolveBaseBranch(repoDir, "develop")
+	if err != nil {
+		t.Fatalf("ResolveBaseBranch failed: %v", err)
+	}
+	statuses, err := ListWithMergeState(poolDir, func() string { return resolved })
+	if err != nil {
+		t.Fatalf("ListWithMergeState failed: %v", err)
+	}
+	if got := statuses[0].Status; got != StatusAvailable {
+		t.Fatalf("status against the configured base = %q, want %q", got, StatusAvailable)
+	}
+
+	reused, err := AcquireWithOptions(repoDir, poolDir, 1, nil, AcquireOptions{BaseBranch: "develop"})
+	if err != nil {
+		t.Fatalf("expected get to agree and reuse the slot: %v", err)
+	}
+	if reused != wtPath {
+		t.Fatalf("reused %s, want %s", reused, wtPath)
+	}
+}
+
+// The plain listing exists for callers that never act on the difference
+// (`enter`, `return --all`), so it must not pay for the merge-state proof: the
+// same slot that reads unlanded through ListWithMergeState reads available
+// here, which is also how those callers have always seen it.
+func TestList_WithoutMergeStateNeverReportsUnlanded(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	quietListProcesses(t)
+
+	wtPath, err := Acquire(repoDir, poolDir, 1, nil)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+	commitInSlot(t, poolDir, wtPath)
+
+	statuses, err := List(poolDir)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(statuses) != 1 || statuses[0].Status != StatusAvailable {
+		t.Fatalf("plain List = %#v, want one available slot", statuses)
+	}
+	if got := listOne(t, poolDir).Status; got != StatusUnlanded {
+		t.Fatalf("ListWithMergeState = %q, want %q", got, StatusUnlanded)
+	}
+}
+
+// The base is resolved at most once per listing and only when a slot reaches
+// the check: a pool with nothing idle and clean costs no resolution at all,
+// and several idle slots share one.
+func TestListWithMergeState_ResolvesBaseLazilyAndOnce(t *testing.T) {
+	repoDir, poolDir := setupRepo(t)
+	quietListProcesses(t)
+
+	if _, err := AcquireLease(repoDir, poolDir, 3, nil, "holder"); err != nil {
+		t.Fatalf("AcquireLease failed: %v", err)
+	}
+	calls := 0
+	count := func() string { calls++; return "" }
+
+	if _, err := ListWithMergeState(poolDir, count); err != nil {
+		t.Fatalf("ListWithMergeState failed: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("base resolved %d times for a pool holding only a lease, want 0", calls)
+	}
+
+	var idle []string
+	for i := 0; i < 2; i++ {
+		wtPath, err := Acquire(repoDir, poolDir, 3, nil)
+		if err != nil {
+			t.Fatalf("Acquire failed: %v", err)
+		}
+		idle = append(idle, wtPath)
+	}
+	for _, wtPath := range idle {
+		clearOwnerReservation(t, poolDir, wtPath)
+	}
+	statuses, err := ListWithMergeState(poolDir, count)
+	if err != nil {
+		t.Fatalf("ListWithMergeState failed: %v", err)
+	}
+	if len(statuses) != 3 || calls != 1 {
+		t.Fatalf("base resolved %d times for %#v, want exactly 1 across two idle slots", calls, statuses)
+	}
+}

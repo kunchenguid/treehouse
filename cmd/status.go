@@ -58,7 +58,19 @@ var statusCmd = &cobra.Command{
 			return err
 		}
 
-		worktrees, err := pool.List(poolDir)
+		// Resolved lazily, once, and only if a slot is idle and clean. When it
+		// cannot be resolved, fall back to per-slot inference: `get` would
+		// error outright on this config rather than reuse anything, so there
+		// is no disagreement to protect against here.
+		configuredBase := func() string {
+			base, baseErr := pool.ResolveBaseBranch(repoRoot, cfg.BaseBranch)
+			if baseErr != nil {
+				return ""
+			}
+			return base
+		}
+
+		worktrees, err := pool.ListWithMergeState(poolDir, configuredBase)
 		if err != nil {
 			return err
 		}
@@ -92,7 +104,7 @@ var statusCmd = &cobra.Command{
 				status = green(wt.Status)
 			case pool.StatusInUse:
 				status = red(wt.Status)
-			case pool.StatusDirty:
+			case pool.StatusDirty, pool.StatusUnlanded:
 				status = yellow(wt.Status)
 			case pool.StatusLeased:
 				status = magenta(wt.Status)
@@ -127,6 +139,9 @@ var statusCmd = &cobra.Command{
 			}
 			if wt.Flavor != "" && wt.Flavor != repoFlavor {
 				line += yellow(fmt.Sprintf("  (%s-flavored; repo selects %s — destroy to migrate)", wt.Flavor, repoFlavor))
+			}
+			if wt.Status == pool.StatusUnlanded {
+				line += yellow("  (holds work not merged into the base; 'treehouse get' will not reuse it)")
 			}
 			if wt.Status == pool.StatusDamaged {
 				if wt.LeaseHolder != "" {
