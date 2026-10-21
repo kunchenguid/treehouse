@@ -375,6 +375,36 @@ func WorktreeAtCommit(worktreePath, commit string) (bool, error) {
 	return gitvcs.WorktreeAtCommit(worktreePath, commit)
 }
 
+// IsHeadAncestorOf reports whether a git worktree's HEAD is reachable from ref
+// by ancestry alone. Like WorktreeAtCommit it is git-only and sits outside the
+// Backend interface: jj merged detection is already ancestry-only.
+func IsHeadAncestorOf(worktreePath, ref string) (bool, error) {
+	name, err := WorktreeBackendNameChecked(worktreePath)
+	if err != nil {
+		return false, err
+	}
+	if name != "git" {
+		return false, fmt.Errorf("ancestry check requires a git worktree")
+	}
+	return gitvcs.IsHeadAncestorOf(worktreePath, ref)
+}
+
+// ResetTarget resolves the commit a git worktree would be reset to for branch
+// and its HEAD read at the same time, without IsWorktreeSafeToReset's landing
+// check, for callers that have already proven the reset safe. It is git-only
+// and sits outside the Backend interface for the same reason as
+// IsHeadAncestorOf.
+func ResetTarget(worktreePath, branch string) (string, string, error) {
+	name, err := WorktreeBackendNameChecked(worktreePath)
+	if err != nil {
+		return "", "", err
+	}
+	if name != "git" {
+		return "", "", fmt.Errorf("reset target lookup requires a git worktree")
+	}
+	return gitvcs.ResetTarget(worktreePath, branch)
+}
+
 func LocalBranchExists(repoRoot, branch string) (bool, error) {
 	if backendFor(repoRoot).Name() != "git" {
 		return false, fmt.Errorf("local branch lookup requires the git backend")

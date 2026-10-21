@@ -42,8 +42,11 @@ type PruneSkipped struct {
 // PruneResult describes dry-run candidates, removed worktrees, skipped worktrees,
 // and the corresponding byte counts.
 type PruneResult struct {
-	Candidates       []PruneWorktree
-	Pruned           []PruneWorktree
+	Candidates []PruneWorktree
+	Pruned     []PruneWorktree
+	// Returned lists the worktrees return mode reset and handed back to the
+	// pool instead of deleting.
+	Returned         []PruneWorktree
 	Skipped          []PruneSkipped
 	ReclaimableBytes int64
 	FreedBytes       int64
@@ -71,6 +74,24 @@ type PruneOptions struct {
 	PruneOrphans bool
 	// PreDestroy is the hook command list to run before deleting each candidate.
 	PreDestroy []string
+	// Return resets each candidate onto its base and hands it back to the pool
+	// instead of deleting it.
+	Return bool
+	// ReturnBaseBranch names the configured base a returned worktree parks on;
+	// nil or an empty answer parks it like 'treehouse return' does without one.
+	ReturnBaseBranch func(worktreePath string) string
+}
+
+// ErrPruneReturnWithOrphans rejects return mode combined with orphan pruning:
+// an orphan has no backing repository to reset against, so the only thing
+// prune could do with it is delete it, which return mode promises never to do.
+var ErrPruneReturnWithOrphans = errors.New("prune return mode cannot include orphans")
+
+func (o PruneOptions) validate() error {
+	if o.Return && o.PruneOrphans {
+		return ErrPruneReturnWithOrphans
+	}
+	return nil
 }
 
 const (
@@ -87,6 +108,7 @@ const (
 	pruneSkipCannotMeasureSize     = "cannot measure size"
 	pruneSkipCleanupFailed         = "cleanup failed"
 	pruneSkipRemoveFailed          = "remove failed"
+	pruneSkipReturnFailed          = "return failed"
 	pruneSkipInUse                 = "in use"
 	pruneOrphanUnverifiedWarning   = "content could not be verified"
 	pruneOrphanRecoveredRepository = "backing repository is available again"
@@ -153,6 +175,9 @@ func PruneAll(poolRoot string, dryRun bool, preDestroy []string) (PruneAllResult
 // PruneAllWithOptions prunes every managed pool directly under poolRoot and
 // applies options for dry-run behavior, orphan handling, and pre-destroy hooks.
 func PruneAllWithOptions(poolRoot string, options PruneOptions) (PruneAllResult, error) {
+	if err := options.validate(); err != nil {
+		return PruneAllResult{}, err
+	}
 	poolDirs, err := prunePoolDirs(poolRoot)
 	if err != nil {
 		return PruneAllResult{}, err
@@ -204,12 +229,16 @@ func addPrunePoolResult(all *PruneAllResult, poolDir string, poolResult PruneRes
 	})
 	all.Result.Candidates = append(all.Result.Candidates, poolResult.Candidates...)
 	all.Result.Pruned = append(all.Result.Pruned, poolResult.Pruned...)
+	all.Result.Returned = append(all.Result.Returned, poolResult.Returned...)
 	all.Result.Skipped = append(all.Result.Skipped, poolResult.Skipped...)
 	all.Result.ReclaimableBytes += poolResult.ReclaimableBytes
 	all.Result.FreedBytes += poolResult.FreedBytes
 }
 
 func prunePool(poolDir string, options PruneOptions, resolveContext pruneContextResolver) (PruneResult, error) {
+	if err := options.validate(); err != nil {
+		return PruneResult{}, err
+	}
 	plan, err := planPrunePool(poolDir, resolveContext, options)
 	if err != nil {
 		return PruneResult{}, err
@@ -434,6 +463,9 @@ func fixedPruneContextResolver(context pruneContext) pruneContextResolver {
 }
 
 func executePrune(poolDir string, plan prunePlan, options PruneOptions) (PruneResult, error) {
+	if options.Return {
+		return executePruneReturn(poolDir, plan, options)
+	}
 	result := PruneResult{
 		Skipped: append([]PruneSkipped(nil), plan.Result.Skipped...),
 	}
@@ -586,6 +618,155 @@ func executePrune(poolDir string, plan prunePlan, options PruneOptions) (PruneRe
 	return result, nil
 }
 
+// executePruneReturn resets each planned candidate onto its base and hands it
+// back to the pool instead of deleting it. Everything the plan proved is proved
+// again under one state lock, so a slot leased, reserved, busy, dirty, or no
+// longer landed since planning is left alone, and the reset itself refuses a
+// HEAD that moved or a tree that became dirty after that second proof. Nothing
+// is deleted, so no pre_destroy hook runs.
+func executePruneReturn(poolDir string, plan prunePlan, options PruneOptions) (PruneResult, error) {
+	result := PruneResult{
+		Skipped: append([]PruneSkipped(nil), plan.Result.Skipped...),
+	}
+	err := WithStateLock(poolDir, func() error {
+		state, err := ReadState(poolDir)
+		if err != nil {
+			return err
+		}
+		state, err = healState(poolDir, state)
+		if err != nil {
+			return err
+		}
+
+		for i := range state.Worktrees {
+			planned, ok := plan.Planned[state.Worktrees[i].Path]
+			if !ok {
+				continue
+			}
+			worktree, skipped, stale := returnPruneCandidate(poolDir, planned.Context, &state.Worktrees[i], options)
+			if !stale {
+				continue
+			}
+			if skipped.Reason != "" {
+				result.Skipped = append(result.Skipped, skipped)
+				continue
+			}
+			result.Returned = append(result.Returned, worktree)
+		}
+		return WriteState(poolDir, state)
+	})
+	if err != nil {
+		return PruneResult{}, err
+	}
+	return result, nil
+}
+
+var resetPruneReturnWorktree = vcs.ResetWorktreeToRefWithSeededPaths
+
+// returnPruneCandidate re-proves one planned candidate and, when it still
+// qualifies, resets it onto the base it parks on and releases its entry the
+// way 'treehouse return' does: seeded ignored files are removed through the
+// trusted inventory, every other ignored file stays.
+//
+// The reset target and HEAD are read BEFORE the landing proof, and the reset
+// requires HEAD to still equal that reading, so a commit made at any point
+// after it - including between the proof and the reset - refuses the reset
+// instead of discarding a HEAD nothing proved landed.
+func returnPruneCandidate(poolDir string, context pruneContext, wt *WorktreeEntry, options PruneOptions) (PruneWorktree, PruneSkipped, bool) {
+	parkBase := pruneReturnBase(*wt, options)
+	var target, head string
+	var targetErr error
+	if vcs.WorktreeBackendName(wt.Path) == "git" {
+		target, head, targetErr = pruneReturnTarget(wt.Path, parkBase)
+	}
+
+	worktree, skipped, stale, _, err := analyzePruneCandidate(poolDir, fixedPruneContextResolver(context), *wt, options)
+	if err != nil {
+		return worktree, newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotVerify, "cannot verify worktree", err.Error()), true
+	}
+	if !stale || skipped.Reason != "" {
+		return worktree, skipped, stale
+	}
+	if targetErr != nil {
+		return worktree, newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotVerify, "cannot resolve the base to return to", targetErr.Error()), true
+	}
+
+	seededPaths := wt.SeededPaths
+	if !wt.SeedInventoryKnown {
+		seededPaths = nil
+	}
+	if err := resetPruneReturnWorktree(wt.Path, target, head, true, seededPaths); err != nil {
+		return worktree, newPruneSkipped(wt.Name, wt.Path, pruneSkipReturnFailed, "worktree changed or could not be reset", err.Error()), true
+	}
+	wt.BaseBranch = parkBase
+	releaseEntry(wt)
+	return worktree, skipped, true
+}
+
+// analyzeReturnCandidate finishes classifying a landed, clean, idle worktree
+// for return mode. A slot already parked where a return would leave it -
+// detached on a commit the base contains - has nothing to give back: acquire
+// can recycle it for as long as the base keeps its history, so it is not a
+// candidate, and a recurring sweep does not report it again after the base
+// moves on. A slot is worth returning while it still holds a branch (git
+// refuses that branch to every other worktree) or a HEAD the base reached only
+// by squash or rebase, whose content proof expires once the base edits the
+// same files. jj merged detection is ancestry-only and a jj workspace never
+// holds a branch, so a landed jj slot is always already parked.
+func analyzeReturnCandidate(wt WorktreeEntry, worktree PruneWorktree, skipped PruneSkipped, context pruneContext, options PruneOptions) (PruneWorktree, PruneSkipped, bool, pruneContext, error) {
+	if vcs.WorktreeBackendName(wt.Path) != "git" {
+		return worktree, skipped, false, context, nil
+	}
+	target, _, err := pruneReturnTarget(wt.Path, pruneReturnBase(wt, options))
+	if err != nil {
+		skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotVerify, "cannot resolve the base to return to", err.Error())
+		return worktree, skipped, true, context, nil
+	}
+	_, detached, err := vcs.CheckedOutBranch(wt.Path)
+	if err != nil {
+		skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotVerify, "cannot read the checked-out branch", err.Error())
+		return worktree, skipped, true, context, nil
+	}
+	if detached {
+		parked, err := vcs.IsHeadAncestorOf(wt.Path, target)
+		if err != nil {
+			skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotVerify, "cannot tell whether the worktree is parked", err.Error())
+			return worktree, skipped, true, context, nil
+		}
+		if parked {
+			return worktree, skipped, false, context, nil
+		}
+	}
+	return worktree, skipped, true, context, nil
+}
+
+// pruneReturnBase is the base a returned worktree parks on, chosen exactly as
+// 'treehouse return' chooses it: the configured base, otherwise the base the
+// slot recorded, otherwise (empty) the repository default.
+func pruneReturnBase(wt WorktreeEntry, options PruneOptions) string {
+	if options.ReturnBaseBranch != nil {
+		if base := options.ReturnBaseBranch(wt.Path); base != "" {
+			return base
+		}
+	}
+	return wt.BaseBranch
+}
+
+// pruneReturnTarget resolves the commit a returned worktree parks on (the
+// requested base, otherwise the repository default) together with the HEAD
+// recorded at the same moment. Prune's landing proof, not a second merge check
+// against the parking base, authorizes the reset.
+func pruneReturnTarget(worktreePath, base string) (string, string, error) {
+	if base == "" {
+		resolved, err := vcs.DefaultBranchForWorktree(worktreePath)
+		if err != nil {
+			return "", "", err
+		}
+		base = resolved
+	}
+	return vcs.ResetTarget(worktreePath, base)
+}
+
 func analyzePruneCandidate(poolDir string, resolveContext pruneContextResolver, wt WorktreeEntry, options PruneOptions) (PruneWorktree, PruneSkipped, bool, pruneContext, error) {
 	worktree := PruneWorktree{Name: wt.Name, Path: wt.Path}
 	skipped := PruneSkipped{Name: wt.Name, Path: wt.Path}
@@ -727,6 +908,11 @@ func analyzeIdleWorktree(poolDir string, resolveContext pruneContextResolver, wt
 	if !merged && !headLandedOnItsBase(worktree.Path, wt.BaseBranch) {
 		skipped = newPruneSkipped(wt.Name, wt.Path, PruneSkipUnmerged, fmt.Sprintf("HEAD not merged into %s", ref), "")
 		return worktree, skipped, true, context, nil
+	}
+	if options.Return {
+		// Nothing is deleted, so there is no container to vouch for and no
+		// space to measure; walking node_modules would only slow the sweep.
+		return analyzeReturnCandidate(wt, worktree, skipped, context, options)
 	}
 
 	container, err := removableWorktreeContainer(poolDir, worktree.Path)

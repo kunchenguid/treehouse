@@ -49,8 +49,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # The git-heavy pool and cmd packages already take 7-10 minutes on
+      # Windows, where every git spawn is slow, so go test's 10m default
+      # per-package timeout is too tight.
       - name: Test
-        run: go test ./...
+        run: go test -timeout 20m ./...
 
       - name: Build
         run: go build -o treehouse${{ matrix.os == 'windows-latest' && '.exe' || '' }} .

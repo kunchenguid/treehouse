@@ -252,6 +252,51 @@ func TestIsWorktreeSafeToReset(t *testing.T) {
 	}
 }
 
+func TestResetTargetResolvesWithoutJudgingSafety(t *testing.T) {
+	base := t.TempDir()
+	repoDir := filepath.Join(base, "repo")
+	wtPath := filepath.Join(base, "worktree")
+
+	mustGit(t, "", "init", "--initial-branch=main", repoDir)
+	mustGit(t, repoDir, "config", "user.email", "test@test.com")
+	mustGit(t, repoDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repoDir, "add", ".")
+	mustGit(t, repoDir, "commit", "-m", "initial")
+	mustGit(t, repoDir, "worktree", "add", "--detach", wtPath, "main")
+	if err := os.WriteFile(filepath.Join(wtPath, "unlanded.txt"), []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, wtPath, "add", "unlanded.txt")
+	mustGit(t, wtPath, "commit", "-m", "unlanded work")
+
+	// Ahead of base, the target and HEAD still resolve: the caller, not
+	// ResetTarget, decides whether the reset is safe.
+	target, head, err := ResetTarget(wtPath, "main")
+	if err != nil {
+		t.Fatalf("ResetTarget: %v", err)
+	}
+	if want := mustGitOutput(t, repoDir, "rev-parse", "main"); target != want {
+		t.Fatalf("target = %q, want main at %q", target, want)
+	}
+	if want := mustGitOutput(t, wtPath, "rev-parse", "HEAD"); head != want {
+		t.Fatalf("head = %q, want worktree HEAD %q", head, want)
+	}
+	_, safeTarget, safeHead, err := IsWorktreeSafeToReset(wtPath, "main")
+	if err != nil {
+		t.Fatalf("IsWorktreeSafeToReset: %v", err)
+	}
+	if safeTarget != target || safeHead != head {
+		t.Fatalf("IsWorktreeSafeToReset resolved %q/%q, ResetTarget %q/%q", safeTarget, safeHead, target, head)
+	}
+
+	if _, _, err := ResetTarget(wtPath, "no-such-branch"); err == nil {
+		t.Fatal("expected an unresolvable base to fail")
+	}
+}
+
 func TestResetWorktreeUsesCommitVerifiedBySafetyCheck(t *testing.T) {
 	base := t.TempDir()
 	repoDir := filepath.Join(base, "repo")
