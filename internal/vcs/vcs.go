@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/BurntSushi/toml"
@@ -207,13 +208,19 @@ func vcsOverride(repoRoot string) string {
 }
 
 func vcsFromFile(path string) string {
-	var cfg struct {
-		VCS string `toml:"vcs"`
-	}
-	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+	// This bootstrap reader cannot import config (which depends on vcs).
+	// Read exact map keys so the decoder cannot treat VCS or vcſ as opt-ins.
+	var raw map[string]any
+	if _, err := toml.DecodeFile(path, &raw); err != nil {
 		return ""
 	}
-	return normalizeVCSNameFrom(path, cfg.VCS)
+	for key := range raw {
+		if key != "vcs" && strings.EqualFold(key, "vcs") {
+			return ""
+		}
+	}
+	name, _ := raw["vcs"].(string)
+	return normalizeVCSNameFrom(path, name)
 }
 
 func normalizeVCSName(v string) string {

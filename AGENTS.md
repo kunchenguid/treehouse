@@ -25,7 +25,8 @@ User-facing behavior: [README.md](README.md). Settings and precedence: [treehous
 - Prune and destroy are dry-run unless `--yes`; each risk class needs its own opt-in flag, and there is no cross-pool destroy.
 - A command that leaves the world unchanged must not exit 0 (see `cmd/exit.go` and docs/design.md for the two exceptions).
 - `WriteState` stays atomic; a corrupt state file recovers every entry as leased and quarantined.
-- Lifecycle hooks are read from user-level config only; repo-level hooks are ignored for safety.
+- Config reads, approval hashing, and updates share `decodeConfig` in `internal/config/schema.go`: reject schema-key aliases before decoding while preserving dynamic map keys exactly.
+- Repository hooks require user-owned approval of the repo identity, hook table, and optional `approval_files`; verify both main and execution worktree contents before running commands. See `internal/config/trust.go` and README hooks. Never honor repo-declared trust entries.
 
 ## Windows compatibility
 
