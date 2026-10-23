@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -131,13 +132,30 @@ func TestTimedOutLsRemoteIsOriginAccessError(t *testing.T) {
 
 	start := time.Now()
 	t.Cleanup(func() { time.Sleep(time.Until(start.Add(4500 * time.Millisecond))) })
-	_, _, err := remoteDefaultBranch(repo, "ext::sleep 4")
+	// ext:: runs its command without a shell, so re-exec this test binary as
+	// the stalled transport rather than relying on a sleep on PATH.
+	t.Setenv(stallHelperEnvVar, "4s")
+	exe := strings.NewReplacer("%", "%%", " ", "% ").Replace(os.Args[0])
+	_, _, err := remoteDefaultBranch(repo, "ext::"+exe+" -test.run=^TestStallHelperProcess$")
 	if !errors.Is(err, ErrGitTimeout) {
 		t.Fatalf("got %v, want ErrGitTimeout", err)
 	}
 	if !IsOriginAccessError(err) {
 		t.Errorf("IsOriginAccessError(%q) = false; a stalled ls-remote must read as an unreachable origin", err)
 	}
+}
+
+const stallHelperEnvVar = "TREEHOUSE_TEST_STALL_HELPER"
+
+// TestStallHelperProcess is not a real test: it sleeps when re-executed as a
+// git transport by TestTimedOutLsRemoteIsOriginAccessError.
+func TestStallHelperProcess(t *testing.T) {
+	d, err := time.ParseDuration(os.Getenv(stallHelperEnvVar))
+	if err != nil {
+		t.Skip("only runs as a helper process")
+	}
+	time.Sleep(d)
+	os.Exit(0)
 }
 
 func TestSuccessfulGitOutlivedByPipeHolderSucceeds(t *testing.T) {
