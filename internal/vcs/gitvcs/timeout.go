@@ -14,7 +14,8 @@ import (
 
 // GitTimeoutEnvVar bounds how long any single git subprocess may run. The
 // value is a Go duration ("90s", "45m"); "0" turns the limit off. An unset
-// value uses defaultGitTimeout; an unparsable one warns on stderr and uses it.
+// value uses defaultGitTimeout; an unparsable or negative one warns on stderr
+// and uses it.
 const GitTimeoutEnvVar = "TREEHOUSE_GIT_TIMEOUT"
 
 // defaultGitTimeout is long enough for a large checkout, an LFS download, or a
@@ -25,10 +26,10 @@ const defaultGitTimeout = 30 * time.Minute
 // gitTimeoutWarnings receives the unparsable-value warning.
 var gitTimeoutWarnings io.Writer = os.Stderr
 
-// gitWaitDelay caps how long Wait drains copy goroutines after the deadline
-// kills git. It is not the bound on a hook child that inherited an output
-// pipe: exec starts WaitDelay when git exits normally too, and stops watching
-// the context then, so Output and CombinedOutput wait on pipes they own.
+// gitWaitDelay caps how long Wait drains copy goroutines (such as the stdin
+// copier) after the deadline kills git. It is not the bound on a hook child
+// that inherited an output pipe: Output and CombinedOutput hand git *os.File
+// pipes and bound their reads by the deadline themselves (see collect).
 var gitWaitDelay = 5 * time.Second
 
 // gitTimeout is read once per process so an unparsable value warns once
