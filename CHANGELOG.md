@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.6](https://github.com/kunchenguid/treehouse/compare/v3.1.5...v3.1.6) (2026-10-24)
+
+
+### Bug Fixes
+
+* **vcs:** move HEAD through a git transaction on reftable repositories ([#175](https://github.com/kunchenguid/treehouse/issues/175)) ([f389758](https://github.com/kunchenguid/treehouse/commit/f389758894dc2480801f3151ac272e8a3b7920e1)), closes [#174](https://github.com/kunchenguid/treehouse/issues/174)
+
 ## [3.1.5](https://github.com/kunchenguid/treehouse/compare/v3.1.4...v3.1.5) (2026-10-20)
 
 
