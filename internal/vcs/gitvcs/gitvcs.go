@@ -235,8 +235,17 @@ func isAncestor(repoRoot, a, b string) bool {
 	return err == nil
 }
 
+// AddWorktree creates a detached worktree at path. --force clears a stale
+// registration for this exact path, left behind by a crashed or forcibly
+// removed worktree, which git otherwise rejects as "missing but already
+// registered". It never touches another path's registration: a repository-wide
+// `git worktree prune` would, and git cannot tell a deleted worktree from one
+// it cannot stat (another account's private pool root), so it would
+// deregister that live slot and hand its registration name to this one. With
+// --detach no branch checkout rule applies, and git still refuses a non-empty
+// path or a locked registration.
 func AddWorktree(repoRoot, path, branch string) error {
-	_, err := runGit(repoRoot, "worktree", "add", "--detach", path, branchRef(repoRoot, branch))
+	_, err := runGit(repoRoot, "worktree", "add", "--force", "--detach", path, branchRef(repoRoot, branch))
 	return err
 }
 
@@ -329,15 +338,6 @@ func createBranch(worktreePath, branch string, run func(string, ...string) (stri
 		}
 	}
 	return fmt.Errorf("%w: %w (branch %q was created and left in place for manual inspection/removal)", ErrBranchCreated, checkoutErr, branch)
-}
-
-// PruneWorktrees removes git worktree bookkeeping for worktrees whose
-// directories no longer exist. It is safe by design: git only deletes
-// registrations for already-missing directories and never touches live
-// worktrees or their data.
-func PruneWorktrees(repoRoot string) error {
-	_, err := runGit(repoRoot, "worktree", "prune")
-	return err
 }
 
 // SeedWorktree copies ignored files selected by manifest, or by the committed
@@ -1610,7 +1610,6 @@ func (*Backend) AddWorktree(repoRoot, path, branch string) error {
 func (*Backend) SeedWorktree(repoRoot, worktreePath string, manifest []byte) ([]string, error) {
 	return SeedWorktreeWithInventory(repoRoot, worktreePath, manifest)
 }
-func (*Backend) PruneWorktrees(repoRoot string) error { return PruneWorktrees(repoRoot) }
 func (*Backend) RemoveWorktree(repoRoot, path string) error {
 	return RemoveWorktree(repoRoot, path)
 }

@@ -57,16 +57,15 @@ type Backend interface {
 	HasRemote(repoRoot, name string) bool
 	// GetRemoteURL returns the origin remote URL.
 	GetRemoteURL(repoRoot string) (string, error)
-	// AddWorktree creates a new worktree at path based on branch.
+	// AddWorktree creates a new worktree at path based on branch. It clears a
+	// stale registration for this exact path and never touches another
+	// path's registration.
 	AddWorktree(repoRoot, path, branch string) error
 	// SeedWorktree copies backend-specific ignored files into a new or recycled
 	// worktree and returns their paths so cleanup need not trust mutable worktree
 	// metadata. A nil manifest uses committed .worktreeinclude at the destination
 	// HEAD; a non-nil manifest replaces it, with an empty slice selecting nothing.
 	SeedWorktree(repoRoot, worktreePath string, manifest []byte) ([]string, error)
-	// PruneWorktrees clears bookkeeping for worktrees whose directories no
-	// longer exist. It never touches live worktrees or their data.
-	PruneWorktrees(repoRoot string) error
 	// RemoveWorktree removes a worktree even if it has local changes.
 	RemoveWorktree(repoRoot, path string) error
 	// RemoveCleanWorktree removes a worktree, refusing if it is not clean.
@@ -421,10 +420,6 @@ func HasUnseededBranchCreationOutput(worktreePath string, seededPaths []string) 
 func AddWorktree(repoRoot, path, branch string) error {
 	return backendFor(repoRoot).AddWorktree(repoRoot, path, branch)
 }
-
-// PruneWorktrees clears bookkeeping for worktrees whose directories no longer
-// exist.
-func PruneWorktrees(repoRoot string) error { return backendFor(repoRoot).PruneWorktrees(repoRoot) }
 
 // RemoveWorktree removes a worktree even if it has local changes.
 func RemoveWorktree(repoRoot, path string) error {

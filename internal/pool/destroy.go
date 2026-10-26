@@ -575,9 +575,9 @@ func removeManagedWorktree(poolDir string, wt WorktreeEntry) error {
 	// A markerless slot (directory present, .git/.jj marker gone) has no live
 	// VCS registration either backend will deregister - git refuses to remove
 	// a worktree whose .git file is missing - so it takes the plain-directory
-	// route. The stale registration self-heals at the next add: git via
-	// `git worktree prune`, jj by forgetting a stale same-path workspace
-	// registration.
+	// route. The stale registration self-heals when a later add targets the
+	// same path: git via `git worktree add --force`, jj by forgetting the
+	// stale same-path workspace registration.
 	markerless := false
 	if !orphaned {
 		if _, err := os.Stat(path); err == nil {

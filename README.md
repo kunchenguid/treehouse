@@ -165,7 +165,7 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
   `treehouse prune --all` applies the same safety checks across every managed pool under the user-level treehouse root.
   Backing-repository-missing orphans are reported by default; `--prune-orphans` includes them as unverified prune candidates, and `--yes` is required before deletion.
   It is a dry run unless you pass `--yes`.
-- **Self-healing get** - `treehouse get` prunes stale git worktree bookkeeping (e.g. left behind by a crashed or forcibly removed worktree) before adding a new worktree, so a prunable registration never wedges the pool with a "missing but already registered worktree" error.
+- **Self-healing get** - `treehouse get` clears stale git worktree bookkeeping for the exact path it is about to create (e.g. left behind by a crashed or forcibly removed worktree), so a prunable registration never wedges the pool with a "missing but already registered worktree" error. Registrations for other paths are never touched, so a live worktree that the caller cannot see (for example under another account's private pool root) is never deregistered.
 
 ## CLI Reference
 
