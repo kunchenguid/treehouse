@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.1.7](https://github.com/kunchenguid/treehouse/compare/v3.1.6...v3.1.7) (2026-10-26)
+
+
+### Bug Fixes
+
+* **installer:** resolve latest release without GitHub API ([#197](https://github.com/kunchenguid/treehouse/issues/197)) ([7372295](https://github.com/kunchenguid/treehouse/commit/73722955948dd402e0245b65dd9e5418b7970112))
+* **pool:** stop get from deregistering live slots it cannot see ([#198](https://github.com/kunchenguid/treehouse/issues/198)) ([4acb9e4](https://github.com/kunchenguid/treehouse/commit/4acb9e4bc1d78d9aeb69358cd5ff7d1b375a3a1f)), closes [#194](https://github.com/kunchenguid/treehouse/issues/194)
+
 ## [3.1.6](https://github.com/kunchenguid/treehouse/compare/v3.1.5...v3.1.6) (2026-10-24)
 
 
