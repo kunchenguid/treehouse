@@ -1,5 +1,19 @@
 # Changelog
 
+## [3.1.6](https://github.com/kunchenguid/treehouse/compare/v3.1.5...v3.1.6) (2026-10-24)
+
+
+### Bug Fixes
+
+* **vcs:** move HEAD through a git transaction on reftable repositories ([#175](https://github.com/kunchenguid/treehouse/issues/175)) ([f389758](https://github.com/kunchenguid/treehouse/commit/f389758894dc2480801f3151ac272e8a3b7920e1)), closes [#174](https://github.com/kunchenguid/treehouse/issues/174)
+
+## [3.1.5](https://github.com/kunchenguid/treehouse/compare/v3.1.4...v3.1.5) (2026-10-20)
+
+
+### Bug Fixes
+
+* **pool:** reclaim empty leftover slot directories on get ([#186](https://github.com/kunchenguid/treehouse/issues/186)) ([03c12c2](https://github.com/kunchenguid/treehouse/commit/03c12c2847f2fa347e98e0a2e382fbde40a60da0))
+
 ## [3.1.4](https://github.com/kunchenguid/treehouse/compare/v3.1.3...v3.1.4) (2026-10-15)
 
 
