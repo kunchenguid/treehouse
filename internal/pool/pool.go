@@ -418,7 +418,10 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 	}
 
 	fmt.Fprintf(os.Stderr, "🌳 Setting up worktree...\n")
+	progress := newSetupProgress()
 	if !opts.skipFetch && vcs.HasRemote(repoRoot, "origin") {
+		// Git/SSH can prompt through the controlling terminal, even with redirected stdin.
+		fmt.Fprintln(os.Stderr, "🌳 Fetching from origin...")
 		if err := vcs.Fetch(repoRoot); err != nil {
 			return LeaseInfo{}, fmt.Errorf("fetch failed: %w", err)
 		}
@@ -551,7 +554,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			if !wt.SeedInventoryKnown {
 				seededPaths = nil
 			}
-			if err := vcs.ResetWorktreeToRefWithSeededPaths(wt.Path, resetRef, head, true, seededPaths); err != nil {
+			if err := progress.run("Reusing worktree...", func() error {
+				return vcs.ResetWorktreeToRefWithSeededPaths(wt.Path, resetRef, head, true, seededPaths)
+			}); err != nil {
 				continue
 			}
 			state.Worktrees[i].BaseBranch = opts.baseBranch
@@ -684,7 +689,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			}
 		}
 
-		if err := vcs.AddWorktree(repoRoot, wtPath, branch); err != nil {
+		if err := progress.run("Creating worktree...", func() error {
+			return vcs.AddWorktree(repoRoot, wtPath, branch)
+		}); err != nil {
 			return fmt.Errorf("failed to create worktree: %w", err)
 		}
 		seededPaths, err := seedWorktree(repoRoot, wtPath, opts.includeManifest)
@@ -814,9 +821,12 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 	if err != nil {
 		return LeaseInfo{}, err
 	}
-	if runPostCreate {
+	if runPostCreate && len(postCreate) > 0 {
+		fmt.Fprintln(os.Stderr, "🌳 Running post-create hooks...")
+		// Preserve the original file descriptors: hooks own the terminal here.
 		hooks.Run(postCreate, acquired.Path, opts.hookStdout, opts.hookStderr)
 	}
+	fmt.Fprintln(os.Stderr, "🌳 Done.")
 
 	return acquired, nil
 }
