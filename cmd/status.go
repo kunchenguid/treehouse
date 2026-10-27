@@ -121,6 +121,8 @@ var statusCmd = &cobra.Command{
 			}
 			if wt.LeaseHolder == pool.RecoveredLeaseHolder {
 				line += yellow(fmt.Sprintf("  (recovery held: %s; inspect it, then free it with: treehouse return %s)", wt.RecoveryReason, quoteReturnPath(wt.Path)))
+			} else if wt.RecoveryReason != "" {
+				line += yellow(fmt.Sprintf("  (kept leased: %s; inspect it, then free it with: treehouse return %s)", wt.RecoveryReason, quoteReturnPath(wt.Path)))
 			}
 			if wt.RecoveryBackup != "" {
 				line += yellow(fmt.Sprintf("  (recovered untracked files kept in %s)", ui.PrettyPath(wt.RecoveryBackup)))

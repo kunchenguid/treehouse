@@ -39,6 +39,13 @@ type WorktreeEntry struct {
 	LeaseHolder string `json:"lease_holder,omitempty"`
 	// LeasedAt records when the lease was taken.
 	LeasedAt time.Time `json:"leased_at,omitempty,omitzero"`
+	// LeaseHolderPID and LeaseHolderStart identify the process the caller
+	// declared as the lease holder (process.StartStamp guards PID reuse). Both
+	// are zero for a lease without a declared holder, which is never freed
+	// automatically; a lease whose holder is proven gone is freed only when
+	// the slot passes the recovered-entry safety check.
+	LeaseHolderPID   int32 `json:"lease_holder_pid,omitempty"`
+	LeaseHolderStart int64 `json:"lease_holder_start,omitempty"`
 	// BaseBranch is the EXPLICITLY requested base this slot was last cut from,
 	// empty for an inferred acquisition. Release parks the slot back on it so
 	// the next acquire naming the same base can recycle it. Only an explicit
@@ -65,8 +72,8 @@ type WorktreeEntry struct {
 	// reason, so a skipped slot is visible and never reads as available or an
 	// ordinarily leased home.
 	RecoveryError string `json:"recovery_error,omitempty"`
-	// RecoveryReason records why automatic recovery kept a recovered lease
-	// quarantined; clearing the lease clears it.
+	// RecoveryReason records why automatic recovery kept a recovered lease, or
+	// a lease whose holder exited, in place; clearing the lease clears it.
 	RecoveryReason string `json:"recovery_reason,omitempty"`
 }
 
