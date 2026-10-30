@@ -71,6 +71,8 @@ type PruneOptions struct {
 	PruneOrphans bool
 	// PreDestroy is the hook command list to run before deleting each candidate.
 	PreDestroy []string
+	// RunHooks resolves and verifies commands per reserved deletion target.
+	RunHooks hooks.Runner
 }
 
 const (
@@ -489,7 +491,7 @@ func executePrune(poolDir string, plan prunePlan, options PruneOptions) (PruneRe
 	}
 
 	for _, wt := range reserved {
-		hooks.Run(options.PreDestroy, wt.Path, os.Stdout, os.Stderr)
+		options.RunHooks.Run(hooks.PreDestroy, options.PreDestroy, wt.Path, os.Stdout, os.Stderr)
 	}
 
 	if err := WithStateLock(poolDir, func() error {

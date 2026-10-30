@@ -1,6 +1,6 @@
 # Treehouse configuration
 # Place repo-safe settings at <repo_root>/treehouse.toml.
-# Place executable hooks only in ~/.config/treehouse/config.toml.
+# Repository hooks require explicit approval with treehouse trust.
 
 # Maximum number of worktrees in the pool
 max_trees = 16
@@ -71,8 +71,16 @@ max_trees = 16
 # opt-in from the main repository root.
 # vcs = "jj"
 
-# Lifecycle hooks do NOT belong in this file. A [hooks] section here is
-# ignored for safety, so that running treehouse in an untrusted clone cannot
-# execute checked-in shell. Treehouse warns on stderr when it ignores hook keys.
-# Put post_create and pre_destroy in ~/.config/treehouse/config.toml instead;
-# see the Hooks section of the README for the syntax.
+# Repository lifecycle hooks are ignored until you review them and run
+# `treehouse trust`. Changes to the hooks table require approval again.
+# User hooks in ~/.config/treehouse/config.toml always run first for each event.
+# All commands run in the worktree directory. See README.md#hooks.
+# [hooks]
+# Optional: require approval of explicitly listed dependency contents too.
+# Removing entries or this key requires explicit reapproval with treehouse trust.
+# Files must be readable regular files within both main and execution worktrees.
+# approval_files = ["scripts/setup-venv.sh", "scripts/cleanup-worktree.sh", "scripts/teardown.sh"]
+# post_create = ["./scripts/setup-venv.sh"]
+# post_get = ["git submodule update --init --recursive"]
+# post_return = ["./scripts/cleanup-worktree.sh"]
+# pre_destroy = ["./scripts/teardown.sh"]

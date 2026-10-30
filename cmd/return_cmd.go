@@ -162,9 +162,13 @@ func releaseWorktree(target returnTarget, preconditions pool.ReleasePrecondition
 	if err := confirmWorktreeReturn(target.path); err != nil {
 		return err
 	}
-	return pool.ReleaseConditional(target.poolDir, target.path, returnBaseBranch(target.path), preconditions, func() error {
+	_, err := config.LoadGlobal()
+	if err != nil {
+		return err
+	}
+	return pool.ReleaseConditionalWithHooks(target.poolDir, target.path, returnBaseBranch(target.path), preconditions, func() error {
 		return finalizeWorktreeReturn(target.path)
-	})
+	}, nil, config.RunWorktreeHooks)
 }
 
 // bulkReturnPreconditions carries the LEASE the `--all` listing observed into

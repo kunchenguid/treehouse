@@ -183,6 +183,8 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `treehouse prune --all`    | Dry-run removal of stale idle worktrees across every managed pool |
 | `treehouse destroy <path>` | Dry-run removal of one worktree (safe by default; `--yes` to execute) |
 | `treehouse destroy <pool> --all` | Dry-run removal of every disposable worktree in that pool |
+| `treehouse trust`          | Approve the current repository lifecycle hooks     |
+| `treehouse untrust`        | Revoke approval for repository lifecycle hooks      |
 | `treehouse init`           | Create a default `treehouse.toml` config file        |
 | `treehouse update`         | Update treehouse to the latest version               |
 
@@ -441,7 +443,7 @@ Pass `treehouse prune --yes` to delete those worktrees.
 
 By default, prune only inspects the current repository's pool and must be run inside a repository.
 Pass `treehouse prune --all` or `treehouse prune --global` to inspect every managed pool under the user-level treehouse root from any directory.
-Global prune reads the user-level config and hooks.
+Global prune reads user-level settings and resolves trusted hooks separately for each target repository.
 Both forms derive each worktree's owning repository from its own version-control metadata, then fetch and check merge safety against that repository, so a pool shared by two clones of the same remote is pruned from either clone.
 Without `--prune-orphans`, pass `treehouse prune --all --yes` to delete only the globally safe stale candidates.
 
@@ -506,6 +508,8 @@ Create a repo config file with `treehouse init`, or add one manually:
 
 **User-level:** `~/.config/treehouse/config.toml`
 
+A missing user config uses defaults. Other read errors, including inaccessible directories or symlink loops, are reported instead of treating the config as absent.
+
 ```toml
 # Maximum number of worktrees in the pool
 max_trees = 16
@@ -539,7 +543,7 @@ max_trees = 16
 ```
 
 The repo-level config takes precedence for repo-safe settings.
-`treehouse prune --all` can run without a repository, so it uses only the user-level config and does not read per-repo `treehouse.toml` files while sweeping.
+`treehouse prune --all` can run without a repository, so its settings come from the user-level config only and it does not read per-repo `treehouse.toml` settings while sweeping; repository [hooks](#hooks) are still resolved from each target worktree's own repository.
 If no config is found, the default pool size is 16.
 
 ### Base branch
@@ -729,24 +733,49 @@ This is **opt-in**; the default global store is unchanged. In-project mode:
 
 ### Hooks
 
-You can run commands automatically at worktree lifecycle points by adding a `[hooks]` section to the user-level config at `~/.config/treehouse/config.toml`.
-Hooks in repo-level `treehouse.toml` are ignored for safety, so that running treehouse in an untrusted clone cannot execute checked-in shell.
-During a command, treehouse warns once per repo-level `treehouse.toml` on stderr, naming the file and any ignored lifecycle hook keys declared under `[hooks]` rather than dropping them silently.
-`treehouse destroy` always reads `pre_destroy` from the user-level config because it can target a pool by path.
+You can declare lifecycle commands in your user config at `~/.config/treehouse/config.toml`, or in the main repository's `treehouse.toml` after explicitly approving them.
 
 ```toml
 [hooks]
 post_create = ["./scripts/setup-venv.sh"]
+post_get = ["git submodule update --init --recursive"]
+post_return = ["./scripts/cleanup-worktree.sh"]
 pre_destroy = ["./scripts/teardown.sh"]
 ```
 
-- `post_create` runs after a worktree is provisioned or reset and right before `treehouse get` hands it to you.
-  For `treehouse get --lease`, stdout from `post_create` is routed to stderr so stdout remains the leased path.
-- `pre_destroy` runs before a worktree is removed by `treehouse destroy <path> --yes`, `treehouse destroy <pool> --all --yes`, or prune deletion commands such as `treehouse prune --yes` and `treehouse prune --prune-orphans --yes`.
+- `post_create` runs after a worktree is provisioned or reset.
+- `post_get` runs after `post_create` on every successful acquisition, including reuse, before the path is printed or a subshell opens.
+- `post_return` runs after a successful reset and release by `return`, `return --all`, or an exiting `get` subshell. Refused returns and damaged slots do not run it. Cleanup finishes before another caller can acquire the slot. It holds the pool lock, so these commands must not call Treehouse commands that access the same pool.
+- `pre_destroy` runs before removal by `destroy --yes` or `prune --yes`, including bulk operations. Dry runs do not execute hooks.
 
-Commands in each list run sequentially in the worktree directory, via the OS shell (`/bin/sh -c` on Linux/macOS, `%COMSPEC% /c` on Windows).
-If a command exits non-zero, treehouse logs the command, exit code, and stderr, then continues with the remaining commands.
-A failing hook does not fail the overall `get`, `destroy`, or `prune` operation.
+Commands run sequentially in the worktree directory, via the OS shell (`/bin/sh -c` on Linux/macOS, `%COMSPEC% /d /s /c` on Windows). User commands run before trusted repository commands for each event. A failing command is logged and later commands continue; hook failures do not fail the lifecycle operation. `get --lease` sends all hook output to stderr, keeping stdout as the path or requested JSON.
+
+Repository hooks are ignored until you review and approve them:
+
+```sh
+treehouse trust     # approve the current [hooks] table, without running it
+treehouse untrust   # revoke this repository's approval
+```
+
+Approval is stored under `[trusted_repos]` in the user config, keyed by the origin URL (or the main repository's absolute path when there is no origin), with a `sha256:` fingerprint of the parsed `[hooks]` table and any explicitly listed approval files. Changing a command, its order, or a hook key invalidates approval. Comments, formatting, and unrelated settings do not. Untrusted or changed hooks produce a warning naming the file and suggesting `treehouse trust`. Running `trust` when already approved or when the repository declares no hooks, or `untrust` when no approval exists, exits nonzero without rewriting the config. Schema keys in both repository and user config must use their documented spelling. Case variants such as `[Trusted_Repos]`, Unicode case aliases, and multiple spellings of a field are rejected before decoding, approval hashing, or updates, even if their values are identical. Correct the keys explicitly before running `trust` or `untrust`; a rejected update leaves the config unchanged. Repository URLs and other dynamic map keys keep their exact spelling.
+
+Clones with the same origin share approval only when their hook fingerprints match. Repository config cannot grant itself trust. The hook table must be spelled exactly `[hooks]`; case variants such as `[Hooks]` are rejected. Both commands use the main checkout's config, including when invoked from a pooled worktree. Deletion and return also resolve hooks from each target's owning main repository, even when invoked outside it or across a shared pool. Missing or malformed repository config disables its hooks during cleanup; user hooks still run.
+
+To include files that repository hooks depend on in the approval, list them explicitly:
+
+```toml
+[hooks]
+approval_files = ["scripts/setup.sh", "package.json", "package-lock.json"]
+post_create = ["./scripts/setup.sh"]
+```
+
+The approval fingerprint binds the entire hook table, the declared file list, and each listed file's contents. Changing a listed file invalidates approval even when the commands stay unchanged. Removing an entry, emptying the list, or deleting `approval_files` also invalidates approval. Only an explicit `treehouse trust` can approve the reduced list. Existing approvals from versions that treated `approval_files` as an unknown key require reapproval with file contents.
+
+Paths are relative to the owning main repository when approving, and to the execution worktree when running hooks. They must stay inside those roots. Only regular files are supported, including relative symlinks that stay inside the same root; absolute paths, absolute symlinks, escaping symlinks, directories, and special files are rejected. Missing or unreadable files prevent approval and disable repository hooks. `approval_files` uses exact paths, without glob expansion, and the key must use this exact spelling.
+
+Before each repository command, Treehouse checks both the owning main checkout and the execution worktree against the approved contents. Checks run after user hooks and any acquisition or return reset, and apply to all four lifecycle events, including prune and destroy. A mismatch skips repository hooks with a warning; user hooks and the lifecycle operation can still proceed.
+
+Dependencies must be listed explicitly, including scripts, sourced files, manifests, or lockfiles whose changes should require approval. Treehouse does not discover transitive dependencies. Without `approval_files`, only the hook table is approved. These checks do not sandbox hooks or eliminate concurrent file-change races: another process can change a file after verification, so approve commands only for repositories whose code you trust.
 
 ## Development
 

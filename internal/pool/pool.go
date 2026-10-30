@@ -133,6 +133,10 @@ type AcquireOptions struct {
 	// APFSSharing opts in to tracked-file copy-on-write sharing for fresh Git
 	// slots only, before hooks and publication. Reuse and return never run it.
 	APFSSharing bool
+	// PostGet runs after post_create on both fresh allocation and reuse.
+	PostGet []string
+	// RunHooks overrides static commands with checks at each lifecycle point.
+	RunHooks hooks.Runner
 }
 
 // acquireOptions controls how Acquire reserves the worktree it hands out.
@@ -148,6 +152,8 @@ type acquireOptions struct {
 	worktreePath    string
 	includeManifest []byte
 	apfsSharing     bool
+	postGet         []string
+	runHooks        hooks.Runner
 	// uniqueLeaf makes a newly created worktree's own directory name unique
 	// within the pool instead of the repository name every slot shares.
 	uniqueLeaf bool
@@ -156,7 +162,7 @@ type acquireOptions struct {
 	lease bool
 	// leaseHolder is an optional label stored with a lease.
 	leaseHolder string
-	// hookStdout/hookStderr receive post-create hook output. Lease mode routes
+	// hookStdout/hookStderr receive acquisition hook output. Lease mode routes
 	// hook stdout to stderr so it cannot contaminate machine-readable CLI output.
 	hookStdout io.Writer
 	hookStderr io.Writer
@@ -178,6 +184,8 @@ func AcquireWithOptions(repoRoot, poolDir string, poolSize int, postCreate []str
 		worktreePath:    options.WorktreePath,
 		includeManifest: options.IncludeManifest,
 		apfsSharing:     options.APFSSharing,
+		postGet:         options.PostGet,
+		runHooks:        options.RunHooks,
 		uniqueLeaf:      options.UniqueLeaf,
 		hookStdout:      os.Stdout,
 		hookStderr:      os.Stderr,
@@ -210,6 +218,8 @@ func AcquireLeaseInfoWithOptions(repoRoot, poolDir string, poolSize int, postCre
 		worktreePath:    options.WorktreePath,
 		includeManifest: options.IncludeManifest,
 		apfsSharing:     options.APFSSharing,
+		postGet:         options.PostGet,
+		runHooks:        options.RunHooks,
 		uniqueLeaf:      options.UniqueLeaf,
 		lease:           true,
 		leaseHolder:     holder,
@@ -849,7 +859,8 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		return LeaseInfo{}, err
 	}
 	if runPostCreate {
-		hooks.Run(postCreate, acquired.Path, opts.hookStdout, opts.hookStderr)
+		opts.runHooks.Run(hooks.PostCreate, postCreate, acquired.Path, opts.hookStdout, opts.hookStderr)
+		opts.runHooks.Run(hooks.PostGet, opts.postGet, acquired.Path, opts.hookStdout, opts.hookStderr)
 	}
 
 	return acquired, nil
@@ -1052,6 +1063,14 @@ func ValidateReleasePreconditions(poolDir, worktreePath string, preconditions Re
 // HEAD is merged into the base it resets to, so a slot parked off-base is never
 // recycled and every acquire grows the pool until max_trees.
 func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions ReleasePreconditions, beforeReset func() error) error {
+	return ReleaseConditionalWithHooks(poolDir, worktreePath, baseBranch, preconditions, beforeReset, nil, nil)
+}
+
+// ReleaseConditionalWithHooks runs post_return after a successful reset and state
+// write, while still holding the pool lock. A later acquire cannot race cleanup.
+// Hooks must not invoke commands that take this same pool lock. Damaged slots
+// clear their lease without running hooks in an unverifiable directory.
+func ReleaseConditionalWithHooks(poolDir, worktreePath, baseBranch string, preconditions ReleasePreconditions, beforeReset func() error, postReturn []string, runHooks hooks.Runner) error {
 	markerless := vcs.WorktreeBackendName(worktreePath) == ""
 	// Resolved before the state lock so a failure surfaces before beforeReset
 	// kills the worktree's processes. It is only fatal when the slot has no
@@ -1115,7 +1134,13 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 		}
 
 		releaseEntry(wt)
-		return WriteState(poolDir, state)
+		if err := WriteState(poolDir, state); err != nil {
+			return err
+		}
+		if !markerless {
+			runHooks.Run(hooks.PostReturn, postReturn, worktreePath, os.Stdout, os.Stderr)
+		}
+		return nil
 	})
 }
 

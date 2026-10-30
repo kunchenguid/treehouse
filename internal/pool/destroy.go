@@ -139,6 +139,8 @@ type DestroyOptions struct {
 	IncludeLeased bool
 	// PreDestroy is the hook command list to run before deleting each worktree.
 	PreDestroy []string
+	// RunHooks resolves and verifies commands per reserved deletion target.
+	RunHooks hooks.Runner
 	// InspectTargets observes the locked target snapshot used by bulk destroy.
 	InspectTargets func([]WorktreeEntry)
 }
@@ -461,7 +463,7 @@ func executeDestroy(poolDir string, removable []DestroyTarget, resolveContext pr
 	}
 
 	for _, wt := range reserved {
-		hooks.Run(opts.PreDestroy, wt.worktree.Path, os.Stdout, os.Stderr)
+		opts.RunHooks.Run(hooks.PreDestroy, opts.PreDestroy, wt.worktree.Path, os.Stdout, os.Stderr)
 	}
 
 	var destroyed []DestroyTarget
