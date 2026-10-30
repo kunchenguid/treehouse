@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.1.8](https://github.com/kunchenguid/treehouse/compare/v3.1.7...v3.1.8) (2026-10-30)
+
+
+### Bug Fixes
+
+* **pool:** guard against invalid worktree registrations ([#200](https://github.com/kunchenguid/treehouse/issues/200)) ([bf61797](https://github.com/kunchenguid/treehouse/commit/bf61797bb80a0b1169dbb736e43111181a7ef472))
+* **vcs:** recover stale HEAD.lock left by interrupted worktree reset ([#178](https://github.com/kunchenguid/treehouse/issues/178)) ([986b4b7](https://github.com/kunchenguid/treehouse/commit/986b4b735fd9c20b02dc9ab48311a79344247943))
+
 ## [3.1.7](https://github.com/kunchenguid/treehouse/compare/v3.1.6...v3.1.7) (2026-10-26)
 
 
