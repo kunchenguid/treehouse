@@ -94,3 +94,64 @@ func TestFetchKeepsGitSubmoduleFetchDefault(t *testing.T) {
 		t.Fatalf("fetch did not fetch the moved submodule commit: %v", err)
 	}
 }
+
+func TestIsDirtySubmoduleParityWithFullStatus(t *testing.T) {
+	sub := initRepo(t)
+	writeTestFile(t, sub, "tracked", "initial\n")
+	writeTestFile(t, sub, ".gitignore", "*.ignored\n")
+	gitRun(t, sub, "add", ".")
+	gitRun(t, sub, "commit", "-m", "submodule content")
+	repo := initRepo(t)
+	gitRun(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", sub, "lib")
+	gitRun(t, repo, "commit", "-m", "add submodule")
+	gitRun(t, repo, "config", "submodule.recurse", "true")
+	assertDirty := func(want bool) {
+		t.Helper()
+		full, err := runGit(repo, "status", "--porcelain", "--untracked-files=all")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dirty, err := IsDirty(repo)
+		if err != nil || dirty != want || dirty != (full != "") {
+			t.Fatalf("dirty=%v want=%v full=%q err=%v", dirty, want, full, err)
+		}
+	}
+	assertDirty(false)
+	lib := filepath.Join(repo, "lib")
+	writeTestFile(t, lib, "cache.ignored", "ignored\n")
+	if err := os.MkdirAll(filepath.Join(lib, "empty", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	assertDirty(false)
+	writeTestFile(t, lib, filepath.Join("scratch", "nested", "file"), "untracked\n")
+	assertDirty(true)
+	if err := os.Remove(filepath.Join(lib, "scratch", "nested", "file")); err != nil {
+		t.Fatal(err)
+	}
+	assertDirty(false)
+	writeTestFile(t, lib, "tracked", "modified\n")
+	assertDirty(true)
+	gitRun(t, lib, "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-am", "advance submodule")
+	assertDirty(true)
+	gitRun(t, repo, "add", "lib")
+	gitRun(t, repo, "commit", "-m", "record submodule")
+	index, err := gitPath(lib, "index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(index, []byte("invalid index\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := IsDirty(repo); err == nil {
+		t.Errorf("unreadable submodule index: expected an error")
+	}
+	if err := os.WriteFile(index, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repo, "submodule", "deinit", "--force", "lib")
+	assertDirty(false)
+}

@@ -4415,24 +4415,36 @@ func TestList_FallsBackToRawScanWhenFilteringFails(t *testing.T) {
 func TestList_ReportsUnverifiedWhenTheProcessTableCannotBeRead(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
-	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
-	if err != nil {
-		t.Fatalf("Acquire failed: %v", err)
+	for range 2 {
+		if _, err := AcquireLease(repoDir, poolDir, 2, nil, "fixture"); err != nil {
+			t.Fatalf("AcquireLease failed: %v", err)
+		}
 	}
-	clearOwnerReservation(t, poolDir, wtPath)
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range state.Worktrees {
+		clearLease(&state.Worktrees[i])
+	}
+	if err := WriteState(poolDir, state); err != nil {
+		t.Fatal(err)
+	}
 
 	scans := 0
-	restore := swapListProcessSeams(
-		func(string) ([]process.ProcessInfo, error) {
-			scans++
-			return nil, errors.New("cannot read the process table")
-		},
-		func([]process.ProcessInfo) ([]process.ProcessInfo, error) {
-			t.Error("List must not filter a scan that failed")
-			return nil, nil
-		},
-	)
-	t.Cleanup(restore)
+	originalScan, originalFilter := findProcessesInWorktrees, dropProtectedProcesses
+	t.Cleanup(func() {
+		findProcessesInWorktrees, dropProtectedProcesses = originalScan, originalFilter
+	})
+	findProcessesInWorktrees = func(paths []string) (map[string][]process.ProcessInfo, error) {
+		scans++
+		// Partial results from a failed batch must not survive as observations.
+		return map[string][]process.ProcessInfo{paths[0]: {{PID: 4321, Name: "partial"}}}, errors.New("cannot read the process table")
+	}
+	dropProtectedProcesses = func([]process.ProcessInfo) ([]process.ProcessInfo, error) {
+		t.Error("List must not filter a scan that failed")
+		return nil, nil
+	}
 
 	var statuses []WorktreeStatus
 	stderr := captureStderr(t, func() {
@@ -4444,17 +4456,19 @@ func TestList_ReportsUnverifiedWhenTheProcessTableCannotBeRead(t *testing.T) {
 	if scans != 1 {
 		t.Fatalf("expected the failing scan to run once, ran %d times", scans)
 	}
-	if len(statuses) != 1 {
-		t.Fatalf("expected one worktree, got %#v", statuses)
+	if len(statuses) != 2 {
+		t.Fatalf("expected two worktrees, got %#v", statuses)
 	}
-	if len(statuses[0].Processes) != 0 {
-		t.Fatalf("expected no processes when the scan failed, got %#v", statuses[0].Processes)
+	for _, status := range statuses {
+		if len(status.Processes) != 0 {
+			t.Errorf("expected no processes when the scan failed, got %#v", status.Processes)
+		}
+		if status.Status != StatusUnverified {
+			t.Errorf("expected %q when the scan failed, got %q", StatusUnverified, status.Status)
+		}
 	}
-	if statuses[0].Status != StatusUnverified {
-		t.Fatalf("expected %q when the scan failed, got %q", StatusUnverified, statuses[0].Status)
-	}
-	if !strings.Contains(stderr, "WARNING") || !strings.Contains(stderr, wtPath) {
-		t.Fatalf("expected a warning naming %s, got stderr %q", wtPath, stderr)
+	if strings.Count(stderr, "WARNING") != 1 || !strings.Contains(stderr, poolDir) {
+		t.Fatalf("expected one warning naming pool %s, got stderr %q", poolDir, stderr)
 	}
 }
 
@@ -4615,11 +4629,21 @@ func swapListProcessSeams(
 	scan func(string) ([]process.ProcessInfo, error),
 	filter func([]process.ProcessInfo) ([]process.ProcessInfo, error),
 ) func() {
-	origScan, origFilter := findProcessesInWorktree, dropProtectedProcesses
-	findProcessesInWorktree = scan
+	origScan, origFilter := findProcessesInWorktrees, dropProtectedProcesses
+	findProcessesInWorktrees = func(paths []string) (map[string][]process.ProcessInfo, error) {
+		result := make(map[string][]process.ProcessInfo, len(paths))
+		for _, path := range paths {
+			procs, err := scan(path)
+			if err != nil {
+				return nil, err
+			}
+			result[path] = procs
+		}
+		return result, nil
+	}
 	dropProtectedProcesses = filter
 	return func() {
-		findProcessesInWorktree = origScan
+		findProcessesInWorktrees = origScan
 		dropProtectedProcesses = origFilter
 	}
 }

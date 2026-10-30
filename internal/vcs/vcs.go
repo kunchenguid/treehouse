@@ -461,6 +461,11 @@ func slotMarkerBackend(path string) Backend {
 	return nil
 }
 
+// ExistingGitWorktreeLock reports an index lock after validating the slot registration.
+func ExistingGitWorktreeLock(path string) (string, error) {
+	return gitvcs.ExistingWorktreeLock(path)
+}
+
 // WorktreeBackendNameChecked distinguishes a missing marker from one that
 // cannot be trusted. Linked Git worktrees must pass registration validation
 // before callers use the backend to read or modify the slot.

@@ -532,6 +532,17 @@ func createTempStateFile(dir, base string, perm os.FileMode) (*os.File, string, 
 }
 
 func WithStateLock(poolDir string, fn func() error) error {
+	return withPoolLock(poolDir, func() error {
+		if err := recoverQuarantinedEntries(poolDir); err != nil {
+			return err
+		}
+		return fn()
+	})
+}
+
+// withPoolLock holds the pool lock without the recovery pass, for short
+// critical sections that only need to exclude concurrent lifecycle operations.
+func withPoolLock(poolDir string, fn func() error) error {
 	if err := os.MkdirAll(poolDir, 0755); err != nil {
 		return err
 	}
@@ -548,8 +559,5 @@ func WithStateLock(poolDir string, fn func() error) error {
 	}
 	defer unlockFile(f)
 
-	if err := recoverQuarantinedEntries(poolDir); err != nil {
-		return err
-	}
 	return fn()
 }
