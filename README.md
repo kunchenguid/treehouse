@@ -706,6 +706,10 @@ The worktree root can also be set without a config file, and the resolved value 
 
 A relative value (including `.`) is resolved from the repo root, exactly like a relative `root` in config; `treehouse` is always appended, so `--root .` places the pool at `<repo>/.treehouse/`.
 
+### Git timeout
+
+Every git subprocess Treehouse runs (fetch, worktree add, checkout, reset, and the rest) stops after 30 minutes, so a git process stuck on a lock, a credential helper, or a stalled network fails with an error that names the command instead of hanging. Set `TREEHOUSE_GIT_TIMEOUT` to a Go duration such as `90s` or `45m` to change the limit, or to `0` to turn it off. A value Treehouse cannot parse, or a negative one, prints a warning and falls back to 30 minutes.
+
 ### In-project storage
 
 By default the pool lives in the global `~/.treehouse` store. Set the root to `.` to keep it **inside the project** instead:
