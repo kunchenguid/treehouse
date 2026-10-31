@@ -83,6 +83,14 @@ other in-use slot. --all takes no path or name, and cannot be combined with the
 entries and incomplete acquisitions are never returned by --all; inspect
 them and return each worktree by name.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// A workspace shell has no single TREEHOUSE_DIR because it contains
+		// several child worktrees. A bare return releases the aggregate.
+		if len(args) == 0 && os.Getenv("TREEHOUSE_WORKSPACE") != "" {
+			if returnAll || cmd.Flags().Changed("if-lease-id") || cmd.Flags().Changed("if-lease-holder") {
+				return fmt.Errorf("return from a workspace shell cannot use --all or --if-lease-*; use 'treehouse workspace return' to release the workspace")
+			}
+			return returnWorkspace(os.Getenv("TREEHOUSE_WORKSPACE"), returnForce)
+		}
 		if cmd.Flags().Changed("if-lease-id") && returnIfLeaseID == "" {
 			return fmt.Errorf("--if-lease-id cannot be empty")
 		}
@@ -447,8 +455,20 @@ func resolveReturnTarget(args []string) (returnTarget, error) {
 		return returnTarget{}, err
 	}
 
+	// The pool records the spelling used to create a slot, which may pass
+	// through a symlinked root. A facade (or the caller's physical cwd) resolves
+	// to the same checkout but not necessarily the same state-file path. Find
+	// the registered entry and return its path, never the resolved facade path.
+	if target, found, err := findCanonicalReturnTarget(wtPath, len(args) > 0); err != nil {
+		return returnTarget{}, err
+	} else if found {
+		return target, nil
+	}
+
 	poolDir, pathErr := resolveReturnPoolDir(wtPath, len(args) > 0)
 	if pathErr == nil {
+		// Keep the original exact-path behavior for a missing slot or an
+		// unreadable marker. The canonical comparison cannot resolve either.
 		return returnTarget{path: wtPath, poolDir: poolDir}, nil
 	}
 	if len(args) == 0 || !errors.Is(pathErr, errReturnWorktreeUnmanaged) || !couldBeWorktreeName(args[0]) {
@@ -517,13 +537,26 @@ func unknownWorktreeNameError(poolDir, name string) error {
 }
 
 func resolveWorktreePath(args []string) (string, error) {
+	var path string
+	var err error
 	if len(args) > 0 {
-		return filepath.Abs(args[0])
+		path, err = filepath.Abs(args[0])
+	} else if env := os.Getenv("TREEHOUSE_DIR"); env != "" {
+		path, err = filepath.Abs(env)
+	} else {
+		path, err = os.Getwd()
 	}
-	if env := os.Getenv("TREEHOUSE_DIR"); env != "" {
-		return filepath.Abs(env)
+	if err != nil {
+		return "", err
 	}
-	return os.Getwd()
+	// Workspace facades use symlinks while pool state tracks physical paths.
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved, nil
+	} else if os.IsNotExist(err) {
+		return path, nil
+	} else {
+		return "", err
+	}
 }
 
 // returnBaseBranch resolves the configured base branch for the repository that
@@ -565,6 +598,72 @@ func poolDirForRepoRoot(repoRoot string) (string, error) {
 		return "", fmt.Errorf("failed to load config: %w", err)
 	}
 	return config.ResolvePoolDir(repoRoot, config.ResolveRoot(rootFlag, cfg))
+}
+
+// findCanonicalReturnTarget compares existing worktrees by their physical path
+// but hands ReleaseConditional the exact path and pool spelling from state.
+// Prefer the repository's configured pool: scanning an in-pool slot through a
+// physical alias otherwise invents a second, quarantined recovery entry for a
+// slot whose registered path goes through a symlinked pool root.
+func findCanonicalReturnTarget(wtPath string, explicitPath bool) (returnTarget, bool, error) {
+	var pools []string
+	var repoRoot string
+	var err error
+	if explicitPath {
+		repoRoot, err = vcs.FindMainRepoRootFrom(wtPath)
+	} else {
+		repoRoot, err = vcs.FindMainRepoRoot()
+	}
+	if err == nil {
+		if configuredPool, cfgErr := poolDirForRepoRoot(repoRoot); cfgErr == nil {
+			pools = append(pools, configuredPool)
+		}
+	}
+	// The built-in layout also works after the backing repository disappears.
+	pathPool := filepath.Dir(filepath.Dir(wtPath))
+	if len(pools) == 0 || pools[0] != pathPool {
+		pools = append(pools, pathPool)
+	}
+	for _, poolDir := range pools {
+		if !pool.IsPoolDir(poolDir) {
+			continue
+		}
+		state, err := pool.ReadState(poolDir)
+		if err != nil {
+			// A changed configuration may point at an unrelated broken pool.
+			// Keep looking for the path's own pool; the existing resolver
+			// below still surfaces the applicable state error if none matches.
+			continue
+		}
+		var matching *pool.WorktreeEntry
+		for i := range state.Worktrees {
+			entry := &state.Worktrees[i]
+			physical, err := filepath.EvalSymlinks(entry.Path)
+			if err != nil || physical != wtPath {
+				continue
+			}
+			if matching == nil || (!matching.SeedInventoryKnown && entry.SeedInventoryKnown) {
+				matching = entry
+			} else if matching.SeedInventoryKnown == entry.SeedInventoryKnown {
+				return returnTarget{}, false, fmt.Errorf("multiple pool entries resolve to worktree %s; refusing an ambiguous return", wtPath)
+			}
+		}
+		if matching == nil {
+			continue
+		}
+		// A physical pool-dir spelling used for discovery must not persist a
+		// phantom recovery entry for a registered symlink-rooted slot. Use the
+		// entry's own pool spelling when it denotes the same pool directory.
+		if recordedPool := filepath.Dir(filepath.Dir(matching.Path)); pool.IsPoolDir(recordedPool) {
+			if resolvedPool, err := filepath.EvalSymlinks(recordedPool); err == nil {
+				if physicalPool, err := filepath.EvalSymlinks(poolDir); err == nil && resolvedPool == physicalPool {
+					poolDir = recordedPool
+				}
+			}
+		}
+		return returnTarget{path: matching.Path, poolDir: poolDir}, true, nil
+	}
+	return returnTarget{}, false, nil
 }
 
 func resolveReturnPoolDir(wtPath string, explicitPath bool) (string, error) {
