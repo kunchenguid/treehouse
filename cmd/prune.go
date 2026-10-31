@@ -21,6 +21,7 @@ var (
 	pruneGlobal  bool
 	pruneOrphans bool
 	pruneVerbose bool
+	pruneReturn  bool
 )
 
 var pruneCmd = &cobra.Command{
@@ -39,7 +40,15 @@ them.
 Pass --all or --global to sweep every managed pool under the user-level
 treehouse root from any directory. Global prune derives each worktree's owning
 repository from git metadata and requires the configured root to be unset or
-absolute.`,
+absolute.
+
+Pass --return to keep landed worktrees instead of deleting them: each one is
+reset onto its base and handed back to the pool exactly as 'treehouse return'
+would, so its directory and ignored files (dependencies, build caches, local
+databases) stay for the next 'treehouse get'; only ignored files treehouse
+itself seeded are cleaned up. A worktree already parked on its base is left as
+it is. Leased, reserved, busy, dirty, unlanded, and unverifiable worktrees are
+never touched. --return cannot be combined with --prune-orphans.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if pruneAll || pruneGlobal {
@@ -53,15 +62,15 @@ absolute.`,
 				return err
 			}
 
-			result, err := pool.PruneAllWithOptions(poolRoot, pool.PruneOptions{
-				DryRun:       !pruneYes,
-				PruneOrphans: pruneOrphans,
-				PreDestroy:   cfg.Hooks.PreDestroy,
-			})
+			result, err := pool.PruneAllWithOptions(poolRoot, pruneOptions(cfg))
 			if err != nil {
 				return err
 			}
 
+			if pruneReturn {
+				printPruneReturnResult(os.Stdout, result.Result, len(result.Pools), true, !pruneYes, pruneVerbose)
+				return nil
+			}
 			printPruneAllResult(os.Stdout, result, !pruneYes, pruneOrphans, pruneVerbose)
 			return nil
 		}
@@ -81,27 +90,102 @@ absolute.`,
 			return err
 		}
 
-		result, err := pool.PruneWithOptions(repoRoot, poolDir, pool.PruneOptions{
-			DryRun:       !pruneYes,
-			PruneOrphans: pruneOrphans,
-			PreDestroy:   cfg.Hooks.PreDestroy,
-		})
+		result, err := pool.PruneWithOptions(repoRoot, poolDir, pruneOptions(cfg))
 		if err != nil {
 			return err
 		}
 
+		if pruneReturn {
+			printPruneReturnResult(os.Stdout, result, 1, false, !pruneYes, pruneVerbose)
+			return nil
+		}
 		printPruneResult(os.Stdout, result, !pruneYes, pruneOrphans, pruneVerbose)
 		return nil
 	},
 }
 
 func init() {
-	pruneCmd.Flags().BoolVar(&pruneYes, "yes", false, "Delete listed prune candidates instead of doing a dry run")
+	pruneCmd.Flags().BoolVar(&pruneYes, "yes", false, "Delete listed prune candidates (with --return, return them) instead of doing a dry run")
 	pruneCmd.Flags().BoolVar(&pruneAll, "all", false, "Sweep every managed pool under the user-level treehouse root")
 	pruneCmd.Flags().BoolVar(&pruneGlobal, "global", false, "Alias for --all")
 	pruneCmd.Flags().BoolVar(&pruneOrphans, "prune-orphans", false, "Include backing-repository-missing orphaned worktrees in prune candidates")
 	pruneCmd.Flags().BoolVarP(&pruneVerbose, "verbose", "v", false, "Show detailed skip diagnostics")
+	pruneCmd.Flags().BoolVar(&pruneReturn, "return", false, "Return landed worktrees to the pool (reset onto their base, keeping ignored files) instead of deleting them")
+	pruneCmd.MarkFlagsMutuallyExclusive("return", "prune-orphans")
 	rootCmd.AddCommand(pruneCmd)
+}
+
+func pruneOptions(cfg config.Config) pool.PruneOptions {
+	options := pool.PruneOptions{
+		DryRun:       !pruneYes,
+		PruneOrphans: pruneOrphans,
+		PreDestroy:   cfg.Hooks.PreDestroy,
+		Return:       pruneReturn,
+	}
+	if pruneReturn {
+		// The same configured base 'treehouse return <path>' parks on, read
+		// from each worktree's own repository so a global sweep parks every
+		// pool's slots where that pool's 'get' would leave them. Prune asks
+		// for a slot's base more than once; resolve it once so an invalid
+		// base_branch warns once per worktree.
+		bases := make(map[string]string)
+		options.ReturnBaseBranch = func(worktreePath string) string {
+			base, ok := bases[worktreePath]
+			if !ok {
+				base = returnBaseBranch(worktreePath)
+				bases[worktreePath] = base
+			}
+			return base
+		}
+	}
+	return options
+}
+
+// printPruneReturnResult reports a --return sweep. pools is the number of pools
+// swept and all marks a global sweep; nothing is deleted, so no sizes or freed
+// space are reported.
+func printPruneReturnResult(w io.Writer, result pool.PruneResult, pools int, all bool, dryRun bool, verbose bool) {
+	// across names the pools a global sweep covered; a per-repository sweep
+	// says where the worktrees went instead.
+	across, scope := "", " to the pool"
+	if all {
+		across = fmt.Sprintf(" across %d %s", pools, plural("pool", pools))
+		scope = across
+	}
+	if dryRun {
+		if len(result.Candidates) == 0 {
+			fmt.Fprintf(w, "🌳 No landed worktrees to return%s.\n", across)
+		} else {
+			fmt.Fprintf(w, "🌳 Dry run: would return %d landed %s%s.\n", len(result.Candidates), plural("worktree", len(result.Candidates)), scope)
+			printPruneReturnWorktrees(w, result.Candidates)
+		}
+	} else if len(result.Returned) == 0 {
+		fmt.Fprintf(w, "🌳 No landed worktrees returned%s.\n", across)
+	} else {
+		fmt.Fprintf(w, "🌳 Returned %d landed %s%s.\n", len(result.Returned), plural("worktree", len(result.Returned)), scope)
+		printPruneReturnWorktrees(w, result.Returned)
+	}
+	printPruneSkipped(w, result.Skipped, verbose)
+	if dryRun && len(result.Candidates) > 0 {
+		flags := "--return --yes"
+		if all {
+			flags = "--all " + flags
+		}
+		fmt.Fprintf(w, "🌳 Re-run with %s to return these worktrees.\n", flags)
+	}
+	if hasSkippedCategory(result.Skipped, pool.PruneSkipOrphanedBackingRepo) {
+		flags := "--prune-orphans"
+		if all {
+			flags = "--all " + flags
+		}
+		fmt.Fprintf(w, "🌳 Orphans whose backing repository is missing cannot be returned; run prune %s without --return to review them.\n", flags)
+	}
+}
+
+func printPruneReturnWorktrees(w io.Writer, worktrees []pool.PruneWorktree) {
+	for _, wt := range worktrees {
+		fmt.Fprintf(w, "%-4s  %s\n", wt.Name, ui.PrettyPath(wt.Path))
+	}
 }
 
 func printPruneResult(w io.Writer, result pool.PruneResult, dryRun bool, pruneOrphans bool, verbose bool) {

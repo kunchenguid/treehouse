@@ -164,6 +164,7 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 - **Safe pruning** - By default, `treehouse prune` removes only clean, idle managed worktrees with landed HEAD commits. See [Base branch](#base-branch) for the merge rule.
   `treehouse prune --all` applies the same safety checks across every managed pool under the user-level treehouse root.
   Backing-repository-missing orphans are reported by default; `--prune-orphans` includes them as unverified prune candidates, and `--yes` is required before deletion.
+  `treehouse prune --return` keeps landed worktrees warm instead: they are reset onto their base and handed back to the pool with their dependencies and build caches intact.
   It is a dry run unless you pass `--yes`.
 - **Self-healing get** - `treehouse get` clears stale git worktree bookkeeping for the exact path it is about to create (e.g. left behind by a crashed or forcibly removed worktree), so a prunable registration never wedges the pool with a "missing but already registered worktree" error. Registrations for other paths are never touched, so a live worktree that the caller cannot see (for example under another account's private pool root) is never deregistered.
 
@@ -181,6 +182,7 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `treehouse return --all`   | Return every held worktree in the current repo pool |
 | `treehouse prune`          | Dry-run removal of stale idle worktrees in the current repo pool |
 | `treehouse prune --all`    | Dry-run removal of stale idle worktrees across every managed pool |
+| `treehouse prune --return` | Dry-run return of landed idle worktrees to the pool, keeping their ignored files |
 | `treehouse destroy <path>` | Dry-run removal of one worktree (safe by default; `--yes` to execute) |
 | `treehouse destroy <pool> --all` | Dry-run removal of every disposable worktree in that pool |
 | `treehouse init`           | Create a default `treehouse.toml` config file        |
@@ -207,11 +209,12 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `return`  | `--all`   | Return held worktrees in this repository's pool; skip available, damaged, and quarantined slots, a `you're here` slot nobody else holds, and a `locked` slot whose `HEAD.lock` is not Treehouse-owned |
 | `return`  | `--if-lease-id` | Return only if the current lease has the expected per-acquisition identity |
 | `return`  | `--if-lease-holder` | Return only if the current lease has the expected holder |
-| `prune`   | `--yes`   | Delete listed prune candidates instead of doing a dry run |
+| `prune`   | `--yes`   | Delete listed prune candidates (with `--return`, return them) instead of doing a dry run |
 | `prune`   | `--all`   | Sweep every managed pool under the user-level treehouse root |
 | `prune`   | `--global` | Alias for `--all` |
 | `prune`   | `--prune-orphans` | Include backing-repository-missing orphans in prune candidates |
 | `prune`   | `--verbose`, `-v` | Show detailed skip diagnostics |
+| `prune`   | `--return` | Return landed worktrees to the pool instead of deleting them (not with `--prune-orphans`) |
 | `destroy` | `--all`   | Remove all worktrees in the named pool (requires a pool path) |
 | `destroy` | `--yes`   | Execute the removal instead of doing a dry run |
 | `destroy` | `--include-unlanded` | Also remove dirty, unmerged, or unverified worktrees (irreversible data loss) |
@@ -456,6 +459,28 @@ Plain `treehouse prune` and `treehouse prune --all` never delete those orphans.
 Pass `--prune-orphans` to include true backing-repository-missing orphans in the dry run, then add `--yes` to delete them.
 Treehouse cannot verify orphan contents after the backing version-control metadata is gone, so each orphan candidate is marked `content could not be verified`.
 Use `--verbose` to show the underlying version-control diagnostic details for skipped worktrees.
+
+#### Returning landed worktrees instead of deleting them
+
+Deleting a landed worktree reclaims disk, but it also throws away everything the next task would reuse: installed dependencies, incremental build state, a local database.
+`treehouse prune --return` judges worktrees exactly as plain prune does and, for each one that qualifies, does what `treehouse return` does instead of deleting it.
+The worktree is reset onto the base it parks on (`base_branch` when set, otherwise the base it was acquired with, otherwise the default branch), released in pool state, and shows up as `available` in `treehouse status`.
+Its directory stays, and so do its ignored files; only the ignored files treehouse itself seeded from `.worktreeinclude` are cleaned up, exactly as a return cleans them, and seeded again by the next `get`.
+A branch the worktree had checked out stays in the repository; returning only releases it so another worktree can check it out.
+
+```sh
+treehouse prune --return            # dry run: lists the landed worktrees it would return
+treehouse prune --return --yes      # return them to the pool
+treehouse prune --all --return --yes
+```
+
+The safety bar is plain prune's: a worktree is returned only when it is unleased, unreserved, has no running process, has no uncommitted tracked or untracked changes, and its HEAD has landed on the default branch (merge, squash, or rebase merge) or on its recorded explicit base.
+Every one of those facts is checked again under the pool lock immediately before the reset, and the reset refuses a HEAD that moved or a tree that became dirty after that check, so work that arrives while prune runs is never discarded.
+A leased worktree is never returned; release it with `treehouse return`.
+A worktree already parked on its base, detached on a commit the base contains, has nothing to give back and is not listed, so a recurring `prune --return --yes` reports only worktrees it actually returned.
+Returning promptly matters most for squash and rebase merges: such a worktree is recognized as landed only while the base still carries the same content, and once the base edits the same files `get` can no longer reuse it.
+jj workspaces are never returned by `--return`: jj recognizes landed work by ancestry alone and a workspace holds no branch, so a landed jj workspace is already as reusable as a return would make it.
+Orphans cannot be reset, so `--return` cannot be combined with `--prune-orphans`.
 
 ### Destroying worktrees
 

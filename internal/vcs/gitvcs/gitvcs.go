@@ -1077,16 +1077,28 @@ func isCommitID(s string) bool {
 // HEAD change is refused. The check fails closed when the target or HEAD
 // cannot be resolved.
 func IsWorktreeSafeToReset(worktreePath, branch string) (bool, string, string, error) {
-	ref, err := resolveResetRef(worktreePath, branch)
-	if err != nil {
-		return false, "", "", err
-	}
-	head, err := worktreeHead(worktreePath)
+	ref, head, err := ResetTarget(worktreePath, branch)
 	if err != nil {
 		return false, "", "", err
 	}
 	safe, err := IsHeadMergedIntoRef(worktreePath, ref)
 	return safe, ref, head, err
+}
+
+// ResetTarget resolves the immutable commit a reset of worktreePath to branch
+// would use and the worktree HEAD read after it, without judging whether the
+// reset is safe. It is for callers that prove safety by other means and still
+// need the pair ResetWorktreeToRef requires.
+func ResetTarget(worktreePath, branch string) (string, string, error) {
+	ref, err := resolveResetRef(worktreePath, branch)
+	if err != nil {
+		return "", "", err
+	}
+	head, err := worktreeHead(worktreePath)
+	if err != nil {
+		return "", "", err
+	}
+	return ref, head, nil
 }
 
 func removeSeededPaths(worktreePath string, paths []string, expected os.FileInfo) error {
@@ -1461,6 +1473,16 @@ func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error
 // detects a squash merge without treating unrelated target-branch changes as a
 // mismatch.
 func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
+	ancestor, err := IsHeadAncestorOf(worktreePath, ref)
+	if err != nil || ancestor {
+		return ancestor, err
+	}
+	return isHeadContentMergedIntoRef(worktreePath, ref)
+}
+
+// IsHeadAncestorOf reports whether worktreePath's HEAD is reachable from ref by
+// commit ancestry alone, without IsHeadMergedIntoRef's squash fallback.
+func IsHeadAncestorOf(worktreePath, ref string) (bool, error) {
 	cmd := exec.Command("git", "merge-base", "--is-ancestor", "HEAD", ref)
 	cmd.Dir = worktreePath
 	out, err := cmd.CombinedOutput()
@@ -1468,7 +1490,7 @@ func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 		return true, nil
 	}
 	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-		return isHeadContentMergedIntoRef(worktreePath, ref)
+		return false, nil
 	}
 	return false, fmt.Errorf("git merge-base --is-ancestor HEAD %s: %s", ref, strings.TrimSpace(string(out)))
 }
