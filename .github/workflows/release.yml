@@ -197,13 +197,13 @@ jobs:
 
           # Get commits between tags via compare API (excludes base tag, no inclusive-boundary issue)
           # Note: limited to 250 commits, but we only need PR numbers which are deduped anyway
-          commits=$(gh api repos/${{ github.repository }}/compare/${prev_tag}...${TAG_NAME} \
+          commits=$(gh api "repos/${{ github.repository }}/compare/${prev_tag}...${TAG_NAME}" \
             --jq '.commits[].sha')
 
           # Collect unique PR numbers across all commits (avoids duplicate timeline queries)
           declare -A seen_prs
           for sha in $commits; do
-            prs=$(gh api repos/${{ github.repository }}/commits/${sha}/pulls \
+            prs=$(gh api "repos/${{ github.repository }}/commits/${sha}/pulls" \
               --jq '.[].number' 2>/dev/null || true)
             for pr in $prs; do
               seen_prs[$pr]=1
@@ -214,7 +214,7 @@ jobs:
           declare -A seen_issues
           for pr in "${!seen_prs[@]}"; do
             # Check the PR body for "Fixes #N" / "Closes #N" patterns (same-repo only, excludes org/repo#N)
-            issues=$(gh api repos/${{ github.repository }}/pulls/${pr} \
+            issues=$(gh api "repos/${{ github.repository }}/pulls/${pr}" \
               --jq '.body' 2>/dev/null \
               | grep -oiE '(fix(es|ed)?|close[sd]?|resolve[sd]?)\s+#[0-9]+' \
               | grep -oE '[0-9]+' || true)
