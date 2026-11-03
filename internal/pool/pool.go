@@ -350,9 +350,8 @@ func LeaseExisting(poolDir, name, holder string) (LeaseInfo, error) {
 // pointing at the repository's own worktree list rather than prescribing a
 // command whose preconditions treehouse cannot see from here.
 func freeTemplatedSlot(repoRoot, poolDir string, state State, poolSize int, opts acquireOptions) (string, string, error) {
-	first := nextSlotNumber(state)
 	var occupied []string
-	for n := first; n < first+poolSize; n++ {
+	for i, n := 0, nextSlotNumber(state); i < poolSize; i, n = i+1, freeSlotNumber(state, n+1) {
 		name := strconv.Itoa(n)
 		wtPath, err := resolveWorktreePath(repoRoot, poolDir, name, opts.worktreePath, opts.uniqueLeaf)
 		if err != nil {
@@ -1529,12 +1528,28 @@ func nextName(state State) string {
 	return strconv.Itoa(nextSlotNumber(state))
 }
 
+// nextSlotNumber returns the lowest positive slot number that no pool entry
+// uses, so a slot number freed by destroy or prune is reused instead of the
+// pool growing past it.
 func nextSlotNumber(state State) int {
-	max := 0
+	return freeSlotNumber(state, 1)
+}
+
+// freeSlotNumber returns the lowest positive slot number at or above from that
+// no pool entry uses.
+func freeSlotNumber(state State, from int) int {
+	used := make(map[int]bool, len(state.Worktrees))
 	for _, wt := range state.Worktrees {
-		if n, err := strconv.Atoi(wt.Name); err == nil && n > max {
-			max = n
+		if n, err := strconv.Atoi(wt.Name); err == nil {
+			used[n] = true
 		}
 	}
-	return max + 1
+	n := from
+	if n < 1 {
+		n = 1
+	}
+	for used[n] {
+		n++
+	}
+	return n
 }
