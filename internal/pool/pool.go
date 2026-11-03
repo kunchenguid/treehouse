@@ -133,6 +133,13 @@ type AcquireOptions struct {
 	// APFSSharing opts in to tracked-file copy-on-write sharing for fresh Git
 	// slots only, before hooks and publication. Reuse and return never run it.
 	APFSSharing bool
+	// Timeout bounds how long acquire may wait for origin fetch and the pool
+	// state lock before failing. Zero keeps the historical unbounded wait so
+	// library callers and tests are unchanged. A positive value returns when
+	// the deadline expires (wrapping ErrLockTimeout for the lock wait). The
+	// interactive get subshell lifetime after a successful acquire is never
+	// covered by this ceiling.
+	Timeout time.Duration
 }
 
 // acquireOptions controls how Acquire reserves the worktree it hands out.
@@ -156,6 +163,8 @@ type acquireOptions struct {
 	lease bool
 	// leaseHolder is an optional label stored with a lease.
 	leaseHolder string
+	// timeout bounds fetch + state-lock wait; zero means unbounded.
+	timeout time.Duration
 	// hookStdout/hookStderr receive post-create hook output. Lease mode routes
 	// hook stdout to stderr so it cannot contaminate machine-readable CLI output.
 	hookStdout io.Writer
@@ -179,6 +188,7 @@ func AcquireWithOptions(repoRoot, poolDir string, poolSize int, postCreate []str
 		includeManifest: options.IncludeManifest,
 		apfsSharing:     options.APFSSharing,
 		uniqueLeaf:      options.UniqueLeaf,
+		timeout:         options.Timeout,
 		hookStdout:      os.Stdout,
 		hookStderr:      os.Stderr,
 	})
@@ -211,6 +221,7 @@ func AcquireLeaseInfoWithOptions(repoRoot, poolDir string, poolSize int, postCre
 		includeManifest: options.IncludeManifest,
 		apfsSharing:     options.APFSSharing,
 		uniqueLeaf:      options.UniqueLeaf,
+		timeout:         options.Timeout,
 		lease:           true,
 		leaseHolder:     holder,
 		hookStdout:      os.Stderr,
@@ -433,10 +444,25 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		fmt.Fprintf(os.Stderr, "🌳 Warning: worktree_path is set, so unique_leaf is ignored - the template names every segment of the path. Write %s in it for a unique leaf.\n", placeholderRepo+"-"+placeholderSlot)
 	}
 
+	var deadline time.Time
+	if opts.timeout > 0 {
+		deadline = time.Now().Add(opts.timeout)
+	}
+	remaining := func() time.Duration {
+		if deadline.IsZero() {
+			return 0
+		}
+		left := time.Until(deadline)
+		if left <= 0 {
+			return time.Nanosecond
+		}
+		return left
+	}
+
 	fmt.Fprintf(os.Stderr, "🌳 Setting up worktree...\n")
 	if !opts.skipFetch && vcs.HasRemote(repoRoot, "origin") {
-		if err := vcs.Fetch(repoRoot); err != nil {
-			return LeaseInfo{}, fmt.Errorf("fetch failed: %w", err)
+		if err := fetchWithTimeout(repoRoot, remaining()); err != nil {
+			return LeaseInfo{}, err
 		}
 	}
 
@@ -462,7 +488,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 	var acquired LeaseInfo
 	var runPostCreate bool
 
-	err = WithStateLock(poolDir, func() error {
+	err = WithStateLockTimeout(poolDir, remaining(), func() error {
 		state, err := ReadState(poolDir)
 		if err != nil {
 			return err
@@ -472,6 +498,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		if err != nil {
 			return err
 		}
+
 
 		// Placement rules run before the reuse loop so a recycling acquisition
 		// still reports a template that escapes into the repository or the pool -
@@ -846,6 +873,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, ErrLockTimeout) && opts.timeout > 0 {
+			return LeaseInfo{}, fmt.Errorf("treehouse get timed out after %s waiting for the pool state lock: %w", opts.timeout, err)
+		}
 		return LeaseInfo{}, err
 	}
 	if runPostCreate {
@@ -853,6 +883,33 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 	}
 
 	return acquired, nil
+}
+
+// fetchWithTimeout runs vcs.Fetch, failing when timeout elapses before fetch
+// returns. timeout <= 0 keeps the unbounded call. A timed-out fetch may still
+// finish in the background; the caller has already abandoned the acquire.
+func fetchWithTimeout(repoRoot string, timeout time.Duration) error {
+	if timeout <= 0 {
+		if err := vcs.Fetch(repoRoot); err != nil {
+			return fmt.Errorf("fetch failed: %w", err)
+		}
+		return nil
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- vcs.Fetch(repoRoot)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("fetch failed: %w", err)
+		}
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("treehouse get timed out after %s waiting for git fetch", timeout)
+	}
 }
 
 func leaseInfoFromEntry(wt WorktreeEntry, baseBranch string) LeaseInfo {
