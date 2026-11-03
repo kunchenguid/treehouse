@@ -57,7 +57,9 @@ type Backend interface {
 	HasRemote(repoRoot, name string) bool
 	// GetRemoteURL returns the origin remote URL.
 	GetRemoteURL(repoRoot string) (string, error)
-	// AddWorktree creates a new worktree at path based on branch.
+	// AddWorktree creates a new worktree at path based on branch. It clears a
+	// stale registration for this exact path and never touches another
+	// path's registration.
 	AddWorktree(repoRoot, path, branch string) error
 	// SeedWorktree copies backend-specific ignored files into a new or recycled
 	// worktree and returns their paths so cleanup need not trust mutable worktree
@@ -65,9 +67,6 @@ type Backend interface {
 	// include rules; a non-nil manifest replaces all layers, with an empty slice
 	// selecting nothing.
 	SeedWorktree(repoRoot, worktreePath string, manifest []byte) ([]string, error)
-	// PruneWorktrees clears bookkeeping for worktrees whose directories no
-	// longer exist. It never touches live worktrees or their data.
-	PruneWorktrees(repoRoot string) error
 	// RemoveWorktree removes a worktree even if it has local changes.
 	RemoveWorktree(repoRoot, path string) error
 	// RemoveCleanWorktree removes a worktree, refusing if it is not clean.
@@ -387,6 +386,20 @@ func LocalBranchExists(repoRoot, branch string) (bool, error) {
 // Callers must preserve the worktree for possible post-checkout hook output.
 var ErrBranchCreated = gitvcs.ErrBranchCreated
 
+var (
+	ErrWorktreeLocked    = gitvcs.ErrHeadLocked
+	ErrWorktreeLockOwned = gitvcs.ErrHeadLockOwned
+)
+
+// HeadLockError reports a Git slot's HEAD lock without changing it. It never
+// reads a jj or markerless slot through the enclosing Git repository.
+func HeadLockError(worktreePath string) error {
+	if WorktreeBackendName(worktreePath) != "git" {
+		return nil
+	}
+	return gitvcs.HeadLockError(worktreePath)
+}
+
 // CreateBranch creates and checks out a new Git branch at worktreePath's
 // current HEAD. Branch creation is deliberately Git-only; jj bookmarks have
 // different ownership semantics and are not implied by this operation.
@@ -423,10 +436,6 @@ func AddWorktree(repoRoot, path, branch string) error {
 	return backendFor(repoRoot).AddWorktree(repoRoot, path, branch)
 }
 
-// PruneWorktrees clears bookkeeping for worktrees whose directories no longer
-// exist.
-func PruneWorktrees(repoRoot string) error { return backendFor(repoRoot).PruneWorktrees(repoRoot) }
-
 // RemoveWorktree removes a worktree even if it has local changes.
 func RemoveWorktree(repoRoot, path string) error {
 	return backendForRemoval(repoRoot, path).RemoveWorktree(repoRoot, path)
@@ -453,15 +462,14 @@ func slotMarkerBackend(path string) Backend {
 	return nil
 }
 
-// slotMarkerBackend reports the backend a worktree's own marker names: a
-// .git entry means a git worktree, a .jj directory means a jj workspace.
-// Pool slots hold exactly one of the two (jj workspaces are never
-// colocated), so the marker identifies what the slot actually is regardless
+// WorktreeBackendNameChecked distinguishes a missing marker from one that
+// cannot be trusted. Linked Git worktrees must pass registration validation
+// before callers use the backend to read or modify the slot.
 func WorktreeBackendNameChecked(path string) (string, error) {
 	if present, err := markerPresent(filepath.Join(path, ".git")); err != nil {
 		return "", err
 	} else if present {
-		if _, err := os.Stat(filepath.Join(path, ".git")); err != nil {
+		if err := gitvcs.ValidateWorktreeRegistration(path); err != nil {
 			return "", fmt.Errorf("resolving .git marker in %s: %w", path, err)
 		}
 		return "git", nil
@@ -512,13 +520,16 @@ func backendForRemoval(repoRoot, path string) Backend {
 }
 
 // destructiveBackendForWorktree dispatches the operations that rewrite a
-// worktree's checkout (reset, detach). Unlike backendForWorktree it refuses a
-// path holding no .git or .jj marker instead of falling back to the
+// worktree's checkout (reset, detach). Unlike backendForWorktree it refuses
+// paths with missing or invalid markers instead of falling back to the
 // configured backend, which in an in-project pool would resolve — and rewrite
 // — the repository ENCLOSING the pool. Callers guard markerless slots first;
 // this refusal is defense in depth. Pool slots are the only callers of these
 // operations, so ordinary directories are unaffected.
 func destructiveBackendForWorktree(path string) (Backend, error) {
+	if _, err := WorktreeBackendNameChecked(path); err != nil {
+		return nil, err
+	}
 	if b := slotMarkerBackend(path); b != nil {
 		return b, nil
 	}

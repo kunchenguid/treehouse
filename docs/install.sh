@@ -25,7 +25,17 @@ case "$OS" in
   *) echo "Unsupported OS: $OS"; exit 1 ;;
 esac
 
-VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')"
+# Resolve the latest tag without the unauthenticated REST API's rate limit.
+latest_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest")"
+VERSION=""
+case "$latest_url" in
+  */releases/tag/*)
+    VERSION="${latest_url##*/releases/tag/}"
+    VERSION="${VERSION%%\?*}"
+    VERSION="${VERSION%%#*}"
+    VERSION="${VERSION%/}"
+    ;;
+esac
 if [ -z "$VERSION" ]; then
   echo "Failed to determine latest version"
   exit 1

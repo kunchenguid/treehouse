@@ -64,8 +64,8 @@ already resolves keeps resolving to exactly the same worktree.
 
 --all acts on every slot somebody is holding. It leaves alone a slot
 'treehouse status' reports 'available' (nothing to return) or 'damaged' (its
-marker cannot be read, so 'treehouse destroy' - not return - is what removes
-it), and a slot reported 'you're here' that is otherwise parked, clean and
+marker is missing or invalid; inspect it before attempting removal), and a
+slot reported 'you're here' that is otherwise parked, clean and
 quiet: standing in a slot is not holding it, and 'treehouse enter' promises not
 to touch pool state. Stand in a slot that is leased, dirty, or running
 something and --all returns it like any other.
@@ -79,9 +79,9 @@ a slot leased then is skipped unless that same lease is still on it, and a slot
 unleased then is skipped if it has been leased since. A slot handed to another
 plain 'treehouse get' carries no lease to compare, so it is returned like any
 other in-use slot. --all takes no path or name, and cannot be combined with the
---if-lease-* conditions, which target a single lease identity. A slot
-'treehouse status' reports as recovered is never returned by --all; check it
-and return it by name.`,
+--if-lease-* conditions, which target a single lease identity. Recovered
+entries and incomplete acquisitions are never returned by --all; inspect
+them and return each worktree by name.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("if-lease-id") && returnIfLeaseID == "" {
 			return fmt.Errorf("--if-lease-id cannot be empty")
@@ -184,12 +184,12 @@ func releaseWorktree(target returnTarget, preconditions pool.ReleasePrecondition
 // unleased, so its new owner reservation is NOT detected - consistent with
 // `--all` reclaiming in-use slots by design. A leased slot with no ID (a state
 // file predating lease IDs) offers nothing to compare, so its release carries
-// only the recovered-entry refusal below.
+// only the quarantine refusal below.
 //
-// Every bulk release also refuses an entry that remains recovered after the
-// automatic safety check, including one recovered after the listing (for
-// example, when a state key is invalidated mid-run). Such a slot needs a named
-// return after inspection.
+// Every bulk release also refuses incomplete acquisitions and recovered entries
+// that the automatic safety check cannot free. The check runs under the release
+// lock, so quarantine applied after listing still requires inspection and a
+// named return.
 func bulkReturnPreconditions(wt pool.WorktreeStatus) pool.ReleasePreconditions {
 	if wt.Status == pool.StatusLeased {
 		if wt.LeaseID == "" {
@@ -205,17 +205,19 @@ func bulkReturnPreconditions(wt pool.WorktreeStatus) pool.ReleasePreconditions {
 //
 // Available is excluded because there is nothing to return: the slot is already
 // parked and a later `get` will hand it out. Damaged is excluded because its
-// marker is missing or unreadable, so neither the detach nor the reset a return
-// performs can be judged safe, and `destroy` - which `status` already spells out
-// for such a slot - is the verb that removes it. So is a slot reported
-// "you're here" that `pool.WorktreeStatus.HeldOnlyByCwd` marks as held by
+// marker is missing, unreadable, or invalid, so neither the detach nor the reset
+// a return performs can be judged safe. The marker requires inspection before
+// reuse or removal. A slot reported "you're here" is also excluded when
+// `pool.WorktreeStatus.HeldOnlyByCwd` marks it as held by
 // nobody: it is parked, clean and quiet, and the caller's own shell standing in
 // it is the only reason it is not reported available. `treehouse enter` is
 // documented to leave pool state untouched, so resetting such a slot - and
 // counting it among the held worktrees returned - would break that promise.
-// Everything else (leased, in-use, dirty, unverified, and a "you're here" slot
-// that is any of those underneath) is a slot somebody is holding, which is
-// exactly what a bulk return exists to reclaim.
+// An idle locked slot is a target only when its HEAD.lock is Treehouse-owned,
+// which return can recover; an anonymous lock needs manual inspection and is
+// skipped. Everything else (leased, in-use, dirty, unverified, and a "you're
+// here" slot that is any of those underneath) is a slot somebody is holding,
+// which is exactly what a bulk return exists to reclaim.
 //
 // That is deliberately WIDER than the other bulk verbs: prune skips a leased
 // slot and destroy removes one only when its exact path is named with
@@ -224,9 +226,9 @@ func bulkReturnPreconditions(wt pool.WorktreeStatus) pool.ReleasePreconditions {
 // gone is the whole point of the verb. Standing in a slot is not holding it,
 // which is why that one case is the exception rather than a narrowing.
 //
-// Naming a damaged slot, or the slot you are standing in, explicitly still
-// returns it, unchanged: the narrow target is a deliberate act, while the bulk
-// one must not surprise.
+// An explicit return can clear a missing-marker slot's reservation without
+// resetting its files. That does not repair its marker or make it reusable.
+// The narrow target is a deliberate act, while the bulk one must not surprise.
 func returnableStatus(wt pool.WorktreeStatus) bool {
 	if wt.HeldOnlyByCwd {
 		return false
@@ -234,6 +236,8 @@ func returnableStatus(wt pool.WorktreeStatus) bool {
 	switch wt.Status {
 	case pool.StatusAvailable, pool.StatusDamaged:
 		return false
+	case pool.StatusLocked:
+		return wt.LockOwned
 	default:
 		return true
 	}
@@ -246,15 +250,14 @@ func returnableStatus(wt pool.WorktreeStatus) bool {
 //
 // A slot is skipped, and the run neither fails nor reports an abort for it,
 // when the lease on it is no longer the one the listing saw (returned or taken
-// over since) or when it is a recovered slot (below). Nothing went wrong in
+// over since) or when it is a quarantined slot (below). Nothing went wrong in
 // either case, and calling them failures made a quarantined pool exit 1 on
 // every retry forever. A run where every slot was skipped still exits 0:
 // nothing it set out to return was still there to return.
 //
 // A slot nobody holds - available, damaged, or one the caller merely stands
-// in - is never a target at all and is counted separately. A recovered slot
-// that the automatic safety check cannot free (including a 3.0.0 upgrade
-// quarantine) is counted held and skipped; only a named return releases it.
+// in - is never a target at all and is counted separately. A slot protected
+// by the quarantine refusal above is counted held and skipped.
 func returnHeldWorktrees() error {
 	poolDir, err := repositoryPoolDir()
 	if err != nil {
@@ -269,9 +272,9 @@ func returnHeldWorktrees() error {
 	var targets []pool.WorktreeStatus
 	var notHeld, recovered int
 	for _, wt := range worktrees {
-		if wt.Status == pool.StatusLeased && wt.LeaseHolder == pool.RecoveredLeaseHolder {
+		if wt.Status == pool.StatusLeased && pool.IsQuarantinedLeaseHolder(wt.LeaseHolder) {
 			recovered++
-			fmt.Fprintf(os.Stderr, "🌳 Leaving %s at %s leased: it was recovered, so nothing proves it idle and it is only returned by name. Check it, then run: treehouse return %s\n", wt.Name, ui.PrettyPath(wt.Path), quoteReturnPath(wt.Path))
+			fmt.Fprintf(os.Stderr, "🌳 Leaving %s at %s leased: it is quarantined, so nothing proves it idle and it is only returned by name. Check it, then run: treehouse return %s\n", wt.Name, ui.PrettyPath(wt.Path), quoteReturnPath(wt.Path))
 			continue
 		}
 		if returnableStatus(wt) {
@@ -304,7 +307,7 @@ func returnHeldWorktrees() error {
 			fmt.Fprintf(os.Stderr, "   %s skipped: it is no longer the acquisition this run listed, so it was left alone (%v).\n", wt.Name, err)
 		case errors.Is(err, pool.ErrRecoveredEntry):
 			skipped = append(skipped, wt.Name)
-			fmt.Fprintf(os.Stderr, "   %s skipped: it was recovered since this run listed it, so it is only returned by name. Check it, then run: treehouse return %s\n", wt.Name, quoteReturnPath(wt.Path))
+			fmt.Fprintf(os.Stderr, "   %s skipped: it was quarantined since this run listed it, so it is only returned by name. Check it, then run: treehouse return %s\n", wt.Name, quoteReturnPath(wt.Path))
 		case errors.Is(err, errReturnAborted), errors.Is(err, errReturnAbortedNonTTY):
 			aborted = append(aborted, wt.Name)
 			fmt.Fprintf(os.Stderr, "   %s left as found: its uncommitted changes were kept.\n", wt.Name)

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kunchenguid/treehouse/v3/internal/hooks"
@@ -23,13 +24,19 @@ const (
 	StatusLeased    = "leased"
 	StatusHere      = "you're here"
 	StatusDamaged   = "damaged"
+	StatusLocked    = "locked"
 	// StatusUnverified is a slot whose process table could not be read: the
 	// question "is anything running here?" has no answer, so nothing decided
 	// from the process list (in-use) or from its absence (damaged, dirty,
 	// available) is reported. Leased, a live owner reservation, and "you're
 	// here" are facts known without a scan and still outrank it.
+	// Invalid markers and recovery inspection errors still report StatusDamaged.
 	StatusUnverified = "unverified"
 )
+
+// DamagedWorktreeAdvice is shared by status and prune when a slot's marker
+// cannot be verified. It does not authorize bypassing the removal checks.
+const DamagedWorktreeAdvice = "inspect the worktree and repair its VCS marker before reuse. Check removal restrictions before deleting it"
 
 // WorktreeStatus describes one managed worktree as reported by List.
 type WorktreeStatus struct {
@@ -62,6 +69,11 @@ type WorktreeStatus struct {
 	// instead of leaving Branch empty, so a read failure is never mistaken for
 	// a detached HEAD.
 	BranchErr string
+	// LockError explains a HEAD.lock obstruction independently of leases.
+	LockError string
+	// LockOwned reports that LockError is a Treehouse-owned HEAD.lock, which
+	// return can recover; anonymous locks need manual inspection.
+	LockOwned bool
 	// RecoveryReason explains why a recovered lease was kept quarantined.
 	RecoveryReason string
 	// RecoveryBackup is the non-empty folder recovery moved this slot's
@@ -216,6 +228,10 @@ var (
 
 const acquisitionIncompleteLeaseHolder = "quarantined: acquisition state incomplete"
 
+func IsQuarantinedLeaseHolder(holder string) bool {
+	return holder == RecoveredLeaseHolder || holder == acquisitionIncompleteLeaseHolder
+}
+
 func persistState(poolDir string, state State) error {
 	err := writeState(poolDir, state)
 	if err == nil {
@@ -356,6 +372,30 @@ func freeTemplatedSlot(repoRoot, poolDir string, state State, poolSize int, opts
 		len(occupied), occupied[0], occupied[len(occupied)-1], repoRoot)
 }
 
+func reclaimEmptySlotDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cannot inspect leftover slot path %s: %w", path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("leftover slot path %s is not an ordinary directory; inspect it before retrying 'treehouse get'", path)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return fmt.Errorf("cannot inspect leftover slot directory %s: %w", path, err)
+	}
+	if len(entries) != 0 {
+		return fmt.Errorf("leftover slot directory %s is not empty; inspect and move its files before retrying 'treehouse get'", path)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("cannot remove empty leftover slot directory %s: %w", path, err)
+	}
+	return nil
+}
+
 // acquisitionCommonGitDir returns a physical clone identity: the file the
 // common Git dir resolves to after symlinks, compared with os.SameFile so
 // neither a symlink alias nor letter case on a case-insensitive filesystem
@@ -465,21 +505,21 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		otherFlavor := 0
 		otherClone := 0
 		unverifiedClone := 0
+		var lockErrors []string
 		for i, wt := range state.Worktrees {
 			if wt.Destroying || wt.Leased || ownerAlive(wt) {
 				continue
 			}
 			flavor := vcs.WorktreeBackendName(wt.Path)
 			if flavor == "" {
-				// No .git or .jj marker: the slot is damaged or missing.
+				// The slot's marker is absent or cannot be verified.
 				// Every dispatch on such a path falls back to the
 				// configured backend, which in an in-project pool resolves
 				// the repository ENCLOSING the pool - the safety checks
 				// would vouch for that repository and the reset would
-				// rewrite it. Fail closed and leave the slot for destroy,
-				// which classifies it unverified and removes it only with
-				// --include-unlanded; prune skips it as unverifiable and
-				// neither path ever resets it.
+				// rewrite it. Fail closed: marker absence has an explicit
+				// cleanup path, but an invalid marker requires inspection
+				// and repair. Neither case authorizes a reset.
 				continue
 			}
 			if flavor != wantFlavor {
@@ -515,6 +555,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			// than let ResetWorktree discard the work.
 			dirty, err := vcs.IsDirty(wt.Path)
 			if err != nil || dirty {
+				if lockErr := vcs.HeadLockError(wt.Path); errors.Is(lockErr, vcs.ErrWorktreeLocked) {
+					lockErrors = append(lockErrors, lockErr.Error())
+				}
 				continue
 			}
 			safe, resetRef, head, err := vcs.IsWorktreeSafeToReset(wt.Path, branch)
@@ -532,6 +575,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 				seededPaths = nil
 			}
 			if err := vcs.ResetWorktreeToRefWithSeededPaths(wt.Path, resetRef, head, true, seededPaths); err != nil {
+				if errors.Is(err, vcs.ErrWorktreeLocked) {
+					lockErrors = append(lockErrors, err.Error())
+				}
 				continue
 			}
 			state.Worktrees[i].BaseBranch = opts.baseBranch
@@ -630,6 +676,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 
 		// No available worktree — create new if pool allows
 		if len(state.Worktrees) >= poolSize {
+			if len(lockErrors) > 0 {
+				return fmt.Errorf("all %d worktrees are in use, dirty, or locked (max_trees = %d): %s. Run 'treehouse status' to see details", len(state.Worktrees), poolSize, strings.Join(lockErrors, "; "))
+			}
 			if otherFlavor > 0 {
 				return fmt.Errorf("all %d worktrees are in use, dirty, or hold the other backend's worktrees (%d %s-flavored; the repository selects %s). Run 'treehouse status' to see details, destroy old-flavor worktrees to migrate the pool, or increase max_trees in treehouse.toml", len(state.Worktrees), otherFlavor, map[string]string{"git": "jj", "jj": "git"}[wantFlavor], wantFlavor)
 			}
@@ -643,35 +692,17 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			return fmt.Errorf("all %d worktrees are in use or dirty (max_trees = %d). Run 'treehouse status' to see details, or increase max_trees in treehouse.toml", len(state.Worktrees), poolSize)
 		}
 
-		// A templated path can point anywhere, including at a directory another
-		// pool or checkout already owns - two pools whose templates agree would
-		// otherwise register the same worktree and each feel free to delete it.
-		// Occupied candidates are skipped rather than adopted. Only the templated
-		// path is checked: the built-in layout keeps whatever AddWorktree does with
-		// a leftover directory today.
 		if opts.worktreePath != "" {
 			name, wtPath, err = freeTemplatedSlot(repoRoot, poolDir, state, poolSize, opts)
 			if err != nil {
 				return err
 			}
+		} else if err := reclaimEmptySlotDirectory(wtPath); err != nil {
+			return err
 		}
 
 		if err := os.MkdirAll(filepath.Dir(wtPath), 0755); err != nil {
 			return err
-		}
-
-		// Clear any stale worktree bookkeeping left behind by a crashed or
-		// forcibly removed worktree. Without this, git rejects the add with
-		// "missing but already registered worktree". Prune is safe: it only
-		// removes registrations whose target directories are already gone.
-		//
-		// Best-effort: prune is a self-healing optimization, not a precondition
-		// for AddWorktree in the common (non-stale) case. A transient failure
-		// (e.g. a temporary .git/worktrees lock or permission issue) must not
-		// wedge a get that would otherwise succeed; let AddWorktree surface the
-		// real error if one exists.
-		if err := vcs.PruneWorktrees(repoRoot); err != nil {
-			fmt.Fprintf(os.Stderr, "🌳 Warning: failed to prune stale worktrees: %v\n", err)
 		}
 
 		var expectedCommit string
@@ -682,32 +713,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			}
 		}
 
-		if err := vcs.AddWorktree(repoRoot, wtPath, branch); err != nil {
-			return fmt.Errorf("failed to create worktree: %w", err)
-		}
-		seededPaths, err := seedWorktree(repoRoot, wtPath, sourceCommonDir, opts.includeManifest)
-		if err != nil {
-			// A failed removal leaves a real Git worktree behind. Keep it in
-			// state as quarantined so later acquisitions cannot reuse its slot.
-			if cleanupErr := removeWorktree(repoRoot, wtPath); cleanupErr != nil {
-				entry := WorktreeEntry{
-					Name:        name,
-					Path:        wtPath,
-					CreatedAt:   time.Now(),
-					BaseBranch:  opts.baseBranch,
-					Leased:      true,
-					LeaseHolder: "quarantined: worktree seeding cleanup failed",
-					LeasedAt:    time.Now(),
-				}
-				setSeedInventory(&entry, seededPaths, true)
-				state.Worktrees = append(state.Worktrees, entry)
-				if writeErr := WriteState(poolDir, state); writeErr != nil {
-					return fmt.Errorf("failed to seed .worktreeinclude into %s: %w (cleanup failed: %v; quarantine failed: %v)", wtPath, err, cleanupErr, writeErr)
-				}
-				return fmt.Errorf("failed to seed .worktreeinclude into %s: %w (cleanup failed: %v)", wtPath, err, cleanupErr)
-			}
-			return fmt.Errorf("failed to seed .worktreeinclude into %s: %w", wtPath, err)
-		}
+		// Persist before Git starts: signal cleanup may leave a partial checkout
+		// even when worktree add never returns. Its seed inventory is unknown
+		// until seeding completes, so this reservation must remain quarantined.
 		entry := WorktreeEntry{
 			Name:        name,
 			Path:        wtPath,
@@ -717,8 +725,40 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			LeaseHolder: acquisitionIncompleteLeaseHolder,
 			LeasedAt:    time.Now(),
 		}
-		setSeedInventory(&entry, seededPaths, true)
 		state.Worktrees = append(state.Worktrees, entry)
+		if err := persistState(poolDir, state); err != nil {
+			return err
+		}
+		if err := vcs.AddWorktree(repoRoot, wtPath, branch); err != nil {
+			if _, statErr := os.Lstat(wtPath); os.IsNotExist(statErr) {
+				state.Worktrees = state.Worktrees[:len(state.Worktrees)-1]
+				if writeErr := WriteState(poolDir, state); writeErr != nil {
+					return fmt.Errorf("failed to create worktree: %w (state cleanup failed: %v)", err, writeErr)
+				}
+			}
+			return fmt.Errorf("failed to create worktree: %w", err)
+		}
+		seededPaths, err := seedWorktree(repoRoot, wtPath, sourceCommonDir, opts.includeManifest)
+		if err != nil {
+			// A failed removal leaves a real Git worktree behind. Keep it in
+			// state as quarantined so later acquisitions cannot reuse its slot.
+			if cleanupErr := removeWorktree(repoRoot, wtPath); cleanupErr != nil {
+				entry.LeaseHolder = "quarantined: worktree seeding cleanup failed"
+				setSeedInventory(&entry, seededPaths, true)
+				state.Worktrees[len(state.Worktrees)-1] = entry
+				if writeErr := WriteState(poolDir, state); writeErr != nil {
+					return fmt.Errorf("failed to seed .worktreeinclude into %s: %w (cleanup failed: %v; quarantine failed: %v)", wtPath, err, cleanupErr, writeErr)
+				}
+				return fmt.Errorf("failed to seed .worktreeinclude into %s: %w (cleanup failed: %v)", wtPath, err, cleanupErr)
+			}
+			state.Worktrees = state.Worktrees[:len(state.Worktrees)-1]
+			if writeErr := WriteState(poolDir, state); writeErr != nil {
+				return fmt.Errorf("failed to seed .worktreeinclude into %s: %w (state cleanup failed: %v)", wtPath, err, writeErr)
+			}
+			return fmt.Errorf("failed to seed .worktreeinclude into %s: %w", wtPath, err)
+		}
+		setSeedInventory(&entry, seededPaths, true)
+		state.Worktrees[len(state.Worktrees)-1] = entry
 		if err := persistState(poolDir, state); err != nil {
 			return err
 		}
@@ -907,9 +947,9 @@ func markAcquired(wt *WorktreeEntry, opts acquireOptions) error {
 // identifies the worktree's current lease.
 var ErrLeasePreconditionFailed = errors.New("lease precondition failed")
 
-// ErrRecoveredEntry reports that a release refusing recovered entries found the
-// worktree carrying RecoveredLeaseHolder. If automatic recovery cannot prove it
-// safe, bulk return refuses it; an operator may release it by naming the slot.
+// ErrRecoveredEntry reports that a release with RefuseRecovered found a
+// quarantined lease, as identified by IsQuarantinedLeaseHolder. Only a named
+// return may release it.
 var ErrRecoveredEntry = errors.New("recovered entry")
 
 // ErrOwnerPreconditionFailed reports that a release no longer identifies the
@@ -955,9 +995,9 @@ type ReleasePreconditions struct {
 	// live agent home, or a later acquisition - would still reset the worktree
 	// and clear that reservation when its subshell exits.
 	RequireOwnedByCaller bool
-	// RefuseRecovered refuses a worktree carrying RecoveredLeaseHolder. A bulk
-	// release sets it so an entry recovered after the listing, under the same
-	// state lock as the release, is left for a return that names it.
+	// RefuseRecovered refuses leased entries identified by IsQuarantinedLeaseHolder,
+	// including incomplete acquisitions. Bulk release checks it under the state
+	// lock so quarantine applied after listing still requires a named return.
 	RefuseRecovered bool
 }
 
@@ -1007,8 +1047,8 @@ func ValidateReleasePreconditions(poolDir, worktreePath string, preconditions Re
 // A markerless slot (its .git/.jj marker is gone) is never reset or asked for a
 // branch: dispatch on such a path falls back to the configured backend, which
 // in an in-project pool resolves the repository ENCLOSING the pool. Its
-// reservation is still cleared so the slot is not stuck leased, and the damaged
-// slot is left for destroy; acquire refuses to reuse it.
+// reservation is still cleared so the slot is not stuck leased. Clearing the
+// reservation does not repair the marker or make the slot reusable.
 //
 // baseBranch parks the returned slot on the branch the pool cuts from; empty
 // falls back to the base the slot was acquired with, then to the inferred
@@ -1121,8 +1161,8 @@ func validateReleasePreconditions(wt WorktreeEntry, preconditions ReleasePrecond
 	if err := preconditions.check(); err != nil {
 		return err
 	}
-	if preconditions.RefuseRecovered && wt.Leased && wt.LeaseHolder == RecoveredLeaseHolder {
-		return fmt.Errorf("%w: worktree %s was recovered and is only returned by name", ErrRecoveredEntry, wt.Path)
+	if preconditions.RefuseRecovered && wt.Leased && IsQuarantinedLeaseHolder(wt.LeaseHolder) {
+		return fmt.Errorf("%w: worktree %s is quarantined and is only returned by name", ErrRecoveredEntry, wt.Path)
 	}
 	if preconditions.RequireUnleased {
 		if wt.Leased {
@@ -1181,11 +1221,12 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 			if wt.Destroying {
 				continue
 			}
+			flavor, markerErr := vcs.WorktreeBackendNameChecked(wt.Path)
 			ws := WorktreeStatus{
 				Name:           wt.Name,
 				Path:           wt.Path,
 				Status:         StatusAvailable,
-				Flavor:         vcs.WorktreeBackendName(wt.Path),
+				Flavor:         flavor,
 				RecoveryReason: wt.RecoveryReason,
 				RecoveryBackup: recoveryBackup(poolDir, wt.Name),
 			}
@@ -1223,12 +1264,17 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 			if branchErr != nil {
 				ws.BranchErr = branchErr.Error()
 			}
-			// The slot is classified WITHOUT the cwd, which is then laid over
-			// the answer. The ranking the operator sees is unchanged - leased
-			// and a live owner reservation still outrank "you're here", and it
-			// still outranks everything below - but the classification it hides
-			// is now known, so a caller can tell a slot somebody holds from one
-			// whose only claim is the shell standing in it.
+			locked := false
+			if lockErr := vcs.HeadLockError(wt.Path); lockErr != nil {
+				ws.LockError = lockErr.Error()
+				locked = errors.Is(lockErr, vcs.ErrWorktreeLocked)
+				ws.LockOwned = errors.Is(lockErr, vcs.ErrWorktreeLockOwned)
+				if wt.Leased && ws.LockOwned {
+					ws.LockError = strings.Replace(ws.LockError, "retry get or return", "run return", 1)
+				}
+			}
+			// Classify before overlaying the caller's cwd, so HeldOnlyByCwd
+			// distinguishes a held slot from an otherwise available one.
 			owned := ownerAlive(wt)
 			switch {
 			case wt.Leased:
@@ -1244,18 +1290,20 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 				ws.Status = StatusInUse
 			case ws.Flavor == "":
 				ws.Status = StatusDamaged
+			case locked:
+				ws.Status = StatusLocked
 			default:
 				if dirty, _ := vcs.IsDirty(wt.Path); dirty {
 					ws.Status = StatusDirty
 				}
 			}
-			// Damaged is not overlaid. A missing marker is a different kind of
-			// fact from the reservations above: it says the slot's own contents
-			// cannot be judged at all, which is what `destroy` - not `return` -
-			// answers, and standing in such a slot does not make it any more
-			// readable. The recovery-scan case below already forces damaged
-			// back over the overlay for exactly this reason.
-			if !wt.Leased && !owned && ws.Status != StatusDamaged && process.WorktreeContainsCwd(wt.Path, cwd) {
+			// Damaged and locked are not overlaid. Standing in a damaged slot
+			// (marker missing, unreadable, or invalid) does not make its contents
+			// verifiable, and a locked slot needs recovery or inspection, so cwd
+			// must not hide either classification from bulk-return filtering.
+			// The recovery-scan and marker checks below force damaged back over
+			// the overlay for the same reason.
+			if !wt.Leased && !owned && ws.Status != StatusDamaged && ws.Status != StatusLocked && process.WorktreeContainsCwd(wt.Path, cwd) {
 				ws.HeldOnlyByCwd = ws.Status == StatusAvailable
 				ws.Status = StatusHere
 			}
@@ -1269,6 +1317,10 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 			if wt.RecoveryError != "" {
 				ws.Status = StatusDamaged
 				ws.BranchErr = wt.RecoveryError
+			}
+			if markerErr != nil {
+				ws.Status = StatusDamaged
+				ws.BranchErr = markerErr.Error()
 			}
 
 			result = append(result, ws)

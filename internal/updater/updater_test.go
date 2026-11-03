@@ -810,10 +810,15 @@ func isInsideTree(t *testing.T, dir, root string) bool {
 }
 
 // markWorktree turns dir into something the updater recognises as a worktree
-// root: a .git pointer file, as a pooled git slot carries.
+// root: a .git pointer file with a matching registration backlink.
 func markWorktree(t *testing.T, dir string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: /nowhere\n"), 0o644); err != nil {
+	registration := t.TempDir()
+	marker := filepath.Join(dir, ".git")
+	if err := os.WriteFile(filepath.Join(registration, "gitdir"), []byte(marker+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("gitdir: "+registration+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

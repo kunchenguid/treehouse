@@ -35,6 +35,9 @@ const (
 	// repository missing, or status/merge could not be checked). It is gated like
 	// unlanded work because removing it may lose data.
 	DestroyUnverified DestroyClass = "unverified"
+	// DestroyDamaged means a present VCS marker cannot be trusted. No include
+	// flag authorizes removal through an invalid registration.
+	DestroyDamaged DestroyClass = "damaged"
 )
 
 // Opt-in flag names recorded on skipped targets so the command layer can tell
@@ -248,7 +251,7 @@ func planAndDestroy(poolDir string, targets []WorktreeEntry, allowLeased bool, o
 
 // resolveDestroyContext keeps markerless slots out of the configured-backend
 // fallback, which could otherwise resolve and fetch a repository enclosing the
-// pool. An empty context keeps the damaged slot unverified.
+// pool. An empty context leaves classification to apply the marker restrictions.
 func resolveDestroyContext(resolveContext pruneContextResolver, wt WorktreeEntry) pruneContext {
 	if vcs.WorktreeBackendName(wt.Path) == "" {
 		return pruneContext{}
@@ -260,6 +263,9 @@ func resolveDestroyContext(resolveContext pruneContextResolver, wt WorktreeEntry
 // allows reports whether opts authorize removing target, returning a populated
 // DestroySkip otherwise.
 func (opts DestroyOptions) allows(target DestroyTarget, allowLeased bool) (bool, DestroySkip) {
+	if target.hasClass(DestroyDamaged) {
+		return false, DestroySkip{Target: target}
+	}
 	missing := opts.missingFlags(target, allowLeased)
 	if len(missing) == 0 {
 		return true, DestroySkip{}
@@ -292,7 +298,8 @@ func (opts DestroyOptions) missingFlags(target DestroyTarget, allowLeased bool) 
 // vcs.IsHeadMergedIntoRef against the ref from resolvePruneDefaultRef, then
 // headLandedOnItsBase against the base the slot was cut from).
 func classifyForDestroy(wt WorktreeEntry, repoRoot, defaultRef string) DestroyTarget {
-	target := DestroyTarget{Name: wt.Name, Path: wt.Path, Flavor: vcs.WorktreeBackendName(wt.Path)}
+	flavor, markerErr := vcs.WorktreeBackendNameChecked(wt.Path)
+	target := DestroyTarget{Name: wt.Name, Path: wt.Path, Flavor: flavor}
 	if target.Flavor != "" && repoRoot != "" && target.Flavor != vcs.BackendNameFor(repoRoot) {
 		target.OtherFlavor = true
 	}
@@ -314,17 +321,23 @@ func classifyForDestroy(wt WorktreeEntry, repoRoot, defaultRef string) DestroyTa
 		target.addClass(DestroyInUse, "cannot check processes: "+procErr.Error())
 	}
 
+	if orphaned, detail := backingRepositoryMissing(wt.Path); orphaned {
+		target.addClass(DestroyUnverified, "backing repository missing: "+detail)
+		return finalizeDestroyTarget(target)
+	}
+	if markerErr != nil {
+		detail := "cannot verify worktree marker: " + markerErr.Error()
+		target.addClass(DestroyDamaged, detail)
+		target.Detail = detail
+		return finalizeDestroyTarget(target)
+	}
+
 	// A markerless slot (its .git/.jj marker is gone) must never have its
 	// facts read through the configured-backend fallback: in an in-project
 	// pool that resolves the repository ENCLOSING the pool, and a clean
 	// enclosing repository would label the damaged slot disposable.
 	if target.Flavor == "" {
 		target.addClass(DestroyUnverified, "no .git or .jj marker: contents cannot be verified")
-		return finalizeDestroyTarget(target)
-	}
-
-	if orphaned, detail := backingRepositoryMissing(wt.Path); orphaned {
-		target.addClass(DestroyUnverified, "backing repository missing: "+detail)
 		return finalizeDestroyTarget(target)
 	}
 
@@ -575,13 +588,17 @@ func removeManagedWorktree(poolDir string, wt WorktreeEntry) error {
 	// A markerless slot (directory present, .git/.jj marker gone) has no live
 	// VCS registration either backend will deregister - git refuses to remove
 	// a worktree whose .git file is missing - so it takes the plain-directory
-	// route. The stale registration self-heals at the next add: git via
-	// `git worktree prune`, jj by forgetting a stale same-path workspace
-	// registration.
+	// route. The stale registration self-heals when a later add targets the
+	// same path: git via `git worktree add --force`, jj by forgetting the
+	// stale same-path workspace registration.
 	markerless := false
 	if !orphaned {
 		if _, err := os.Stat(path); err == nil {
-			markerless = vcs.WorktreeBackendName(path) == ""
+			flavor, markerErr := vcs.WorktreeBackendNameChecked(path)
+			if markerErr != nil {
+				return fmt.Errorf("refusing removal with an invalid worktree marker: %w", markerErr)
+			}
+			markerless = flavor == ""
 		}
 	}
 	if !orphaned && !markerless {

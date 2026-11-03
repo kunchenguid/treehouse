@@ -659,15 +659,6 @@ func finalOrphanPruneSafetyCheck(poolDir string, wt WorktreeEntry) (PruneWorktre
 }
 
 func analyzeIdleWorktree(poolDir string, resolveContext pruneContextResolver, wt WorktreeEntry, worktree PruneWorktree, skipped PruneSkipped, options PruneOptions) (PruneWorktree, PruneSkipped, bool, pruneContext, error) {
-	// A markerless slot (its .git/.jj marker is gone) must never have its
-	// facts read through the configured-backend fallback: in an in-project
-	// pool that resolves the repository ENCLOSING the pool, and a clean
-	// enclosing repository would label the damaged slot disposable.
-	if vcs.WorktreeBackendName(worktree.Path) == "" {
-		skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotVerify, "no .git or .jj marker", "the slot's VCS marker is missing; remove it with 'treehouse destroy "+wt.Path+" --include-unlanded'")
-		return worktree, skipped, true, pruneContext{}, nil
-	}
-
 	if orphaned, detail := backingRepositoryMissing(worktree.Path); orphaned {
 		if !options.PruneOrphans {
 			skipped = newPruneSkipped(wt.Name, wt.Path, PruneSkipOrphanedBackingRepo, pruneOrphanUnverifiedWarning, detail)
@@ -687,6 +678,11 @@ func analyzeIdleWorktree(poolDir string, resolveContext pruneContextResolver, wt
 		worktree.Bytes = bytes
 		worktree.Orphaned = true
 		worktree.Warning = pruneOrphanUnverifiedWarning
+		return worktree, skipped, true, pruneContext{}, nil
+	}
+
+	if vcs.WorktreeBackendName(worktree.Path) == "" {
+		skipped = newPruneSkipped(wt.Name, wt.Path, pruneSkipCannotVerify, "cannot verify VCS marker", DamagedWorktreeAdvice)
 		return worktree, skipped, true, pruneContext{}, nil
 	}
 

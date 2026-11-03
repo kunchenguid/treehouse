@@ -1,12 +1,14 @@
 package gitvcs
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -253,8 +255,17 @@ func isAncestor(repoRoot, a, b string) bool {
 	return err == nil
 }
 
+// AddWorktree creates a detached worktree at path. --force clears a stale
+// registration for this exact path, left behind by a crashed or forcibly
+// removed worktree, which git otherwise rejects as "missing but already
+// registered". It never touches another path's registration: a repository-wide
+// `git worktree prune` would, and git cannot tell a deleted worktree from one
+// it cannot stat (another account's private pool root), so it would
+// deregister that live slot and hand its registration name to this one. With
+// --detach no branch checkout rule applies, and git still refuses a non-empty
+// path or a locked registration.
 func AddWorktree(repoRoot, path, branch string) error {
-	_, err := runGit(repoRoot, "worktree", "add", "--detach", path, branchRef(repoRoot, branch))
+	_, err := runGit(repoRoot, "worktree", "add", "--force", "--detach", path, branchRef(repoRoot, branch))
 	return err
 }
 
@@ -347,15 +358,6 @@ func createBranch(worktreePath, branch string, run func(string, ...string) (stri
 		}
 	}
 	return fmt.Errorf("%w: %w (branch %q was created and left in place for manual inspection/removal)", ErrBranchCreated, checkoutErr, branch)
-}
-
-// PruneWorktrees removes git worktree bookkeeping for worktrees whose
-// directories no longer exist. It is safe by design: git only deletes
-// registrations for already-missing directories and never touches live
-// worktrees or their data.
-func PruneWorktrees(repoRoot string) error {
-	_, err := runGit(repoRoot, "worktree", "prune")
-	return err
 }
 
 // SeedWorktree copies ignored files selected by manifest, or by the layered
@@ -915,15 +917,14 @@ func ResetWorktreeWithSeededPaths(worktreePath, branch string, seededPaths []str
 // ResetWorktreeToRef resets worktreePath to an already resolved commit.
 // expectedHead is the worktree HEAD recorded at check time.
 //
-// The re-read and the destructive update run while holding git's own
-// HEAD.lock (O_CREAT|O_EXCL). Concurrent git processes that would change
-// HEAD (commit, checkout, merge, rebase) cannot create that lock, so they
-// cannot sneak a new commit in after the comparison. When requireClean is
-// set, dirtiness is re-checked under that lock before read-tree/clean, so
-// uncommitted file or index changes that landed after the caller's dirty
-// check are not overwritten. The worktree is updated with read-tree/clean,
-// which do not need HEAD.lock; HEAD itself is committed by renaming the
-// lock file onto HEAD, the same protocol git uses.
+// The re-read and the destructive update run while holding git's own lock on
+// HEAD. Concurrent git processes that would change HEAD (commit, checkout,
+// merge, rebase) cannot take that lock, so they cannot sneak a new commit in
+// after the comparison. When requireClean is set, dirtiness is re-checked
+// under that lock before read-tree/clean, so uncommitted file or index changes
+// that landed after the caller's dirty check are not overwritten. The worktree
+// is updated with read-tree/clean, which do not need the lock; see lockHead
+// for how HEAD itself is committed.
 func ResetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool) error {
 	return resetWorktreeToRef(worktreePath, ref, expectedHead, requireClean, nil, false)
 }
@@ -951,30 +952,12 @@ func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean boo
 			return fmt.Errorf("refusing to clean replaced worktree %s", worktreePath)
 		}
 	}
-	headPath, err := gitPath(worktreePath, "HEAD")
+	move, err := lockHead(worktreePath, ref, expectedHead)
 	if err != nil {
 		return err
 	}
-	lockPath := headPath + ".lock"
-	lf, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0666)
-	if err != nil {
-		return fmt.Errorf("cannot lock worktree HEAD: %w", err)
-	}
-	held := true
-	defer func() {
-		_ = lf.Close()
-		if held {
-			_ = os.Remove(lockPath)
-		}
-	}()
+	defer move.abort()
 
-	head, err := worktreeHead(worktreePath)
-	if err != nil {
-		return err
-	}
-	if head != expectedHead {
-		return fmt.Errorf("worktree HEAD changed since safety check: was %s, now %s", expectedHead, head)
-	}
 	if requireClean {
 		dirty, err := IsDirty(worktreePath)
 		if err != nil {
@@ -999,20 +982,176 @@ func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean boo
 	if _, err := runGit(worktreePath, "clean", "-fd"); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(lf, "%s\n", ref); err != nil {
+	return move.commit()
+}
+
+// headMove holds a worktree's HEAD lock across a reset; commit moves HEAD to the reset target and releases it.
+type headMove interface {
+	commit() error
+	abort()
+}
+
+// lockHead locks worktreePath's HEAD and refuses when it is no longer expectedHead.
+// Reftable storage ignores the worktree's HEAD file, so there HEAD moves through
+// a prepared `git update-ref --stdin` transaction. The files storage keeps git's
+// HEAD.lock protocol, which needs no particular git version: the transaction
+// verbs arrived in git 2.27 and could deadlock until 2.34, while reftable needs 2.45.
+func lockHead(worktreePath, newHead, expectedHead string) (headMove, error) {
+	reftable, err := usesReftable(worktreePath)
+	if err != nil {
+		return nil, err
+	}
+	if reftable {
+		update, err := prepareHeadUpdate(worktreePath, newHead, expectedHead)
+		if err != nil {
+			return nil, fmt.Errorf("cannot lock worktree HEAD: %w", err)
+		}
+		return update, nil
+	}
+	return lockHeadFile(worktreePath, newHead, expectedHead)
+}
+
+func usesReftable(worktreePath string) (bool, error) {
+	cmd := exec.Command("git", "config", "--get", "extensions.refStorage")
+	cmd.Dir = worktreePath
+	out, err := cmd.Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("read ref storage of %s: %w", worktreePath, err)
+	}
+	return strings.EqualFold(strings.TrimSpace(string(out)), "reftable"), nil
+}
+
+// headFileLock uses git's HEAD.lock protocol with the ownership witness from head_lock.go.
+type headFileLock struct {
+	file               *os.File
+	headPath, lockPath string
+	newHead            string
+	unlock             func()
+}
+
+func lockHeadFile(worktreePath, newHead, expectedHead string) (*headFileLock, error) {
+	headPath, err := gitPath(worktreePath, "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	lockPath := headPath + ".lock"
+	file, unlock, err := openHeadLock(worktreePath, headPath)
+	if err != nil {
+		return nil, err
+	}
+	l := &headFileLock{file: file, headPath: headPath, lockPath: lockPath, newHead: newHead, unlock: unlock}
+	head, err := worktreeHead(worktreePath)
+	if err != nil {
+		l.abort()
+		return nil, err
+	}
+	if head != expectedHead {
+		l.abort()
+		return nil, fmt.Errorf("worktree HEAD changed since safety check: was %s, now %s", expectedHead, head)
+	}
+	return l, nil
+}
+
+func (l *headFileLock) commit() error {
+	if _, err := fmt.Fprintf(l.file, "%s\n", l.newHead); err != nil {
 		return err
 	}
-	if err := lf.Sync(); err != nil {
+	if err := l.file.Sync(); err != nil {
 		return err
 	}
-	if err := lf.Close(); err != nil {
+	if err := l.file.Close(); err != nil {
 		return err
 	}
-	if err := replaceFile(lockPath, headPath); err != nil {
+	if err := replaceFile(l.lockPath, l.headPath); err != nil {
 		return err
 	}
-	held = false
 	return nil
+}
+
+func (l *headFileLock) abort() {
+	l.unlock()
+}
+
+// headUpdate is a prepared `git update-ref --stdin` transaction moving a worktree's HEAD; git holds HEAD's lock until it ends.
+type headUpdate struct {
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout *bufio.Reader
+	stderr bytes.Buffer
+	ended  bool
+}
+
+func prepareHeadUpdate(worktreePath, newHead, oldHead string) (*headUpdate, error) {
+	// Hooks stay off: a reference-transaction hook runs in the worktree at prepare and could dirty the slot being reset.
+	u := &headUpdate{cmd: exec.Command("git", "-c", "core.hooksPath="+os.DevNull, "update-ref", "--stdin")}
+	u.cmd.Dir = worktreePath
+	u.cmd.Stderr = &u.stderr
+	stdin, err := u.cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := u.cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := u.cmd.Start(); err != nil {
+		return nil, err
+	}
+	u.stdin, u.stdout = stdin, bufio.NewReader(stdout)
+	commands := fmt.Sprintf("start\noption no-deref\nupdate HEAD %s %s\nprepare\n", newHead, oldHead)
+	if err := u.request(commands, "start: ok", "prepare: ok"); err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+func (u *headUpdate) commit() error {
+	if err := u.request("commit\n", "commit: ok"); err != nil {
+		return err
+	}
+	return u.end()
+}
+
+// abort ends an uncommitted transaction; git rolls it back when its input closes.
+func (u *headUpdate) abort() {
+	_ = u.end()
+}
+
+func (u *headUpdate) request(commands string, replies ...string) error {
+	if _, err := io.WriteString(u.stdin, commands); err != nil {
+		return u.failure(err)
+	}
+	for _, want := range replies {
+		line, err := u.stdout.ReadString('\n')
+		if err != nil {
+			return u.failure(err)
+		}
+		if got := strings.TrimSpace(line); got != want {
+			return u.failure(fmt.Errorf("unexpected reply %q, want %q", got, want))
+		}
+	}
+	return nil
+}
+
+func (u *headUpdate) failure(err error) error {
+	_ = u.end()
+	if msg := strings.TrimSpace(u.stderr.String()); msg != "" {
+		return fmt.Errorf("git update-ref: %s", msg)
+	}
+	return fmt.Errorf("git update-ref: %w", err)
+}
+
+func (u *headUpdate) end() error {
+	if u.ended {
+		return nil
+	}
+	u.ended = true
+	_ = u.stdin.Close()
+	return u.cmd.Wait()
 }
 
 func resolveResetRef(worktreePath, branch string) (string, error) {
@@ -1357,7 +1496,19 @@ func authenticateLinkedWorktree(root *os.Root, worktreePath string) error {
 }
 
 func DetachWorktree(worktreePath string) error {
-	_, err := runGit(worktreePath, "checkout", "--detach")
+	headPath, err := gitPath(worktreePath, "HEAD")
+	if err != nil {
+		return err
+	}
+	guard, err := takeHeadGuard(headPath)
+	if err != nil {
+		return err
+	}
+	defer guard.Close()
+	if err := recoverHeadLock(worktreePath, headPath); err != nil {
+		return err
+	}
+	_, err = runGit(worktreePath, "checkout", "--detach")
 	return err
 }
 
@@ -1600,7 +1751,6 @@ func (*Backend) SeedWorktree(repoRoot, worktreePath string, manifest []byte) ([]
 func (*Backend) SeedWorktreeWithCommonGitDir(repoRoot, worktreePath, sourceCommonDir string, manifest []byte) ([]string, error) {
 	return SeedWorktreeWithInventoryWithCommonGitDir(repoRoot, worktreePath, sourceCommonDir, manifest)
 }
-func (*Backend) PruneWorktrees(repoRoot string) error { return PruneWorktrees(repoRoot) }
 func (*Backend) RemoveWorktree(repoRoot, path string) error {
 	return RemoveWorktree(repoRoot, path)
 }
