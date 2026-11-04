@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -83,13 +84,21 @@ func TestSymlinkRootKeepsOneLeasePerWorktree(t *testing.T) {
 			if err := os.WriteFile(sentinel, []byte("second holder's work\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			args := []string{"return", "--force", "--if-lease-id", first.LeaseID}
+			if err := os.WriteFile(filepath.Join(first.Path, "README.md"), []byte("first holder's work\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"return", "--if-lease-id", first.LeaseID}
 			workDir := repoDir
 			if returnFromCwd {
 				workDir = physical
 			} else {
 				args = append(args, physical)
 			}
+			if _, stderr, code := runTreehouseFromDir(t, repoDir, workDir, homeDir, env, args...); code != ExitNotReturned || !strings.Contains(stderr, physical) {
+				t.Fatalf("dirty return did not retain the caller's path (%d): %s", code, stderr)
+			}
+			assertLeases(first.LeaseID, "leased")
+			args = append(args, "--force")
 			if _, stderr, code := runTreehouseFromDir(t, repoDir, workDir, homeDir, env, args...); code != 0 {
 				t.Fatalf("physical return failed (%d): %s", code, stderr)
 			}
