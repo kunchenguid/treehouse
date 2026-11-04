@@ -334,7 +334,7 @@ func recoverMissingStateEntries(poolDir string, s State) (State, error) {
 				continue
 			}
 			wtPath := filepath.Join(slotDir, entry.Name())
-			if known[filepath.Clean(wtPath)] {
+			if known[filepath.Clean(wtPath)] || findWorktreeByPath(&s, wtPath) != nil {
 				continue
 			}
 			if wt, ok := recoverOneWorktree(slot.Name(), wtPath); ok {
@@ -343,6 +343,29 @@ func recoverMissingStateEntries(poolDir string, s State) (State, error) {
 		}
 	}
 	return s, nil
+}
+
+// findWorktreeByPath preserves the recorded spelling and reservation when a
+// caller reaches the same directory through another pool-root spelling.
+// Exact matches also work for missing or damaged entries; aliases match only
+// when both paths can be proven to identify the same directory.
+func findWorktreeByPath(state *State, path string) *WorktreeEntry {
+	for i := range state.Worktrees {
+		if state.Worktrees[i].Path == path {
+			return &state.Worktrees[i]
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return nil
+	}
+	for i := range state.Worktrees {
+		other, err := os.Stat(state.Worktrees[i].Path)
+		if err == nil && other.IsDir() && os.SameFile(info, other) {
+			return &state.Worktrees[i]
+		}
+	}
+	return nil
 }
 
 // RecoveredLeaseHolder marks a WorktreeEntry whose reservation and seed

@@ -1070,6 +1070,7 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 		if err != nil {
 			return err
 		}
+		worktreePath = wt.Path
 		branch, fallback, requested := "", "", ""
 		if !markerless {
 			requested = baseBranch
@@ -1120,11 +1121,7 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 }
 
 func releasableWorktree(state *State, worktreePath string, preconditions ReleasePreconditions) (*WorktreeEntry, error) {
-	for i := range state.Worktrees {
-		wt := &state.Worktrees[i]
-		if wt.Path != worktreePath {
-			continue
-		}
+	if wt := findWorktreeByPath(state, worktreePath); wt != nil {
 		if wt.Destroying {
 			return nil, fmt.Errorf("worktree %s is being destroyed", worktreePath)
 		}
@@ -1354,12 +1351,7 @@ func FindByPath(poolDir, path string) (*WorktreeEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, wt := range state.Worktrees {
-		if wt.Path == path {
-			return &wt, nil
-		}
-	}
-	return nil, nil
+	return findWorktreeByPath(&state, path), nil
 }
 
 func healState(poolDir string, state State) (State, error) {

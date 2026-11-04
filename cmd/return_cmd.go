@@ -449,7 +449,14 @@ func resolveReturnTarget(args []string) (returnTarget, error) {
 
 	poolDir, pathErr := resolveReturnPoolDir(wtPath, len(args) > 0)
 	if pathErr == nil {
-		return returnTarget{path: wtPath, poolDir: poolDir}, nil
+		entry, err := pool.FindByPath(poolDir, wtPath)
+		if err != nil {
+			return returnTarget{}, err
+		}
+		if entry == nil {
+			return returnTarget{}, fmt.Errorf("worktree %s is not managed by treehouse", wtPath)
+		}
+		return returnTarget{path: entry.Path, poolDir: poolDir}, nil
 	}
 	if len(args) == 0 || !errors.Is(pathErr, errReturnWorktreeUnmanaged) || !couldBeWorktreeName(args[0]) {
 		if errors.Is(pathErr, errReturnWorktreeUnmanaged) {
