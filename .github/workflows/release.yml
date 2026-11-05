@@ -49,8 +49,13 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # cgo is off so no C code compiled by the runner's toolchain is linked in:
+      # a newer runner image once emitted AVX instructions in the cgo glue,
+      # which crashed the linux-amd64 binary on CPUs without AVX.
       - name: Build
         env:
+          CGO_ENABLED: "0"
+          GOAMD64: v1
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           VERSION: ${{ needs.release-please.outputs.version }}
@@ -58,6 +63,13 @@ jobs:
           ext=""
           if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
           go build -ldflags "-X main.version=v${VERSION}" -o "treehouse${ext}" .
+
+      - name: Smoke test on a baseline x86-64 CPU
+        if: ${{ matrix.goos == 'linux' && matrix.goarch == 'amd64' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user
+          qemu-x86_64 -cpu qemu64 ./treehouse --version
 
       - name: Archive
         env:
