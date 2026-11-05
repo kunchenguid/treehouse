@@ -33,8 +33,9 @@ var (
 // it. The two travel together because a path can find its own pool while a name
 // can only be resolved through the repository, and every later step needs both.
 type returnTarget struct {
-	path    string
-	poolDir string
+	path        string
+	poolDir     string
+	displayPath string
 }
 
 var returnCmd = &cobra.Command{
@@ -119,12 +120,12 @@ them and return each worktree by name.`,
 		if errors.Is(err, errReturnAbortedNonTTY) {
 			return withExitCode(ExitNotReturned, fmt.Errorf(
 				"🌳 worktree not returned: it has uncommitted changes and the confirmation could not be answered (stdin reached EOF); prune will not reclaim this slot. Use treehouse return --force %s to clean and return it",
-				quoteReturnPath(target.path)))
+				quoteReturnPath(target.displayPath)))
 		}
 		if errors.Is(err, errReturnAborted) {
 			return withExitCode(ExitNotReturned, fmt.Errorf(
 				"🌳 worktree not returned: cleaning declined, so its uncommitted changes remain and prune will not reclaim this slot. Use treehouse return --force %s to clean and return it",
-				quoteReturnPath(target.path)))
+				quoteReturnPath(target.displayPath)))
 		}
 		if err != nil {
 			return fmt.Errorf("failed to return worktree: %w", err)
@@ -447,9 +448,9 @@ func resolveReturnTarget(args []string) (returnTarget, error) {
 		return returnTarget{}, err
 	}
 
-	poolDir, pathErr := resolveReturnPoolDir(wtPath, len(args) > 0)
+	poolDir, entry, pathErr := resolveReturnPoolDir(wtPath, len(args) > 0)
 	if pathErr == nil {
-		return returnTarget{path: wtPath, poolDir: poolDir}, nil
+		return returnTarget{path: entry.Path, poolDir: poolDir, displayPath: wtPath}, nil
 	}
 	if len(args) == 0 || !errors.Is(pathErr, errReturnWorktreeUnmanaged) || !couldBeWorktreeName(args[0]) {
 		if errors.Is(pathErr, errReturnWorktreeUnmanaged) {
@@ -493,7 +494,7 @@ func resolveReturnTargetByName(name string) (returnTarget, error) {
 	if entry == nil {
 		return returnTarget{}, unknownWorktreeNameError(poolDir, name)
 	}
-	return returnTarget{path: entry.Path, poolDir: poolDir}, nil
+	return returnTarget{path: entry.Path, poolDir: poolDir, displayPath: entry.Path}, nil
 }
 
 // unknownWorktreeNameError reports an argument that resolved as neither
@@ -567,7 +568,7 @@ func poolDirForRepoRoot(repoRoot string) (string, error) {
 	return config.ResolvePoolDir(repoRoot, config.ResolveRoot(rootFlag, cfg))
 }
 
-func resolveReturnPoolDir(wtPath string, explicitPath bool) (string, error) {
+func resolveReturnPoolDir(wtPath string, explicitPath bool) (string, *pool.WorktreeEntry, error) {
 	// The built-in layout puts a worktree two levels under its pool, which lets a
 	// return succeed even when the repository is gone. The candidate is confirmed
 	// to be a pool first, exactly as destroy does: a worktree_path worktree lives
@@ -576,10 +577,10 @@ func resolveReturnPoolDir(wtPath string, explicitPath bool) (string, error) {
 	if pathPoolDir := filepath.Dir(filepath.Dir(wtPath)); pool.IsPoolDir(pathPoolDir) {
 		entry, err := pool.FindByPath(pathPoolDir, wtPath)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		if entry != nil {
-			return pathPoolDir, nil
+			return pathPoolDir, entry, nil
 		}
 	}
 
@@ -592,22 +593,22 @@ func resolveReturnPoolDir(wtPath string, explicitPath bool) (string, error) {
 	}
 	if err != nil {
 		if explicitPath {
-			return "", errReturnWorktreeUnmanaged
+			return "", nil, errReturnWorktreeUnmanaged
 		}
-		return "", fmt.Errorf("not in a git or jj repository: %w", err)
+		return "", nil, fmt.Errorf("not in a git or jj repository: %w", err)
 	}
 
 	fallbackPoolDir, err := poolDirForRepoRoot(repoRoot)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	entry, err := pool.FindByPath(fallbackPoolDir, wtPath)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if entry == nil {
-		return "", errReturnWorktreeUnmanaged
+		return "", nil, errReturnWorktreeUnmanaged
 	}
-	return fallbackPoolDir, nil
+	return fallbackPoolDir, entry, nil
 }

@@ -174,7 +174,7 @@ func warnDestroyTargetRepoHooks(targets []pool.WorktreeEntry) {
 // named worktree, ascending to the pool directory or falling back to the
 // repository-configured pool.
 func resolveDestroyPoolFromWorktree(wtPath string) (string, error) {
-	poolDir, err := resolveReturnPoolDir(wtPath, true)
+	poolDir, _, err := resolveReturnPoolDir(wtPath, true)
 	if err != nil {
 		if errors.Is(err, errReturnWorktreeUnmanaged) {
 			return "", fmt.Errorf("worktree %s is not managed by treehouse", wtPath)
