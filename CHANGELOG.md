@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.9](https://github.com/kunchenguid/treehouse/compare/v3.1.8...v3.1.9) (2026-11-05)
+
+
+### Bug Fixes
+
+* **pool:** preserve worktree identity across symlinked pool paths ([#208](https://github.com/kunchenguid/treehouse/issues/208)) ([a28452a](https://github.com/kunchenguid/treehouse/commit/a28452ae156652cb2d923d05116da1c81c530955))
+
 ## [3.1.8](https://github.com/kunchenguid/treehouse/compare/v3.1.7...v3.1.8) (2026-10-30)
 
 
