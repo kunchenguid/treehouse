@@ -311,10 +311,16 @@ func validSeedInventory(paths []string) bool {
 // so they must remain unavailable until recovery proves them safe or they are
 // explicitly returned.
 func recoverMissingStateEntries(poolDir string, s State) (State, error) {
+	return recoverMissingStateEntriesWithStat(poolDir, s, os.Stat)
+}
+
+func recoverMissingStateEntriesWithStat(poolDir string, s State, stat func(string) (os.FileInfo, error)) (State, error) {
 	known := make(map[string]bool, len(s.Worktrees))
 	for _, wt := range s.Worktrees {
 		known[filepath.Clean(wt.Path)] = true
 	}
+	var identities []os.FileInfo
+	identitiesLoaded := false
 
 	slots, err := os.ReadDir(poolDir)
 	if err != nil {
@@ -334,11 +340,38 @@ func recoverMissingStateEntries(poolDir string, s State) (State, error) {
 				continue
 			}
 			wtPath := filepath.Join(slotDir, entry.Name())
-			if known[filepath.Clean(wtPath)] || findWorktreeByPath(&s, wtPath) != nil {
+			if known[filepath.Clean(wtPath)] {
+				continue
+			}
+			knownDirectory := false
+			info, statErr := stat(wtPath)
+			if statErr == nil && info.IsDir() {
+				// Exact-path scans need no stats. On the first unknown spelling,
+				// read each recorded identity once and reuse it for this scan.
+				if !identitiesLoaded {
+					for _, wt := range s.Worktrees {
+						if other, err := stat(wt.Path); err == nil && other.IsDir() {
+							identities = append(identities, other)
+						}
+					}
+					identitiesLoaded = true
+				}
+				for _, other := range identities {
+					if os.SameFile(info, other) {
+						knownDirectory = true
+						break
+					}
+				}
+			}
+			if knownDirectory {
 				continue
 			}
 			if wt, ok := recoverOneWorktree(slot.Name(), wtPath); ok {
 				s.Worktrees = append(s.Worktrees, wt)
+				known[filepath.Clean(wtPath)] = true
+				if identitiesLoaded && statErr == nil && info.IsDir() {
+					identities = append(identities, info)
+				}
 			}
 		}
 	}

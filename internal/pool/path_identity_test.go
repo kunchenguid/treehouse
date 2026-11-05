@@ -6,6 +6,54 @@ import (
 	"testing"
 )
 
+func TestPoolPathIdentityScanStatsRecordedPathsOnce(t *testing.T) {
+	poolDir := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "pool")
+	if err := os.Symlink(poolDir, alias); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+	var state State
+	for _, name := range []string{"1", "2", "3"} {
+		makeFakeWorktree(t, poolDir, name, "repo")
+		state.Worktrees = append(state.Worktrees, WorktreeEntry{
+			Name: name, Path: filepath.Join(alias, name, "repo"),
+			Leased: true, LeaseID: "lease-" + name, LeaseHolder: "holder-" + name,
+		})
+	}
+	for _, tc := range []struct {
+		name      string
+		root      string
+		wantStats int
+	}{
+		{"physical-root", poolDir, 1},
+		{"recorded-root", alias, 0},
+		{"physical-retry", poolDir, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := make(map[string]int)
+			stat := func(path string) (os.FileInfo, error) {
+				calls[path]++
+				return os.Stat(path)
+			}
+			got, err := recoverMissingStateEntriesWithStat(tc.root, state, stat)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Worktrees) != len(state.Worktrees) {
+				t.Fatalf("scan registered %d entries for %d directories", len(got.Worktrees), len(state.Worktrees))
+			}
+			for i, wt := range state.Worktrees {
+				if calls[wt.Path] != tc.wantStats {
+					t.Errorf("recorded path %s statted %d times, want %d", wt.Path, calls[wt.Path], tc.wantStats)
+				}
+				if entry := got.Worktrees[i]; entry.Path != wt.Path || !entry.Leased || entry.LeaseID != wt.LeaseID || entry.LeaseHolder != wt.LeaseHolder {
+					t.Fatalf("scan changed recorded lease: %+v", entry)
+				}
+			}
+		})
+	}
+}
+
 func TestPoolPathIdentity(t *testing.T) {
 	poolDir := t.TempDir()
 	path := makeFakeWorktree(t, poolDir, "1", "repo")
