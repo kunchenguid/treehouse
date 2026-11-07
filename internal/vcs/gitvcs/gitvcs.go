@@ -3,6 +3,7 @@ package gitvcs
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // FindMainRepoRoot returns the main repository root for the current working
@@ -963,10 +965,13 @@ func (l *headFileLock) abort() {
 }
 
 // headUpdate is a prepared `git update-ref --stdin` transaction moving a worktree's HEAD; git holds HEAD's lock until it ends.
-// The whole transaction runs under the git deadline: when it passes, git's input is closed so git rolls the
-// transaction back and releases the lock, and git is killed only if it has not exited gitWaitDelay later.
+// Each request to git (prepare, commit) runs under the git deadline, but the time between them does not: the caller
+// resets the worktree while the lock is held, and a deadline that released the lock mid-reset would let another git
+// command move HEAD while files are still being rewritten. When a request's deadline passes, git's input is closed so
+// git rolls the transaction back and releases the lock, and git is killed only if it has not exited gitWaitDelay later.
 type headUpdate struct {
 	cmd    *gitCmd
+	expire context.CancelCauseFunc
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
 	stderr bytes.Buffer
@@ -974,8 +979,10 @@ type headUpdate struct {
 }
 
 func prepareHeadUpdate(worktreePath, newHead, oldHead string) (*headUpdate, error) {
+	ctx, expire := context.WithCancelCause(context.Background())
 	// Hooks stay off: a reference-transaction hook runs in the worktree at prepare and could dirty the slot being reset.
-	u := &headUpdate{cmd: newGitCmd(worktreePath, "-c", "core.hooksPath="+os.DevNull, "update-ref", "--stdin")}
+	cmd := newGitCmdContext(ctx, func() { expire(nil) }, gitTimeout(), worktreePath, "-c", "core.hooksPath="+os.DevNull, "update-ref", "--stdin")
+	u := &headUpdate{cmd: cmd, expire: expire}
 	u.cmd.Stderr = &u.stderr
 	stdin, err := u.cmd.StdinPipe()
 	if err != nil {
@@ -1000,6 +1007,10 @@ func prepareHeadUpdate(worktreePath, newHead, oldHead string) (*headUpdate, erro
 	if err := u.request(commands, "start: ok", "prepare: ok"); err != nil {
 		return nil, err
 	}
+	if u.cmd.ctx.Err() != nil {
+		// The deadline fired as git replied, so git's input is closed and the transaction is rolling back.
+		return nil, u.failure(context.Cause(u.cmd.ctx))
+	}
 	return u, nil
 }
 
@@ -1016,6 +1027,18 @@ func (u *headUpdate) abort() {
 }
 
 func (u *headUpdate) request(commands string, replies ...string) error {
+	if u.cmd.ctx.Err() != nil {
+		return u.failure(context.Cause(u.cmd.ctx))
+	}
+	if u.cmd.timeout > 0 {
+		timer := time.AfterFunc(u.cmd.timeout, func() { u.expire(context.DeadlineExceeded) })
+		defer func() {
+			if !timer.Stop() {
+				// The deadline fired; make sure the expiry is complete before the caller checks it.
+				u.expire(context.DeadlineExceeded)
+			}
+		}()
+	}
 	if _, err := io.WriteString(u.stdin, commands); err != nil {
 		return u.failure(err)
 	}

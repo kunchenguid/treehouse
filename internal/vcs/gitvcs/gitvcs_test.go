@@ -402,6 +402,8 @@ func TestPreparedHeadUpdateAbortsAtDeadlineWithoutMovingHead(t *testing.T) {
 		t.Fatalf("prepareHeadUpdate: %v", err)
 	}
 	defer update.abort()
+	// Fire the deadline the way a stalled request would.
+	update.expire(context.DeadlineExceeded)
 	<-update.cmd.ctx.Done()
 	err = update.commit()
 	if !errors.Is(err, ErrGitTimeout) {
@@ -414,6 +416,39 @@ func TestPreparedHeadUpdateAbortsAtDeadlineWithoutMovingHead(t *testing.T) {
 	}
 	// The transaction was rolled back, so HEAD's lock is free again.
 	mustGit(t, wtPath, "commit", "--allow-empty", "-m", "after timeout")
+}
+
+// The deadline bounds each request to git, not the reset work done while HEAD's
+// lock is held, so a slow reset must not lose the lock.
+func TestPreparedHeadUpdateKeepsLockPastDeadlineBetweenRequests(t *testing.T) {
+	base := t.TempDir()
+	repoDir := filepath.Join(base, "repo")
+	wtPath := filepath.Join(base, "worktree")
+	initRepoWithFormat(t, repoDir, refFormatInitFlag(t, "reftable"))
+	mustGit(t, repoDir, "worktree", "add", "--detach", wtPath, "main")
+	head, err := runGit(wtPath, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve HEAD: %v", err)
+	}
+	target := commitFile(t, repoDir, "advanced.txt", "advance main")
+
+	setGitTimeoutEnv(t, "1s")
+	update, err := prepareHeadUpdate(wtPath, target, head)
+	if err != nil {
+		t.Fatalf("prepareHeadUpdate: %v", err)
+	}
+	defer update.abort()
+	time.Sleep(2 * time.Second)
+	setGitTimeoutEnv(t, "")
+	if _, err := runGit(wtPath, "commit", "--allow-empty", "-m", "concurrent"); err == nil {
+		t.Fatal("expected HEAD to stay locked past the deadline while the update is prepared")
+	}
+	if err := update.commit(); err != nil {
+		t.Fatalf("commit HEAD update: %v", err)
+	}
+	if got, _ := runGit(wtPath, "rev-parse", "HEAD"); got != target {
+		t.Fatalf("HEAD = %s, want %s", got, target)
+	}
 }
 
 // A git older than 2.27 has no update-ref transaction verbs, and until 2.34 the

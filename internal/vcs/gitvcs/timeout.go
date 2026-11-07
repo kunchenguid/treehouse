@@ -73,6 +73,13 @@ func newGitCmd(dir string, args ...string) *gitCmd {
 	if timeout > 0 {
 		ctx, cancel = context.WithTimeout(context.Background(), timeout)
 	}
+	return newGitCmdContext(ctx, cancel, timeout, dir, args...)
+}
+
+// newGitCmdContext builds a gitCmd on a caller-owned context. A caller that
+// enforces the deadline itself cancels ctx with context.DeadlineExceeded as
+// the cause, so deadlineErr still reports a timeout.
+func newGitCmdContext(ctx context.Context, cancel context.CancelFunc, timeout time.Duration, dir string, args ...string) *gitCmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.WaitDelay = timeout
 	cmd.Cancel = func() error {
@@ -223,7 +230,7 @@ var ErrGitTimeout = errors.New("git command timed out")
 // otherwise. A command that returned no error finished in time, even if the
 // deadline passed just afterwards.
 func (c *gitCmd) deadlineErr(runErr error) error {
-	if runErr == nil || !errors.Is(c.ctx.Err(), context.DeadlineExceeded) {
+	if runErr == nil || !errors.Is(context.Cause(c.ctx), context.DeadlineExceeded) {
 		return nil
 	}
 	return fmt.Errorf("%w: git %s did not finish within %s; another git process or a stale lock may be holding the repository (check `git rev-parse --git-path index.lock`), or set %s to change the limit",
