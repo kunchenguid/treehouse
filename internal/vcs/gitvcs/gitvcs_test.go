@@ -2,6 +2,7 @@ package gitvcs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -381,6 +382,38 @@ func TestPreparedHeadUpdateRefusesConcurrentCommitsUntilCommitted(t *testing.T) 
 	if got, _ := runGit(wtPath, "rev-parse", "HEAD"); got != target {
 		t.Fatalf("HEAD = %s, want %s", got, target)
 	}
+}
+
+func TestPreparedHeadUpdateAbortsAtDeadlineWithoutMovingHead(t *testing.T) {
+	base := t.TempDir()
+	repoDir := filepath.Join(base, "repo")
+	wtPath := filepath.Join(base, "worktree")
+	initRepoWithFormat(t, repoDir, refFormatInitFlag(t, "reftable"))
+	mustGit(t, repoDir, "worktree", "add", "--detach", wtPath, "main")
+	head, err := runGit(wtPath, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve HEAD: %v", err)
+	}
+	target := commitFile(t, repoDir, "advanced.txt", "advance main")
+
+	setGitTimeoutEnv(t, "3s")
+	update, err := prepareHeadUpdate(wtPath, target, head)
+	if err != nil {
+		t.Fatalf("prepareHeadUpdate: %v", err)
+	}
+	defer update.abort()
+	<-update.cmd.ctx.Done()
+	err = update.commit()
+	if !errors.Is(err, ErrGitTimeout) {
+		t.Fatalf("commit after the deadline: got %v, want an error wrapping ErrGitTimeout", err)
+	}
+
+	setGitTimeoutEnv(t, "")
+	if got, _ := runGit(wtPath, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("HEAD = %s after a timed-out update, want it left at %s", got, head)
+	}
+	// The transaction was rolled back, so HEAD's lock is free again.
+	mustGit(t, wtPath, "commit", "--allow-empty", "-m", "after timeout")
 }
 
 // A git older than 2.27 has no update-ref transaction verbs, and until 2.34 the

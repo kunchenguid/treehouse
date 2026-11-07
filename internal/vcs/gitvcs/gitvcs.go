@@ -895,9 +895,12 @@ func lockHead(worktreePath, newHead, expectedHead string) (headMove, error) {
 }
 
 func usesReftable(worktreePath string) (bool, error) {
-	cmd := exec.Command("git", "config", "--get", "extensions.refStorage")
-	cmd.Dir = worktreePath
+	cmd := newGitCmd(worktreePath, "config", "--get", "extensions.refStorage")
+	defer cmd.cancel()
 	out, err := cmd.Output()
+	if derr := cmd.deadlineErr(err); derr != nil {
+		return false, derr
+	}
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) && exit.ExitCode() == 1 {
@@ -960,8 +963,10 @@ func (l *headFileLock) abort() {
 }
 
 // headUpdate is a prepared `git update-ref --stdin` transaction moving a worktree's HEAD; git holds HEAD's lock until it ends.
+// The whole transaction runs under the git deadline: when it passes, git's input is closed so git rolls the
+// transaction back and releases the lock, and git is killed only if it has not exited gitWaitDelay later.
 type headUpdate struct {
-	cmd    *exec.Cmd
+	cmd    *gitCmd
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
 	stderr bytes.Buffer
@@ -970,18 +975,24 @@ type headUpdate struct {
 
 func prepareHeadUpdate(worktreePath, newHead, oldHead string) (*headUpdate, error) {
 	// Hooks stay off: a reference-transaction hook runs in the worktree at prepare and could dirty the slot being reset.
-	u := &headUpdate{cmd: exec.Command("git", "-c", "core.hooksPath="+os.DevNull, "update-ref", "--stdin")}
-	u.cmd.Dir = worktreePath
+	u := &headUpdate{cmd: newGitCmd(worktreePath, "-c", "core.hooksPath="+os.DevNull, "update-ref", "--stdin")}
 	u.cmd.Stderr = &u.stderr
 	stdin, err := u.cmd.StdinPipe()
 	if err != nil {
+		u.cmd.cancel()
 		return nil, err
 	}
 	stdout, err := u.cmd.StdoutPipe()
 	if err != nil {
+		u.cmd.cancel()
 		return nil, err
 	}
+	u.cmd.Cancel = func() error {
+		u.cmd.WaitDelay = gitWaitDelay
+		return stdin.Close()
+	}
 	if err := u.cmd.Start(); err != nil {
+		u.cmd.cancel()
 		return nil, err
 	}
 	u.stdin, u.stdout = stdin, bufio.NewReader(stdout)
@@ -1022,6 +1033,9 @@ func (u *headUpdate) request(commands string, replies ...string) error {
 
 func (u *headUpdate) failure(err error) error {
 	_ = u.end()
+	if derr := u.cmd.deadlineErr(err); derr != nil {
+		return derr
+	}
 	if msg := strings.TrimSpace(u.stderr.String()); msg != "" {
 		return fmt.Errorf("git update-ref: %s", msg)
 	}
@@ -1033,8 +1047,13 @@ func (u *headUpdate) end() error {
 		return nil
 	}
 	u.ended = true
+	defer u.cmd.cancel()
 	_ = u.stdin.Close()
-	return u.cmd.Wait()
+	err := u.cmd.Wait()
+	if derr := u.cmd.deadlineErr(err); derr != nil {
+		return derr
+	}
+	return err
 }
 
 func resolveResetRef(worktreePath, branch string) (string, error) {
