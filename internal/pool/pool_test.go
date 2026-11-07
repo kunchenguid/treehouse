@@ -19,6 +19,7 @@ import (
 	"github.com/kunchenguid/treehouse/v3/internal/process"
 	"github.com/kunchenguid/treehouse/v3/internal/vcs"
 	"github.com/kunchenguid/treehouse/v3/internal/vcs/gitvcs"
+	psutil "github.com/shirou/gopsutil/v4/process"
 )
 
 // setupSharedClonePool builds two same-named clones of one origin. Keep real
@@ -3702,10 +3703,39 @@ func startCwdHolder(t *testing.T, dir string) *exec.Cmd {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+	logCwdHolderDiagnostics(t, dir, pid)
 	_ = cmd.Process.Kill()
 	_ = cmd.Wait()
 	t.Fatalf("cwd holder pid %d did not appear in process scan for %s", pid, dir)
 	return nil
+}
+
+func logCwdHolderDiagnostics(t *testing.T, worktreePath string, pid int32) {
+	t.Helper()
+
+	absWorktree, worktreeAbsErr := filepath.Abs(worktreePath)
+	resolvedWorktree, worktreeEvalErr := filepath.EvalSymlinks(absWorktree)
+	t.Logf("cwd holder diagnostic: worktree=%q abs=%q abs_err=%v resolved=%q eval_err=%v", worktreePath, absWorktree, worktreeAbsErr, resolvedWorktree, worktreeEvalErr)
+
+	procs, processesErr := psutil.Processes()
+	pidFound := false
+	for _, proc := range procs {
+		if proc.Pid == pid {
+			pidFound = true
+			break
+		}
+	}
+	t.Logf("cwd holder diagnostic: process.Processes pid=%d found=%t err=%v", pid, pidFound, processesErr)
+
+	proc, newProcessErr := psutil.NewProcess(pid)
+	if newProcessErr != nil {
+		t.Logf("cwd holder diagnostic: NewProcess pid=%d err=%v", pid, newProcessErr)
+		return
+	}
+	cwd, cwdErr := proc.Cwd()
+	absCwd, cwdAbsErr := filepath.Abs(cwd)
+	resolvedCwd, cwdEvalErr := filepath.EvalSymlinks(absCwd)
+	t.Logf("cwd holder diagnostic: pid=%d cwd=%q cwd_err=%v abs=%q abs_err=%v resolved=%q eval_err=%v", pid, cwd, cwdErr, absCwd, cwdAbsErr, resolvedCwd, cwdEvalErr)
 }
 
 func waitForProcessExit(t *testing.T, cmd *exec.Cmd, timeout time.Duration) {
