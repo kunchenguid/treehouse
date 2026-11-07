@@ -1545,9 +1545,9 @@ func TestGetReusesWorktree(t *testing.T) {
 
 // TestGetRecoversFromStaleWorktreeRegistration verifies that "treehouse get"
 // self-heals when git still has bookkeeping for a worktree whose directory was
-// removed out-of-band (e.g. a crashed agent). Without prune-before-add, git
-// rejects the add with "missing but already registered worktree" and every
-// subsequent get is wedged. See issue #30.
+// removed out-of-band (e.g. a crashed agent). Unless the add clears that
+// same-path registration, git rejects it with "missing but already registered
+// worktree" and every subsequent get is wedged. See issue #30.
 func TestGetRecoversFromStaleWorktreeRegistration(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	env := []string{"SHELL=" + exitShellBin}
@@ -1595,6 +1595,85 @@ func TestGetRecoversFromStaleWorktreeRegistration(t *testing.T) {
 	// The worktree directory must actually exist on disk after get.
 	if _, err := os.Stat(filepath.Join(stalePath, "README.md")); err != nil {
 		t.Errorf("worktree was not recreated at %s: %v", stalePath, err)
+	}
+}
+
+// TestGetLeavesUnseenLiveSlotRegistered verifies that "treehouse get" never
+// deregisters a live slot it cannot see. Git treats a worktree whose directory
+// it cannot stat - under a pool root the caller cannot traverse, or
+// temporarily gone - as prunable, so a repository-wide `git worktree prune`
+// before the add deregistered that slot, and the add then reused its
+// registration name: two working trees shared one HEAD and one index. See
+// issue #194.
+func TestGetLeavesUnseenLiveSlotRegistered(t *testing.T) {
+	cases := []struct {
+		name string
+		// hide makes dir unseen to git and returns the function that undoes it.
+		hide func(t *testing.T, dir string) func()
+	}{
+		{
+			// The issue's case: another account's pool root under a private home.
+			name: "untraversable pool root",
+			hide: func(t *testing.T, dir string) func() {
+				if runtime.GOOS == "windows" {
+					t.Skip("directory permission bits do not restrict traversal on Windows")
+				}
+				if os.Geteuid() == 0 {
+					t.Skip("root traverses directories regardless of their permission bits")
+				}
+				if err := os.Chmod(dir, 0); err != nil {
+					t.Fatal(err)
+				}
+				restore := func() { _ = os.Chmod(dir, 0o755) }
+				t.Cleanup(restore)
+				return restore
+			},
+		},
+		{
+			// A portable stand-in that runs on every platform and as root.
+			name: "temporarily missing slot",
+			hide: func(t *testing.T, dir string) func() {
+				away := dir + ".away"
+				if err := os.Rename(dir, away); err != nil {
+					t.Fatal(err)
+				}
+				return func() {
+					if err := os.Rename(away, dir); err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repoDir, homeDir := setupTestRepo(t)
+			base := filepath.Dir(homeDir)
+
+			lease := func(root string) string {
+				t.Helper()
+				stdout, stderr, code := runTreehouse(t, repoDir, homeDir, []string{"TREEHOUSE_ROOT=" + root}, "get", "--lease", "--no-fetch")
+				if code != 0 {
+					t.Fatalf("get --lease under %s failed (code %d): %s", root, code, stderr)
+				}
+				return strings.TrimSpace(stdout)
+			}
+
+			slotA := lease(filepath.Join(base, "rootA"))
+			restore := tc.hide(t, filepath.Dir(slotA))
+			slotB := lease(filepath.Join(base, "rootB"))
+			restore()
+
+			listOut := gitCmd(t, repoDir, "worktree", "list", "--porcelain")
+			if n := strings.Count(listOut, "worktree "); n != 3 || strings.Contains(listOut, "prunable") {
+				t.Fatalf("want the main tree plus both live slots registered and none prunable, got %d entries:\n%s", n, listOut)
+			}
+			gitDirA := gitCmd(t, slotA, "rev-parse", "--absolute-git-dir")
+			gitDirB := gitCmd(t, slotB, "rev-parse", "--absolute-git-dir")
+			if gitDirA == gitDirB {
+				t.Fatalf("slots %s and %s share the registration %s", slotA, slotB, gitDirA)
+			}
+		})
 	}
 }
 

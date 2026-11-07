@@ -60,8 +60,7 @@ type WorktreeEntry struct {
 	// during a state-file recovery scan: its .git/.jj marker exists but could
 	// not be resolved (a dangling or self-referential symlink, a permission
 	// failure). The entry is otherwise a normal recovered entry - leased so
-	// Acquire and prune skip it and destroy removes it only via an explicit
-	// --include-leased target - but List reports it as damaged with this
+	// Acquire and prune skip it - but List reports it as damaged with this
 	// reason, so a skipped slot is visible and never reads as available or an
 	// ordinarily leased home.
 	RecoveryError string `json:"recovery_error,omitempty"`
@@ -149,7 +148,11 @@ func ReadState(poolDir string) (State, error) {
 		}
 		if s.Version != stateVersion || keyErr != nil || !validSeedInventoryDigest(key, *wt) {
 			wt.Leased = true
-			wt.LeaseHolder = RecoveredLeaseHolder
+			// An interrupted acquisition has a known cause and must not be
+			// mistaken for lost state or automatically released during recovery.
+			if wt.LeaseHolder != acquisitionIncompleteLeaseHolder {
+				wt.LeaseHolder = RecoveredLeaseHolder
+			}
 			wt.SeededPaths = nil
 			wt.SeedInventoryKnown = false
 			wt.SeedInventoryDigest = ""
@@ -303,14 +306,21 @@ func validSeedInventory(paths []string) bool {
 	return true
 }
 
-// recoverMissingStateEntries covers the narrow window where creating a Git
-// worktree succeeds but persisting its quarantine entry fails. Such a worktree
-// must remain unavailable even though the otherwise-valid state file omits it.
+// recoverMissingStateEntries quarantines on-disk worktrees omitted from an
+// otherwise-valid state file. Their reservation and seed inventory are unknown,
+// so they must remain unavailable until recovery proves them safe or they are
+// explicitly returned.
 func recoverMissingStateEntries(poolDir string, s State) (State, error) {
+	return recoverMissingStateEntriesWithStat(poolDir, s, os.Stat)
+}
+
+func recoverMissingStateEntriesWithStat(poolDir string, s State, stat func(string) (os.FileInfo, error)) (State, error) {
 	known := make(map[string]bool, len(s.Worktrees))
 	for _, wt := range s.Worktrees {
 		known[filepath.Clean(wt.Path)] = true
 	}
+	var identities []os.FileInfo
+	identitiesLoaded := false
 
 	slots, err := os.ReadDir(poolDir)
 	if err != nil {
@@ -333,18 +343,69 @@ func recoverMissingStateEntries(poolDir string, s State) (State, error) {
 			if known[filepath.Clean(wtPath)] {
 				continue
 			}
+			knownDirectory := false
+			info, statErr := stat(wtPath)
+			if statErr == nil && info.IsDir() {
+				// Exact-path scans need no stats. On the first unknown spelling,
+				// read each recorded identity once and reuse it for this scan.
+				if !identitiesLoaded {
+					for _, wt := range s.Worktrees {
+						if other, err := stat(wt.Path); err == nil && other.IsDir() {
+							identities = append(identities, other)
+						}
+					}
+					identitiesLoaded = true
+				}
+				for _, other := range identities {
+					if os.SameFile(info, other) {
+						knownDirectory = true
+						break
+					}
+				}
+			}
+			if knownDirectory {
+				continue
+			}
 			if wt, ok := recoverOneWorktree(slot.Name(), wtPath); ok {
 				s.Worktrees = append(s.Worktrees, wt)
+				known[filepath.Clean(wtPath)] = true
+				if identitiesLoaded && statErr == nil && info.IsDir() {
+					identities = append(identities, info)
+				}
 			}
 		}
 	}
 	return s, nil
 }
 
+// findWorktreeByPath preserves the recorded spelling and reservation when a
+// caller reaches the same directory through another pool-root spelling.
+// Exact matches also work for missing or damaged entries; aliases match only
+// when both paths can be proven to identify the same directory.
+func findWorktreeByPath(state *State, path string) *WorktreeEntry {
+	for i := range state.Worktrees {
+		if state.Worktrees[i].Path == path {
+			return &state.Worktrees[i]
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return nil
+	}
+	for i := range state.Worktrees {
+		other, err := os.Stat(state.Worktrees[i].Path)
+		if err == nil && other.IsDir() && os.SameFile(info, other) {
+			return &state.Worktrees[i]
+		}
+	}
+	return nil
+}
+
 // RecoveredLeaseHolder marks a WorktreeEntry whose reservation and seed
 // inventory could not be trusted: one reconstructed by either recovery scan
 // (recoverMissingStateEntries or recoverCorruptState), or one ReadState
-// quarantined because its inventory failed to authenticate. treehouse 3.0.0
+// could not authenticate without an explicit incomplete-acquisition reservation.
+// treehouse 3.0.0
 // also put it on every entry of valid pre-3.0 state. None of these can be told
 // apart, so all stay leased until recoverQuarantinedEntries proves one safe or
 // a `return` naming the slot releases it; bulk `return --all` leaves them alone.

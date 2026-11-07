@@ -93,10 +93,9 @@ func TestStatusNamesReturnForThreeZeroUpgradeQuarantine(t *testing.T) {
 	}
 }
 
-// TestStatusNamesReturnForDamagedRecoveredSlot covers a recovered slot whose
-// marker could not be read at recovery: status reports it damaged, and still
-// says why it stays quarantined and names the return that frees it.
-func TestStatusNamesReturnForDamagedRecoveredSlot(t *testing.T) {
+// A damaged recovery needs marker inspection, not a command that bypasses or
+// cannot satisfy the marker checks. Ordinary recovered slots still name return.
+func TestStatusRequiresInspectionForDamagedRecoveredSlot(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	lease := acquireLeaseJSON(t, repoDir, homeDir, "setup")
 	poolDir := filepath.Dir(filepath.Dir(lease.Path))
@@ -124,16 +123,62 @@ func TestStatusNamesReturnForDamagedRecoveredSlot(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status failed, code=%d stderr=%q", code, stderr)
 	}
-	want := "treehouse return " + quoteReturnPath(lease.Path)
-	if !strings.Contains(stdout, "damaged") || !strings.Contains(stdout, "marker could not be read") || !strings.Contains(stdout, want) {
-		t.Fatalf("status does not explain the damaged recovery and name %q:\n%s", want, stdout)
+	if !strings.Contains(stdout, "damaged") || !strings.Contains(stdout, "marker could not be read") {
+		t.Fatalf("status does not explain the damaged recovery:\n%s", stdout)
 	}
+	assertDamagedInspectionAdvice(t, stdout)
 
 	if _, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "return", lease.Path); code != 0 {
-		t.Fatalf("the named return status printed failed, code=%d stderr=%q", code, stderr)
+		t.Fatalf("explicit return after inspection failed, code=%d stderr=%q", code, stderr)
 	}
 	stdout, _, _ = runTreehouse(t, repoDir, homeDir, nil, "status")
 	if strings.Contains(stdout, "recovery held") {
 		t.Fatalf("returned slot still reports a recovery hold:\n%s", stdout)
+	}
+}
+
+func TestDamagedSlotGuidanceRequiresInspection(t *testing.T) {
+	for _, kind := range []string{"leased", "idle", "missing"} {
+		t.Run(kind, func(t *testing.T) {
+			repoDir, homeDir := setupTestRepo(t)
+			lease := acquireLeaseJSON(t, repoDir, homeDir, "guidance")
+			if kind != "leased" {
+				if _, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "return", lease.Path); code != 0 {
+					t.Fatalf("return failed, code=%d stderr=%q", code, stderr)
+				}
+			}
+			marker := filepath.Join(lease.Path, ".git")
+			if kind == "missing" {
+				if err := os.Remove(marker); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(marker, []byte("gitdir: "+t.TempDir()+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			stdout, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "status")
+			if code != 0 || !strings.Contains(stdout, "damaged") {
+				t.Fatalf("status failed, code=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			assertDamagedInspectionAdvice(t, stdout)
+			if kind != "leased" {
+				stdout, stderr, code = runTreehouse(t, repoDir, homeDir, nil, "prune", "--verbose")
+				if code != 0 {
+					t.Fatalf("prune failed, code=%d stderr=%q", code, stderr)
+				}
+				assertDamagedInspectionAdvice(t, stdout)
+			}
+		})
+	}
+}
+
+func assertDamagedInspectionAdvice(t *testing.T, output string) {
+	t.Helper()
+	if !strings.Contains(output, "inspect") || !strings.Contains(output, "repair its VCS marker") {
+		t.Fatalf("missing marker inspection advice:\n%s", output)
+	}
+	for _, command := range []string{"treehouse return ", "treehouse destroy ", "destroy to migrate"} {
+		if strings.Contains(output, command) {
+			t.Fatalf("damaged slot recommends %q:\n%s", command, output)
+		}
 	}
 }

@@ -420,7 +420,11 @@ func makeFakeWorktree(t *testing.T, poolDir, slot, repoName string) string {
 	if err := os.MkdirAll(wtPath, 0755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(wtPath, ".git"), []byte("gitdir: ../../fake.git\n"), 0644); err != nil {
+	registration := t.TempDir()
+	if err := os.WriteFile(filepath.Join(registration, "gitdir"), []byte(filepath.Join(wtPath, ".git")+"\n"), 0644); err != nil {
+		t.Fatalf("WriteFile gitdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, ".git"), []byte("gitdir: "+registration+"\n"), 0644); err != nil {
 		t.Fatalf("WriteFile .git: %v", err)
 	}
 	return wtPath

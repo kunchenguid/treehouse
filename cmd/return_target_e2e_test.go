@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/treehouse/v3/internal/pool"
 )
 
 // statusEntries reads the machine-readable pool status, which is what these
@@ -403,6 +405,52 @@ func TestReturnAllSkipsQuarantinedSlotsWithoutFailing(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("quarantined worktree %s was disturbed: %v", path, err)
 		}
+	}
+}
+
+func TestReturnAllSkipsIncompleteAcquisition(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("seeded.txt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repoDir, "add", ".gitignore")
+	gitCmd(t, repoDir, "commit", "-m", "ignore seeded output")
+	lease := acquireLeaseJSON(t, repoDir, homeDir, "agent")
+	poolDir := filepath.Dir(filepath.Dir(lease.Path))
+	state, err := pool.ReadState(poolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Worktrees[0].LeaseHolder = "quarantined: acquisition state incomplete"
+	state.Worktrees[0].SeedInventoryKnown = false
+	state.Worktrees[0].SeededPaths = nil
+	if err := pool.WriteState(poolDir, state); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"README.md", "seeded.txt"} {
+		if err := os.WriteFile(filepath.Join(lease.Path, name), []byte("unfinished\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "return", "--all", "--force")
+	if code != 0 || !strings.Contains(stderr, "Returned 0 of 1 held worktree(s); 1 skipped") || strings.Contains(stderr, "Returning 1 (") {
+		t.Errorf("incomplete acquisition was selected for bulk return: code=%d, %s", code, stderr)
+	}
+	state, err = pool.ReadState(poolDir)
+	if err != nil || !state.Worktrees[0].Leased || state.Worktrees[0].SeedInventoryKnown {
+		t.Errorf("bulk return cleared incomplete quarantine: %+v, %v", state, err)
+	}
+	for _, name := range []string{"README.md", "seeded.txt"} {
+		if data, err := os.ReadFile(filepath.Join(lease.Path, name)); err != nil || string(data) != "unfinished\n" {
+			t.Errorf("bulk return changed %s: %q, %v", name, data, err)
+		}
+	}
+	_, stderr, code = runTreehouse(t, repoDir, homeDir, nil, "return", "1", "--force")
+	if code != 0 {
+		t.Fatalf("named return refused incomplete acquisition: code=%d, %s", code, stderr)
+	}
+	if got := statusEntry(t, repoDir, homeDir, "1"); got.Status != "available" {
+		t.Fatalf("named return did not release incomplete acquisition: %+v", got)
 	}
 }
 

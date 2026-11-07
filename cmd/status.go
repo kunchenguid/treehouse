@@ -30,6 +30,7 @@ type statusJSONWorktree struct {
 	Branch         string              `json:"branch"`
 	Detached       bool                `json:"detached,omitempty"`
 	BranchErr      string              `json:"branch_error,omitempty"`
+	LockError      string              `json:"lock_error,omitempty"`
 	RecoveryReason string              `json:"recovery_reason,omitempty"`
 	RecoveryBackup string              `json:"recovery_backup,omitempty"`
 	Flavor         string              `json:"flavor,omitempty"`
@@ -102,6 +103,8 @@ var statusCmd = &cobra.Command{
 				status = red(wt.Status)
 			case pool.StatusUnverified:
 				status = red(wt.Status)
+			case pool.StatusLocked:
+				status = yellow(wt.Status)
 			}
 
 			// "%-4s  %-11s  " = 4 + 2 + 11 + 2 = 19 chars before path
@@ -116,24 +119,27 @@ var statusCmd = &cobra.Command{
 			if wt.BranchErr != "" {
 				line += yellow(fmt.Sprintf("  (branch unreadable: %s)", wt.BranchErr))
 			}
+			if wt.LockError != "" {
+				line += yellow(fmt.Sprintf("  (%s)", wt.LockError))
+			}
 			if wt.Status == pool.StatusLeased && wt.LeaseHolder != "" {
 				line += fmt.Sprintf("  (held by %s)", wt.LeaseHolder)
 			}
 			if wt.LeaseHolder == pool.RecoveredLeaseHolder {
-				line += yellow(fmt.Sprintf("  (recovery held: %s; inspect it, then free it with: treehouse return %s)", wt.RecoveryReason, quoteReturnPath(wt.Path)))
+				recovery := wt.RecoveryReason
+				if wt.Status != pool.StatusDamaged {
+					recovery += fmt.Sprintf("; inspect it, then free it with: treehouse return %s", quoteReturnPath(wt.Path))
+				}
+				line += yellow(fmt.Sprintf("  (recovery held: %s)", recovery))
 			}
 			if wt.RecoveryBackup != "" {
 				line += yellow(fmt.Sprintf("  (recovered untracked files kept in %s)", ui.PrettyPath(wt.RecoveryBackup)))
 			}
-			if wt.Flavor != "" && wt.Flavor != repoFlavor {
+			if wt.Status != pool.StatusDamaged && wt.Flavor != "" && wt.Flavor != repoFlavor {
 				line += yellow(fmt.Sprintf("  (%s-flavored; repo selects %s — destroy to migrate)", wt.Flavor, repoFlavor))
 			}
 			if wt.Status == pool.StatusDamaged {
-				if wt.LeaseHolder != "" {
-					line += yellow(fmt.Sprintf("  (marker unreadable — 'treehouse destroy %s --include-leased --include-unlanded --yes' to remove)", ui.PrettyPath(wt.Path)))
-				} else {
-					line += yellow(fmt.Sprintf("  (no .git or .jj marker — 'treehouse destroy %s --include-unlanded' to remove)", ui.PrettyPath(wt.Path)))
-				}
+				line += yellow("  (" + pool.DamagedWorktreeAdvice + ")")
 			}
 			fmt.Fprintln(os.Stdout, line)
 
@@ -183,6 +189,7 @@ func writeStatusJSON(worktrees []pool.WorktreeStatus) error {
 			Branch:         wt.Branch,
 			Detached:       wt.Detached,
 			BranchErr:      wt.BranchErr,
+			LockError:      wt.LockError,
 			RecoveryReason: wt.RecoveryReason,
 			RecoveryBackup: wt.RecoveryBackup,
 			Flavor:         wt.Flavor,

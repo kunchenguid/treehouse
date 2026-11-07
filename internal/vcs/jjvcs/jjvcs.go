@@ -15,12 +15,10 @@
 //
 //   - Secondary jj workspaces are not colocated: pooled worktrees contain
 //     .jj but no .git, so only jj commands work inside them.
-//   - jj repositories do not record workspace directory paths, so
-//     PruneWorktrees cannot enumerate stale registrations; AddWorktree
-//     self-heals a stale same-path registration by forgetting its name
-//     first. Workspace names are a 128-bit digest of the absolute path, so
-//     distinct paths never share a name and the forget can never deregister
-//     a live workspace at another path.
+//   - AddWorktree self-heals a stale same-path registration by forgetting
+//     its name first. Workspace names are a 128-bit digest of the absolute
+//     path, so distinct paths never share a name and the forget can never
+//     deregister a live workspace at another path.
 //   - Merge detection uses ancestry only. A squash-merged head is reported
 //     as unmerged, which fails safe: lifecycle commands refuse to delete it.
 package jjvcs
@@ -167,10 +165,10 @@ func (*Backend) GetRemoteURL(repoRoot string) (string, error) {
 // AddWorktree creates a jj workspace at path based on branch. The workspace
 // name is a collision-free digest of the absolute path, so a stale
 // registration under that name can only have been left by a previous
-// worktree at this same path and is forgotten before adding (jj repositories
-// do not record workspace directories, so this is the prune equivalent for
-// re-used paths). Like git worktrees, registrations are effectively
-// path-keyed: a live workspace at a different path is never deregistered.
+// worktree at this same path and is forgotten before adding, mirroring the
+// git backend's `worktree add --force`. Like git worktrees, registrations are
+// effectively path-keyed: a live workspace at a different path is never
+// deregistered.
 func (b *Backend) AddWorktree(repoRoot, path, branch string) error {
 	name := workspaceNameFor(path)
 	// Best-effort: forgetting a name that does not exist is a no-op in jj.
@@ -261,11 +259,6 @@ func workspaceNameFor(path string) string {
 	h := sha256.Sum256([]byte(abs))
 	return fmt.Sprintf("th-%x", h[:16])
 }
-
-// PruneWorktrees is a no-op for jj: the repository does not record workspace
-// directory paths, so stale registrations cannot be enumerated here.
-// AddWorktree forgets a same-path stale registration before re-adding.
-func (*Backend) PruneWorktrees(repoRoot string) error { return nil }
 
 // RemoveWorktree forgets the workspace and deletes its directory even if it
 // has local changes.
