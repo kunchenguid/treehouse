@@ -451,6 +451,35 @@ func TestPreparedHeadUpdateKeepsLockPastDeadlineBetweenRequests(t *testing.T) {
 	}
 }
 
+// Commit and abort wait for git to exit after the last request's deadline has
+// stopped, so that wait needs its own: a git that stalls rolling back or
+// exiting must not hang get or return.
+func TestHeadUpdateEndIsBoundedByDeadline(t *testing.T) {
+	repo := recoveryRepo(t)
+	setGitTimeoutEnv(t, "300ms")
+	old := gitWaitDelay
+	gitWaitDelay = 200 * time.Millisecond
+	t.Cleanup(func() { gitWaitDelay = old })
+
+	const stall = 4 * time.Second
+	start := time.Now()
+	// The kill stops git but not the sleep it started; Windows cannot remove
+	// the temp repository until that exits.
+	t.Cleanup(func() { time.Sleep(time.Until(start.Add(stall + 500*time.Millisecond))) })
+	// The alias ignores its closed input the way a stalled update-ref would.
+	update, err := startHeadUpdate(repo, "-c", "alias.stall=!sleep 4", "stall")
+	if err != nil {
+		t.Fatalf("startHeadUpdate: %v", err)
+	}
+	err = update.end()
+	if elapsed := time.Since(start); elapsed > stall-time.Second {
+		t.Fatalf("end returned after %s; want the deadline to stop a git that does not exit", elapsed)
+	}
+	if !errors.Is(err, ErrGitTimeout) {
+		t.Fatalf("end: got %v, want an error wrapping ErrGitTimeout", err)
+	}
+}
+
 // A git older than 2.27 has no update-ref transaction verbs, and until 2.34 the
 // protocol could deadlock; a files-storage reset must not depend on it.
 func TestResetWorktreeToRefOnFilesStorageNeedsNoUpdateRefTransaction(t *testing.T) {
