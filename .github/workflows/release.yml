@@ -277,6 +277,14 @@ jobs:
           BASE="https://github.com/kunchenguid/treehouse/releases/download/${TAG_NAME}"
 
           git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/kunchenguid/homebrew-tap.git" "$RUNNER_TEMP/homebrew-tap"
+          FORMULA="$RUNNER_TEMP/homebrew-tap/Formula/treehouse.rb"
+          if [[ -f "$FORMULA" ]]; then
+            EXISTING=$(sed -nE 's#.*releases/download/v([^/]+)/.*#\1#p' "$FORMULA" | head -n1)
+            if [[ -n "$EXISTING" && "$EXISTING" != "$VERSION" && "$(printf '%s\n' "$EXISTING" "$VERSION" | sort -V | tail -n1)" == "$EXISTING" ]]; then
+              echo "Tap already has treehouse ${EXISTING}, newer than ${VERSION}; skipping."
+              exit 0
+            fi
+          fi
           mkdir -p "$RUNNER_TEMP/homebrew-tap/Formula"
           cat > "$RUNNER_TEMP/homebrew-tap/Formula/treehouse.rb" << FORMULA_EOF
           class Treehouse < Formula
@@ -326,5 +334,12 @@ jobs:
           git add Formula/treehouse.rb
           if ! git diff --cached --quiet; then
             git commit -m "treehouse ${VERSION}"
-            git push
+            for attempt in 1 2 3 4 5; do
+              git push && break
+              if [[ "$attempt" == 5 ]]; then
+                echo "Push failed after ${attempt} attempts" >&2
+                exit 1
+              fi
+              git pull --rebase
+            done
           fi
