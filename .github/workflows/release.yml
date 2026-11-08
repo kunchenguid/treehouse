@@ -240,3 +240,91 @@ jobs:
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         run: gh release upload "${TAG_NAME}" checksums.txt
         working-directory: ${{ github.workspace }}
+
+  # Publishes Formula/treehouse.rb to kunchenguid/homebrew-tap so
+  # `brew install kunchenguid/tap/treehouse` tracks each release. Needs a
+  # HOMEBREW_TAP_TOKEN secret with contents:write on kunchenguid/homebrew-tap.
+  homebrew:
+    needs: [release-please, checksums]
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          set -euo pipefail
+          : "${HOMEBREW_TAP_TOKEN:?Missing HOMEBREW_TAP_TOKEN}"
+          gh release download "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" -p checksums.txt -D "$RUNNER_TEMP"
+          sha() {
+            local value
+            value=$(awk -v f="treehouse-v${VERSION}-$1.tar.gz" '$2 == f {print $1}' "$RUNNER_TEMP/checksums.txt")
+            if [[ ! "$value" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "No checksum for treehouse-v${VERSION}-$1.tar.gz" >&2
+              exit 1
+            fi
+            echo "$value"
+          }
+          DARWIN_ARM64=$(sha darwin-arm64)
+          DARWIN_AMD64=$(sha darwin-amd64)
+          LINUX_ARM64=$(sha linux-arm64)
+          LINUX_AMD64=$(sha linux-amd64)
+          BASE="https://github.com/kunchenguid/treehouse/releases/download/${TAG_NAME}"
+
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/kunchenguid/homebrew-tap.git" "$RUNNER_TEMP/homebrew-tap"
+          mkdir -p "$RUNNER_TEMP/homebrew-tap/Formula"
+          cat > "$RUNNER_TEMP/homebrew-tap/Formula/treehouse.rb" << FORMULA_EOF
+          class Treehouse < Formula
+            desc "Manage worktrees without managing worktrees"
+            homepage "https://github.com/kunchenguid/treehouse"
+            license "MIT"
+
+            livecheck do
+              url :stable
+              strategy :github_latest
+            end
+
+            on_macos do
+              on_arm do
+                url "${BASE}/treehouse-v${VERSION}-darwin-arm64.tar.gz"
+                sha256 "${DARWIN_ARM64}"
+              end
+              on_intel do
+                url "${BASE}/treehouse-v${VERSION}-darwin-amd64.tar.gz"
+                sha256 "${DARWIN_AMD64}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "${BASE}/treehouse-v${VERSION}-linux-arm64.tar.gz"
+                sha256 "${LINUX_ARM64}"
+              end
+              on_intel do
+                url "${BASE}/treehouse-v${VERSION}-linux-amd64.tar.gz"
+                sha256 "${LINUX_AMD64}"
+              end
+            end
+
+            def install
+              bin.install "treehouse"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/treehouse --version")
+            end
+          end
+          FORMULA_EOF
+          cd "$RUNNER_TEMP/homebrew-tap"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/treehouse.rb
+          if ! git diff --cached --quiet; then
+            git commit -m "treehouse ${VERSION}"
+            git push
+          fi
