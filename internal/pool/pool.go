@@ -1263,6 +1263,7 @@ func listWorktrees(poolDir string, configuredBase func() string) ([]WorktreeStat
 			if wt.Destroying {
 				continue
 			}
+			unlandedHere := false
 			ws := WorktreeStatus{
 				Name:           wt.Name,
 				Path:           wt.Path,
@@ -1335,10 +1336,10 @@ func listWorktrees(poolDir string, configuredBase func() string) ([]WorktreeStat
 					}
 					if !landedOnDefaultBase(wt, base) {
 						ws.Status = StatusUnlanded
+						unlandedHere = true
 					}
 				}
 			}
-			unlandedHere := ws.Status == StatusUnlanded
 			// Damaged and locked are not overlaid. Standing in a damaged slot
 			// (marker missing, unreadable, or invalid) does not make its contents
 			// verifiable, and a locked slot needs recovery or inspection, so cwd
