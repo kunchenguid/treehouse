@@ -1260,10 +1260,10 @@ func listWorktrees(poolDir string, configuredBase func() string) ([]WorktreeStat
 		cwd, _ := os.Getwd()
 
 		for _, wt := range state.Worktrees {
+			unlandedHere := false
 			if wt.Destroying {
 				continue
 			}
-			unlandedHere := false
 			ws := WorktreeStatus{
 				Name:           wt.Name,
 				Path:           wt.Path,
