@@ -3770,7 +3770,12 @@ func TestHoldCwdProbe(t *testing.T) {
 	if err := os.WriteFile(os.Args[argStart+1], []byte("ready\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	select {}
+	// Keep a timer active so the standalone test subprocess does not trigger
+	// the runtime's all-goroutines-asleep deadlock detector before its parent
+	// can scan it on Windows.
+	for {
+		time.Sleep(time.Hour)
+	}
 }
 
 // quoteForShell wraps a path so it survives splitting by /bin/sh or cmd.exe.
