@@ -23,17 +23,17 @@ const (
 	StatusLeased    = "leased"
 	StatusHere      = "you're here"
 	StatusDamaged   = "damaged"
-	// StatusUnlanded is an idle, clean, process-free slot whose HEAD is not
-	// proven merged into the base, so acquire skips it rather than reset it.
-	// It reads exactly as `get` does: anything that check cannot prove
-	// (including a check that errors) is unlanded, never available.
-	StatusUnlanded = "unlanded"
 	// StatusUnverified is a slot whose process table could not be read: the
 	// question "is anything running here?" has no answer, so nothing decided
 	// from the process list (in-use) or from its absence (damaged, dirty,
 	// available) is reported. Leased, a live owner reservation, and "you're
 	// here" are facts known without a scan and still outrank it.
 	StatusUnverified = "unverified"
+	// StatusUnlanded is an idle, clean, process-free slot whose HEAD is not
+	// proven merged into the base, so acquire skips it rather than reset it.
+	// It reads exactly as `get` does: anything that check cannot prove
+	// (including a check that errors) is unlanded, never available.
+	StatusUnlanded = "unlanded"
 )
 
 // WorktreeStatus describes one managed worktree as reported by List.
@@ -490,8 +490,8 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		wantFlavor := vcs.BackendNameFor(repoRoot)
 		otherFlavor := 0
 		otherClone := 0
-		unverifiedClone := 0
 		unlanded := 0
+		unverifiedClone := 0
 		for i, wt := range state.Worktrees {
 			if wt.Destroying || wt.Leased || ownerAlive(wt) {
 				continue
@@ -1337,6 +1337,7 @@ func listWorktrees(poolDir string, configuredBase func() string) ([]WorktreeStat
 					}
 				}
 			}
+			unlandedHere := ws.Status == StatusUnlanded
 			// Damaged is not overlaid. A missing marker is a different kind of
 			// fact from the reservations above: it says the slot's own contents
 			// cannot be judged at all, which is what `destroy` - not `return` -
@@ -1344,8 +1345,11 @@ func listWorktrees(poolDir string, configuredBase func() string) ([]WorktreeStat
 			// readable. The recovery-scan case below already forces damaged
 			// back over the overlay for exactly this reason.
 			if !wt.Leased && !owned && ws.Status != StatusDamaged && process.WorktreeContainsCwd(wt.Path, cwd) {
-				ws.HeldOnlyByCwd = ws.Status == StatusAvailable || ws.Status == StatusUnlanded
+				ws.HeldOnlyByCwd = ws.Status == StatusAvailable
 				ws.Status = StatusHere
+			}
+			if unlandedHere && ws.Status == StatusHere {
+				ws.HeldOnlyByCwd = true
 			}
 
 			// A slot the recovery scan could not inspect (its marker exists but
