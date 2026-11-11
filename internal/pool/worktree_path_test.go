@@ -1232,3 +1232,21 @@ func seededJJSlotOutsideThePool(t *testing.T) (authPath string, entry WorktreeEn
 	}
 	return authPath, state.Worktrees[0], poolDir, worktree
 }
+
+func TestIgnoredWorktreePathRejectsRepositoryMetadata(t *testing.T) {
+	for _, marker := range []string{".git", ".jj"} {
+		t.Run(marker, func(t *testing.T) {
+			repoDir, poolDir := setupRepo(t)
+			if err := os.WriteFile(filepath.Join(repoDir, ".git", "info", "exclude"), []byte("*\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := AcquireWithOptions(repoDir, poolDir, 2, nil, AcquireOptions{WorktreePath: "{repo_parent}/{repo}/" + marker + "/trees/{slot}"})
+			if err == nil || !strings.Contains(err.Error(), "repository metadata") {
+				t.Fatalf("metadata placement: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(repoDir, marker, "trees")); !os.IsNotExist(err) {
+				t.Fatalf("metadata directory created: %v", err)
+			}
+		})
+	}
+}

@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/kunchenguid/treehouse/v3/internal/vcs"
 )
 
 // Placeholders a worktree path template may use. {pool} and {repo_parent}
@@ -265,12 +267,27 @@ func checkWorktreePlacement(template, resolved, repoRoot, poolDir, slot string) 
 		return fmt.Errorf("worktree path %q resolves to %q, inside the treehouse pool directory %q of another repository, which would register the worktree as a slot of its own",
 			template, resolved, foreign)
 	}
-	// An in-project pool is git-ignored and was already accepted above. Any
-	// other path inside the working tree is not ignored, so the worktree would
-	// show up as untracked content in the repository it was cut from.
+	// Outside the managed pool, repository-local paths must already be ignored.
+	// Check the canonical destination so a symlink cannot hide unignored content.
 	if pathContains(canonicalRepoRoot, canonicalResolved) {
-		return fmt.Errorf("worktree path %q resolves to %q, inside the repository working tree %q; place worktrees outside the repository or under %s",
-			template, resolved, repoRoot, placeholderPool)
+		commonDir, err := vcs.CommonGitDir(canonicalRepoRoot)
+		if err != nil {
+			return fmt.Errorf("inside the repository working tree; cannot inspect repository metadata for worktree placement: %w", err)
+		}
+		canonicalCommonDir, err := canonicalPathPrefix(commonDir)
+		if err != nil {
+			return fmt.Errorf("inside the repository working tree; cannot resolve repository metadata for worktree placement: %w", err)
+		}
+		if pathContains(canonicalCommonDir, canonicalResolved) || pathContains(filepath.Join(canonicalRepoRoot, ".git"), canonicalResolved) || pathContains(filepath.Join(canonicalRepoRoot, ".jj"), canonicalResolved) {
+			return fmt.Errorf("worktree path %q resolves inside repository metadata", template)
+		}
+		ignored, err := vcs.IsPathIgnored(canonicalRepoRoot, canonicalResolved)
+		if err != nil {
+			return fmt.Errorf("worktree path %q resolves to %q, inside the repository working tree %q; cannot verify ignore rules: %w", template, resolved, repoRoot, err)
+		}
+		if !ignored {
+			return fmt.Errorf("worktree path %q resolves to %q, inside the repository working tree %q; ignore the destination before placing a worktree there", template, resolved, repoRoot)
+		}
 	}
 	return nil
 }

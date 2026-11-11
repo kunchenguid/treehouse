@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,5 +133,58 @@ func TestGetInvalidWorktreePathFailsClosed(t *testing.T) {
 	statusOut, _, _ := runTreehouse(t, repoDir, homeDir, nil, "status")
 	if strings.Contains(statusOut, "myrepo-fixed") {
 		t.Errorf("expected no worktree to be registered, got %q", statusOut)
+	}
+}
+
+func TestIgnoredRepositoryLocalWorktreeLifecycle(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repoDir, ".git", "info", "exclude"), []byte(".worktrees/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	template := "{repo_parent}/{repo}/.worktrees/{slot}"
+	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, nil,
+		"get", "--lease", "--worktree-path", template)
+	if code != 0 {
+		t.Fatalf("acquire failed (%d): %s", code, stderr)
+	}
+	path := strings.TrimSpace(stdout)
+	if want := filepath.Join(repoDir, ".worktrees", "1"); path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+	if _, err := os.Stat(filepath.Join(path, "README.md")); err != nil {
+		t.Fatal(err)
+	}
+	status, _, code := runTreehouse(t, repoDir, homeDir, nil, "status", "--json")
+	var entries []struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(status), &entries); err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 || len(entries) != 1 || entries[0].Path != path {
+		t.Fatalf("status = %s (%d)", status, code)
+	}
+	_, stderr, code = runTreehouse(t, homeDir, homeDir, nil, "return", path)
+	if code != 0 {
+		t.Fatalf("return from outside repository failed (%d): %s", code, stderr)
+	}
+	stdout, stderr, code = runTreehouse(t, repoDir, homeDir, nil,
+		"get", "--lease", "--worktree-path", template)
+	if code != 0 || strings.TrimSpace(stdout) != path {
+		t.Fatalf("reuse = %q (%d): %s", stdout, code, stderr)
+	}
+	_, stderr, code = runTreehouse(t, repoDir, homeDir, nil, "return", path)
+	if code != 0 {
+		t.Fatalf("return failed (%d): %s", code, stderr)
+	}
+	_, stderr, code = runTreehouse(t, repoDir, homeDir, nil, "prune", "--yes")
+	if code != 0 {
+		t.Fatalf("prune failed (%d): %s", code, stderr)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("pruned checkout remains: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(path)); err != nil {
+		t.Fatalf("parent was removed: %v", err)
 	}
 }
