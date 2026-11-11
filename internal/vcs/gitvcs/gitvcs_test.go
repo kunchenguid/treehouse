@@ -2,6 +2,7 @@ package gitvcs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -380,6 +381,102 @@ func TestPreparedHeadUpdateRefusesConcurrentCommitsUntilCommitted(t *testing.T) 
 	}
 	if got, _ := runGit(wtPath, "rev-parse", "HEAD"); got != target {
 		t.Fatalf("HEAD = %s, want %s", got, target)
+	}
+}
+
+func TestPreparedHeadUpdateAbortsAtDeadlineWithoutMovingHead(t *testing.T) {
+	base := t.TempDir()
+	repoDir := filepath.Join(base, "repo")
+	wtPath := filepath.Join(base, "worktree")
+	initRepoWithFormat(t, repoDir, refFormatInitFlag(t, "reftable"))
+	mustGit(t, repoDir, "worktree", "add", "--detach", wtPath, "main")
+	head, err := runGit(wtPath, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve HEAD: %v", err)
+	}
+	target := commitFile(t, repoDir, "advanced.txt", "advance main")
+
+	setGitTimeoutEnv(t, "3s")
+	update, err := prepareHeadUpdate(wtPath, target, head)
+	if err != nil {
+		t.Fatalf("prepareHeadUpdate: %v", err)
+	}
+	defer update.abort()
+	// Fire the deadline the way a stalled request would.
+	update.expire(context.DeadlineExceeded)
+	<-update.cmd.ctx.Done()
+	err = update.commit()
+	if !errors.Is(err, ErrGitTimeout) {
+		t.Fatalf("commit after the deadline: got %v, want an error wrapping ErrGitTimeout", err)
+	}
+
+	setGitTimeoutEnv(t, "")
+	if got, _ := runGit(wtPath, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("HEAD = %s after a timed-out update, want it left at %s", got, head)
+	}
+	// The transaction was rolled back, so HEAD's lock is free again.
+	mustGit(t, wtPath, "commit", "--allow-empty", "-m", "after timeout")
+}
+
+// The deadline bounds each request to git, not the reset work done while HEAD's
+// lock is held, so a slow reset must not lose the lock.
+func TestPreparedHeadUpdateKeepsLockPastDeadlineBetweenRequests(t *testing.T) {
+	base := t.TempDir()
+	repoDir := filepath.Join(base, "repo")
+	wtPath := filepath.Join(base, "worktree")
+	initRepoWithFormat(t, repoDir, refFormatInitFlag(t, "reftable"))
+	mustGit(t, repoDir, "worktree", "add", "--detach", wtPath, "main")
+	head, err := runGit(wtPath, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve HEAD: %v", err)
+	}
+	target := commitFile(t, repoDir, "advanced.txt", "advance main")
+
+	setGitTimeoutEnv(t, "1s")
+	update, err := prepareHeadUpdate(wtPath, target, head)
+	if err != nil {
+		t.Fatalf("prepareHeadUpdate: %v", err)
+	}
+	defer update.abort()
+	time.Sleep(2 * time.Second)
+	setGitTimeoutEnv(t, "")
+	if _, err := runGit(wtPath, "commit", "--allow-empty", "-m", "concurrent"); err == nil {
+		t.Fatal("expected HEAD to stay locked past the deadline while the update is prepared")
+	}
+	if err := update.commit(); err != nil {
+		t.Fatalf("commit HEAD update: %v", err)
+	}
+	if got, _ := runGit(wtPath, "rev-parse", "HEAD"); got != target {
+		t.Fatalf("HEAD = %s, want %s", got, target)
+	}
+}
+
+// Commit and abort wait for git to exit after the last request's deadline has
+// stopped, so that wait needs its own: a git that stalls rolling back or
+// exiting must not hang get or return.
+func TestHeadUpdateEndIsBoundedByDeadline(t *testing.T) {
+	repo := recoveryRepo(t)
+	setGitTimeoutEnv(t, "300ms")
+	old := gitWaitDelay
+	gitWaitDelay = 200 * time.Millisecond
+	t.Cleanup(func() { gitWaitDelay = old })
+
+	const stall = 4 * time.Second
+	start := time.Now()
+	// The kill stops git but not the sleep it started; Windows cannot remove
+	// the temp repository until that exits.
+	t.Cleanup(func() { time.Sleep(time.Until(start.Add(stall + 500*time.Millisecond))) })
+	// The alias ignores its closed input the way a stalled update-ref would.
+	update, err := startHeadUpdate(repo, "-c", "alias.stall=!sleep 4", "stall")
+	if err != nil {
+		t.Fatalf("startHeadUpdate: %v", err)
+	}
+	err = update.end()
+	if elapsed := time.Since(start); elapsed > stall-time.Second {
+		t.Fatalf("end returned after %s; want the deadline to stop a git that does not exit", elapsed)
+	}
+	if !errors.Is(err, ErrGitTimeout) {
+		t.Fatalf("end: got %v, want an error wrapping ErrGitTimeout", err)
 	}
 }
 

@@ -3,6 +3,7 @@ package gitvcs
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // FindMainRepoRoot returns the main repository root for the current working
@@ -176,9 +178,12 @@ func branchRef(repoRoot, branch string) string {
 // returns an error instead of masquerading as a detached HEAD, so callers can
 // tell the two apart.
 func CheckedOutBranch(worktreePath string) (string, error) {
-	cmd := exec.Command("git", "symbolic-ref", "-q", "--short", "HEAD")
-	cmd.Dir = worktreePath
+	cmd := newGitCmd(worktreePath, "symbolic-ref", "-q", "--short", "HEAD")
+	defer cmd.cancel()
 	out, err := cmd.Output()
+	if derr := cmd.deadlineErr(err); derr != nil {
+		return "", derr
+	}
 	if err == nil {
 		return strings.TrimSpace(string(out)), nil
 	}
@@ -274,9 +279,13 @@ func ValidateBranchName(repoRoot, branch string) error {
 }
 
 func LocalBranchExists(repoRoot, branch string) (bool, error) {
-	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
-	cmd.Dir = repoRoot
-	if err := cmd.Run(); err != nil {
+	cmd := newGitCmd(repoRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	defer cmd.cancel()
+	err := cmd.Run()
+	if derr := cmd.deadlineErr(err); derr != nil {
+		return false, derr
+	}
+	if err != nil {
 		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
 			return false, nil
 		}
@@ -293,9 +302,12 @@ var ErrBranchCreated = errors.New("branch created before checkout failed")
 func CreateBranch(worktreePath, branch string) error {
 	return createBranch(worktreePath, branch, func(dir string, args ...string) (string, error) {
 		if args[0] == "checkout" {
-			cmd := exec.Command("git", args...)
-			cmd.Dir = dir
+			cmd := newGitCmd(dir, args...)
+			defer cmd.cancel()
 			out, err := cmd.CombinedOutput()
+			if derr := cmd.deadlineErr(err); derr != nil {
+				return strings.TrimSpace(string(out)), derr
+			}
 			if err != nil {
 				return strings.TrimSpace(string(out)), fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 			}
@@ -702,10 +714,14 @@ func RemoveCleanWorktree(repoRoot, path string) error {
 // checkout ran, but inspects reference-transaction hooks and worktree output.
 func HasUnseededBranchCreationOutput(worktreePath string, seededPaths []string) (bool, error) {
 	// A configured hooks path can be relative to the invocation directory.
-	hooksPath := exec.Command("git", "config", "--get", "core.hooksPath")
-	hooksPath.Dir = worktreePath
+	hooksPath := newGitCmd(worktreePath, "config", "--get", "core.hooksPath")
+	defer hooksPath.cancel()
 	var configuredHooksPath string
-	if out, err := hooksPath.Output(); err == nil {
+	out, err := hooksPath.Output()
+	if derr := hooksPath.deadlineErr(err); derr != nil {
+		return true, derr
+	}
+	if err == nil {
 		configuredHooksPath = strings.TrimSpace(string(out))
 	} else if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
 		return true, err
@@ -881,9 +897,12 @@ func lockHead(worktreePath, newHead, expectedHead string) (headMove, error) {
 }
 
 func usesReftable(worktreePath string) (bool, error) {
-	cmd := exec.Command("git", "config", "--get", "extensions.refStorage")
-	cmd.Dir = worktreePath
+	cmd := newGitCmd(worktreePath, "config", "--get", "extensions.refStorage")
+	defer cmd.cancel()
 	out, err := cmd.Output()
+	if derr := cmd.deadlineErr(err); derr != nil {
+		return false, derr
+	}
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) && exit.ExitCode() == 1 {
@@ -946,8 +965,14 @@ func (l *headFileLock) abort() {
 }
 
 // headUpdate is a prepared `git update-ref --stdin` transaction moving a worktree's HEAD; git holds HEAD's lock until it ends.
+// Each request to git (prepare, commit) and the wait for git to exit run under the git deadline, but the time between
+// them does not: the caller resets the worktree while the lock is held, and a deadline that released the lock mid-reset
+// would let another git command move HEAD while files are still being rewritten. When a deadline passes, git's input is
+// closed so git rolls the transaction back and releases the lock, and git is killed only if it has not exited
+// gitWaitDelay later.
 type headUpdate struct {
-	cmd    *exec.Cmd
+	cmd    *gitCmd
+	expire context.CancelCauseFunc
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
 	stderr bytes.Buffer
@@ -956,25 +981,46 @@ type headUpdate struct {
 
 func prepareHeadUpdate(worktreePath, newHead, oldHead string) (*headUpdate, error) {
 	// Hooks stay off: a reference-transaction hook runs in the worktree at prepare and could dirty the slot being reset.
-	u := &headUpdate{cmd: exec.Command("git", "-c", "core.hooksPath="+os.DevNull, "update-ref", "--stdin")}
-	u.cmd.Dir = worktreePath
-	u.cmd.Stderr = &u.stderr
-	stdin, err := u.cmd.StdinPipe()
+	u, err := startHeadUpdate(worktreePath, "-c", "core.hooksPath="+os.DevNull, "update-ref", "--stdin")
 	if err != nil {
 		return nil, err
 	}
-	stdout, err := u.cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := u.cmd.Start(); err != nil {
-		return nil, err
-	}
-	u.stdin, u.stdout = stdin, bufio.NewReader(stdout)
 	commands := fmt.Sprintf("start\noption no-deref\nupdate HEAD %s %s\nprepare\n", newHead, oldHead)
 	if err := u.request(commands, "start: ok", "prepare: ok"); err != nil {
 		return nil, err
 	}
+	if u.cmd.ctx.Err() != nil {
+		// The deadline fired as git replied, so git's input is closed and the transaction is rolling back.
+		return nil, u.failure(context.Cause(u.cmd.ctx))
+	}
+	return u, nil
+}
+
+// startHeadUpdate starts the git process that will carry a HEAD transaction.
+func startHeadUpdate(worktreePath string, args ...string) (*headUpdate, error) {
+	ctx, expire := context.WithCancelCause(context.Background())
+	cmd := newGitCmdContext(ctx, func() { expire(nil) }, gitTimeout(), worktreePath, args...)
+	u := &headUpdate{cmd: cmd, expire: expire}
+	u.cmd.Stderr = &u.stderr
+	stdin, err := u.cmd.StdinPipe()
+	if err != nil {
+		u.cmd.cancel()
+		return nil, err
+	}
+	stdout, err := u.cmd.StdoutPipe()
+	if err != nil {
+		u.cmd.cancel()
+		return nil, err
+	}
+	u.cmd.Cancel = func() error {
+		u.cmd.WaitDelay = gitWaitDelay
+		return stdin.Close()
+	}
+	if err := u.cmd.Start(); err != nil {
+		u.cmd.cancel()
+		return nil, err
+	}
+	u.stdin, u.stdout = stdin, bufio.NewReader(stdout)
 	return u, nil
 }
 
@@ -991,6 +1037,10 @@ func (u *headUpdate) abort() {
 }
 
 func (u *headUpdate) request(commands string, replies ...string) error {
+	if u.cmd.ctx.Err() != nil {
+		return u.failure(context.Cause(u.cmd.ctx))
+	}
+	defer u.deadline()()
 	if _, err := io.WriteString(u.stdin, commands); err != nil {
 		return u.failure(err)
 	}
@@ -1006,8 +1056,25 @@ func (u *headUpdate) request(commands string, replies ...string) error {
 	return nil
 }
 
+// deadline starts the git deadline for one exchange with git and returns the func that stops it.
+func (u *headUpdate) deadline() (stop func()) {
+	if u.cmd.timeout <= 0 {
+		return func() {}
+	}
+	timer := time.AfterFunc(u.cmd.timeout, func() { u.expire(context.DeadlineExceeded) })
+	return func() {
+		if !timer.Stop() {
+			// The deadline fired; make sure the expiry is complete before the caller checks it.
+			u.expire(context.DeadlineExceeded)
+		}
+	}
+}
+
 func (u *headUpdate) failure(err error) error {
 	_ = u.end()
+	if derr := u.cmd.deadlineErr(err); derr != nil {
+		return derr
+	}
 	if msg := strings.TrimSpace(u.stderr.String()); msg != "" {
 		return fmt.Errorf("git update-ref: %s", msg)
 	}
@@ -1019,8 +1086,15 @@ func (u *headUpdate) end() error {
 		return nil
 	}
 	u.ended = true
+	defer u.cmd.cancel()
+	// Commit and abort reach here with no request deadline running, so git's rollback and exit get their own.
+	defer u.deadline()()
 	_ = u.stdin.Close()
-	return u.cmd.Wait()
+	err := u.cmd.Wait()
+	if derr := u.cmd.deadlineErr(err); derr != nil {
+		return derr
+	}
+	return err
 }
 
 func resolveResetRef(worktreePath, branch string) (string, error) {
@@ -1461,9 +1535,12 @@ func IsHeadMergedIntoDefault(repoRoot, worktreePath string) (bool, string, error
 // detects a squash merge without treating unrelated target-branch changes as a
 // mismatch.
 func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
-	cmd := exec.Command("git", "merge-base", "--is-ancestor", "HEAD", ref)
-	cmd.Dir = worktreePath
+	cmd := newGitCmd(worktreePath, "merge-base", "--is-ancestor", "HEAD", ref)
+	defer cmd.cancel()
 	out, err := cmd.CombinedOutput()
+	if derr := cmd.deadlineErr(err); derr != nil {
+		return false, derr
+	}
 	if err == nil {
 		return true, nil
 	}
@@ -1474,9 +1551,12 @@ func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 }
 
 func isHeadContentMergedIntoRef(worktreePath, ref string) (bool, error) {
-	cmd := exec.Command("git", "merge-base", "HEAD", ref)
-	cmd.Dir = worktreePath
+	cmd := newGitCmd(worktreePath, "merge-base", "HEAD", ref)
+	defer cmd.cancel()
 	out, err := cmd.CombinedOutput()
+	if derr := cmd.deadlineErr(err); derr != nil {
+		return false, derr
+	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			return false, fmt.Errorf("git merge-base HEAD %s returned no common ancestor", ref)
@@ -1579,11 +1659,13 @@ func execGit(dir string, pinSubmoduleRecurse bool, args ...string) ([]byte, erro
 	if pinSubmoduleRecurse {
 		gitArgs = append([]string{"-c", "submodule.recurse=false"}, args...)
 	}
-	cmd := exec.Command("git", gitArgs...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
+	cmd := newGitCmd(dir, gitArgs...)
+	cmd.args = args
+	defer cmd.cancel()
 	out, err := cmd.Output()
+	if derr := cmd.deadlineErr(err); derr != nil {
+		return nil, derr
+	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(exitErr.Stderr)))
@@ -1668,12 +1750,15 @@ func gitOutput(dir string, stdin []byte, args ...string) ([]byte, error) {
 }
 
 func gitOutputEnv(dir string, env []string, stdin []byte, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
+	cmd := newGitCmd(dir, args...)
+	defer cmd.cancel()
 	if env != nil {
 		cmd.Env = env
 	}
 	cmd.Stdin = bytes.NewReader(stdin)
 	out, err := cmd.Output()
+	if derr := cmd.deadlineErr(err); derr != nil {
+		return nil, derr
+	}
 	return out, err
 }
