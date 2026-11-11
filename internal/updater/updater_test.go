@@ -182,12 +182,14 @@ func TestCacheStaleWhenCurrentPastLatest(t *testing.T) {
 		t.Fatalf("writeCache: %v", err)
 	}
 
-	// Should be stale because current version >= cached latest
+	// Should be stale because current version is past cached latest
 	if !IsCacheStale("v1.1.0") {
 		t.Error("expected stale when current version is newer than cached latest")
 	}
-	if !IsCacheStale("v1.0.0") {
-		t.Error("expected stale when current version equals cached latest")
+	// Up to date with a fresh cache: no re-check, or every command on an
+	// up-to-date install spends an unauthenticated API request.
+	if IsCacheStale("v1.0.0") {
+		t.Error("expected fresh when current version equals cached latest")
 	}
 
 	// Should NOT be stale when cached latest is ahead of current
