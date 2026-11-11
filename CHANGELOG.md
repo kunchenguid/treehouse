@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.1.9](https://github.com/kunchenguid/treehouse/compare/v3.1.8...v3.1.9) (2026-11-11)
+
+
+### Bug Fixes
+
+* **pool:** preserve worktree identity across symlinked pool paths ([#208](https://github.com/kunchenguid/treehouse/issues/208)) ([a28452a](https://github.com/kunchenguid/treehouse/commit/a28452ae156652cb2d923d05116da1c81c530955))
+* **updater:** keep update-check cache fresh when install is up to date ([#213](https://github.com/kunchenguid/treehouse/issues/213)) ([2b17bbf](https://github.com/kunchenguid/treehouse/commit/2b17bbfe06826e4234bcdf0fd6ff6856ec81ecae))
+
 ## [3.1.8](https://github.com/kunchenguid/treehouse/compare/v3.1.7...v3.1.8) (2026-10-30)
 
 
