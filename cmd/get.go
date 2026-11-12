@@ -165,6 +165,7 @@ func getRunE(cmd *cobra.Command, args []string) error {
 		WorktreePath:    config.ResolveWorktreePath(getWorktreePath, cfg),
 		IncludeManifest: manifest,
 		UniqueLeaf:      resolveUniqueLeaf(cmd, cfg),
+		RunHooks:        config.RunWorktreeHooks,
 		APFSSharing:     apfsSharing,
 	}
 
@@ -172,7 +173,7 @@ func getRunE(cmd *cobra.Command, args []string) error {
 		return getLeaseRunE(repoRoot, poolDir, cfg, acquireOpts)
 	}
 
-	wtPath, err := pool.AcquireWithOptions(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate, acquireOpts)
+	wtPath, err := pool.AcquireWithOptions(repoRoot, poolDir, cfg.MaxTrees, nil, acquireOpts)
 	if err != nil {
 		return err
 	}
@@ -249,9 +250,13 @@ func getRunE(cmd *cobra.Command, args []string) error {
 // before the reset, so a writer that re-enters the worktree cannot slip between
 // the emptiness check and the destructive reset.
 func returnWorktreeToPool(poolDir, wtPath, baseBranch string, preconditions pool.ReleasePreconditions) error {
-	return pool.ReleaseConditional(poolDir, wtPath, baseBranch, preconditions, func() error {
+	_, err := config.LoadGlobal()
+	if err != nil {
+		return err
+	}
+	return pool.ReleaseConditionalWithHooks(poolDir, wtPath, baseBranch, preconditions, func() error {
 		return killLingeringProcesses(wtPath)
-	})
+	}, nil, config.RunWorktreeHooks)
 }
 
 // resolveRequestedBase returns the base this invocation asks for: the --base
@@ -301,7 +306,7 @@ func getLeaseRunE(repoRoot, poolDir string, cfg config.Config, options pool.Acqu
 		holder = os.Getenv("TREEHOUSE_LEASE_HOLDER")
 	}
 
-	lease, err := pool.AcquireLeaseInfoWithOptions(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate, holder, options)
+	lease, err := pool.AcquireLeaseInfoWithOptions(repoRoot, poolDir, cfg.MaxTrees, nil, holder, options)
 	if err != nil {
 		return err
 	}

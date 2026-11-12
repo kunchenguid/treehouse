@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/BurntSushi/toml"
 	"github.com/kunchenguid/treehouse/v3/internal/vcs"
 )
 
@@ -50,11 +49,17 @@ type Config struct {
 	// TREEHOUSE_UNIQUE_LEAF environment variable.
 	UniqueLeaf bool  `toml:"unique_leaf,omitempty"`
 	Hooks      Hooks `toml:"hooks,omitempty"`
+	// TrustedRepos is honored only from the user-level config.
+	TrustedRepos map[string]string `toml:"trusted_repos,omitempty"`
 }
 
 type Hooks struct {
-	PostCreate []string `toml:"post_create,omitempty"`
-	PreDestroy []string `toml:"pre_destroy,omitempty"`
+	// ApprovalFiles binds explicitly listed repository files into hook approval.
+	ApprovalFiles []string `toml:"approval_files,omitempty"`
+	PostCreate    []string `toml:"post_create,omitempty"`
+	PreDestroy    []string `toml:"pre_destroy,omitempty"`
+	PostGet       []string `toml:"post_get,omitempty"`
+	PostReturn    []string `toml:"post_return,omitempty"`
 }
 
 // RootEnvVar is the environment variable that overrides the configured
@@ -154,36 +159,21 @@ func ResolveWorktreePath(flagTemplate string, cfg Config) string {
 }
 
 func Load(repoRoot string) (Config, error) {
-	cfg := DefaultConfig()
-
-	repoPath := filepath.Join(repoRoot, "treehouse.toml")
-	hasRepoConfig := false
-	if _, err := os.Stat(repoPath); err == nil {
-		hasRepoConfig = true
-		md, err := toml.DecodeFile(repoPath, &cfg)
-		if err != nil {
-			return cfg, err
-		}
-		// Repo-level hooks are discarded so that a command run in an
-		// untrusted clone cannot execute checked-in shell. Say so, once,
-		// instead of dropping them silently.
-		warnRepoHooks(os.Stderr, repoPath, md)
-		cfg.Hooks = Hooks{}
-	}
-
-	userCfg, hasUserConfig, err := loadUser()
+	userCfg, _, err := loadUser()
 	if err != nil {
-		return cfg, err
+		return userCfg, err
 	}
-	if hasUserConfig {
-		if !hasRepoConfig {
-			cfg = userCfg
-		} else {
-			cfg.Hooks = userCfg.Hooks
-		}
+	repoCfg, md, hash, err := readRepoConfig(repoRoot)
+	if os.IsNotExist(err) {
+		return userCfg, nil
 	}
-
-	return cfg, nil
+	if err != nil {
+		return DefaultConfig(), err
+	}
+	// A repository cannot grant itself trust. Keep all trust state user-owned.
+	repoCfg.TrustedRepos = userCfg.TrustedRepos
+	repoCfg.Hooks = effectiveHooks(repoRoot, repoCfg.Hooks, md, hash, userCfg, os.Stderr)
+	return repoCfg, nil
 }
 
 // LoadGlobal returns the default configuration merged with user-level config.
@@ -205,16 +195,20 @@ func loadUser() (Config, bool, error) {
 	cfg := DefaultConfig()
 	userPath := userConfigPath()
 	if userPath == "" {
+		return cfg, false, fmt.Errorf("cannot resolve user config directory")
+	}
+	data, err := os.ReadFile(userPath)
+	if os.IsNotExist(err) {
 		return cfg, false, nil
 	}
-	if _, err := os.Stat(userPath); err == nil {
-		if _, err := toml.DecodeFile(userPath, &cfg); err != nil {
-			return cfg, false, err
-		}
-		return cfg, true, nil
+	if err != nil {
+		return cfg, false, err
 	}
-
-	return cfg, false, nil
+	cfg, _, _, err = decodeConfig(data)
+	if err != nil {
+		return cfg, false, err
+	}
+	return cfg, true, nil
 }
 
 // userConfigPath returns the user-level config file path, or "" when the home
@@ -228,12 +222,7 @@ func userConfigPath() string {
 }
 
 func ResolvePoolDir(repoRoot string, root string) (string, error) {
-	// Use remote URL for the hash when available; fall back to the
-	// absolute repo path for purely-local repositories.
-	hashInput, err := vcs.GetRemoteURL(repoRoot)
-	if err != nil {
-		hashInput = repoRoot
-	}
+	hashInput := RepoIdentity(repoRoot)
 
 	repoName := filepath.Base(repoRoot)
 	shortHash := vcs.ShortHash(hashInput)

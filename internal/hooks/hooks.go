@@ -9,6 +9,29 @@ import (
 	"os/exec"
 )
 
+// Event identifies a lifecycle point for a runner that resolves commands and
+// checks their approval at execution time.
+type Event string
+
+const (
+	PostCreate Event = "post_create"
+	PostGet    Event = "post_get"
+	PostReturn Event = "post_return"
+	PreDestroy Event = "pre_destroy"
+)
+
+type Runner func(event Event, workDir string, stdout, stderr io.Writer)
+
+// Run uses the runner when supplied, or the static commands for callers which
+// do not resolve configuration. Output routing stays owned by the lifecycle.
+func (r Runner) Run(event Event, commands []string, workDir string, stdout, stderr io.Writer) {
+	if r != nil {
+		r(event, workDir, stdout, stderr)
+		return
+	}
+	Run(commands, workDir, stdout, stderr)
+}
+
 // Run executes each command in commands sequentially in workDir. Each command
 // is passed to the OS shell (/bin/sh -c on Unix, %COMSPEC% /d /s /c on Windows).
 // Stdout and stderr from the commands are streamed to the given writers.

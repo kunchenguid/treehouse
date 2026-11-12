@@ -118,6 +118,7 @@ func destroyRunE(cmd *cobra.Command, args []string) error {
 		IncludeInUse:    destroyIncludeInUse,
 		IncludeLeased:   destroyIncludeLeased,
 		PreDestroy:      preDestroy,
+		RunHooks:        config.RunWorktreeHooks,
 	}
 	if destroyAll {
 		opts.InspectTargets = warnDestroyTargetRepoHooks
@@ -140,9 +141,8 @@ func destroyRunE(cmd *cobra.Command, args []string) error {
 	return destroySingleExit(result, opts)
 }
 
-// destroyPreDestroyHooks returns the user-level pre_destroy hooks. Destroy can
-// target a pool in another repository, and pre_destroy hooks are user-level
-// only, so it always loads them globally.
+// destroyPreDestroyHooks validates user config before destruction and warns for
+// known targets even during dry runs. Execution resolves trusted hooks per slot.
 func destroyPreDestroyHooks(repoRoots []string) ([]string, error) {
 	for _, repoRoot := range repoRoots {
 		config.WarnIfRepoHooksIgnored(repoRoot)
