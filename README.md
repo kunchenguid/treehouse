@@ -47,6 +47,14 @@ $ exit                         # exit the subshell when you're done
 curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh
 ```
 
+**Homebrew (macOS / Linux)**
+
+```sh
+brew install kunchenguid/tap/treehouse
+```
+
+A Homebrew install upgrades with `brew upgrade treehouse`.
+
 **Windows (PowerShell)**
 
 ```powershell
