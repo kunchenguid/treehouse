@@ -30,7 +30,16 @@ var (
 	getUniqueLeaf   bool
 	getWorktreePath string
 	getAPFSSharing  string
+	getTimeout      time.Duration
 )
+
+// defaultGetTimeout bounds how long `treehouse get` may wait for origin fetch
+// and the pool state lock before failing. It is larger than Firstmate's 60s
+// spawn wait so a healthy acquire is not truncated, and small enough that a
+// wedged flock cannot pin a shell for days. The interactive subshell after a
+// successful acquire is never covered by this ceiling. Override with
+// --timeout or TREEHOUSE_GET_TIMEOUT (Go duration, e.g. 90s, 2m; 0 = unbounded).
+const defaultGetTimeout = 2 * time.Minute
 
 // Process seams, overridable in tests, matching the pattern in internal/pool.
 var (
@@ -87,7 +96,13 @@ least 64 KiB with the main checkout on macOS/APFS. Off by default; use off to
 opt out. Only newly created Git slots are considered, before Treehouse hooks
 and handoff. Existing/reused slots and ignored dependency/build files are never
 swept. The destination must have no concurrent writers; Git checkout hooks or
-filters make the pass skip conservatively.`,
+filters make the pass skip conservatively.
+
+Pass --timeout to bound how long get may wait for origin fetch and the pool
+state lock (default 2m; TREEHOUSE_GET_TIMEOUT overrides the default; 0 waits
+without a ceiling). A timed-out acquire exits non-zero with a one-line stderr
+reason. The interactive subshell after a successful acquire is never cut short
+by this ceiling.`,
 	RunE: getRunE,
 }
 
@@ -102,6 +117,7 @@ func init() {
 	getCmd.Flags().BoolVar(&getUniqueLeaf, "unique-leaf", false, "Name a newly created worktree directory <repo>-<slot> instead of <repo>, overriding unique_leaf in config")
 	getCmd.Flags().StringVar(&getWorktreePath, "worktree-path", "", "Template for a newly created worktree's directory, overriding worktree_path in config (default: {pool}/{slot}/{repo})")
 	getCmd.Flags().StringVar(&getAPFSSharing, "apfs-sharing", "", "Share tracked data in fresh Git slots on macOS/APFS: off (default) or fresh; overrides TREEHOUSE_APFS_SHARING and config")
+	getCmd.Flags().DurationVar(&getTimeout, "timeout", defaultGetTimeout, "Bound waiting for origin fetch and the pool state lock (0 = unbounded); does not limit the interactive subshell after acquire")
 	rootCmd.AddCommand(getCmd)
 }
 
@@ -158,6 +174,11 @@ func getRunE(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: failed to update git exclude: %v\n", err)
 	}
 
+	timeout, err := resolveGetTimeout(cmd)
+	if err != nil {
+		return err
+	}
+
 	acquireOpts := pool.AcquireOptions{
 		SkipFetch:       getNoFetch,
 		Branch:          getBranch,
@@ -166,6 +187,7 @@ func getRunE(cmd *cobra.Command, args []string) error {
 		IncludeManifest: manifest,
 		UniqueLeaf:      resolveUniqueLeaf(cmd, cfg),
 		APFSSharing:     apfsSharing,
+		Timeout:         timeout,
 	}
 
 	if getLease {
@@ -274,6 +296,24 @@ func resolveUniqueLeaf(cmd *cobra.Command, cfg config.Config) bool {
 		flag = &getUniqueLeaf
 	}
 	return config.ResolveUniqueLeaf(flag, cfg)
+}
+
+// resolveGetTimeout returns the acquire wait ceiling for this invocation.
+// An explicitly typed --timeout wins. Otherwise TREEHOUSE_GET_TIMEOUT overrides
+// the compiled default when set. An empty or whitespace-only env value is
+// ignored; a malformed value fails closed.
+func resolveGetTimeout(cmd *cobra.Command) (time.Duration, error) {
+	if cmd.Flags().Changed("timeout") {
+		return getTimeout, nil
+	}
+	if raw := strings.TrimSpace(os.Getenv("TREEHOUSE_GET_TIMEOUT")); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return 0, fmt.Errorf("TREEHOUSE_GET_TIMEOUT: %w", err)
+		}
+		return d, nil
+	}
+	return getTimeout, nil
 }
 
 // releaseBaseBranch returns the branch a returned worktree is parked on: the

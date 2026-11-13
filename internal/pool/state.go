@@ -587,7 +587,21 @@ func createTempStateFile(dir, base string, perm os.FileMode) (*os.File, string, 
 	return nil, "", fmt.Errorf("creating temporary state file: too many name collisions")
 }
 
+// ErrLockTimeout reports that acquiring the pool state lock exceeded the
+// caller's deadline. Callers that pass a positive timeout to
+// WithStateLockTimeout must treat this as a hard failure rather than retrying
+// forever — that unbounded wait is exactly the treehouse-get wedge class.
+var ErrLockTimeout = errors.New("timed out waiting for pool state lock")
+
 func WithStateLock(poolDir string, fn func() error) error {
+	return WithStateLockTimeout(poolDir, 0, fn)
+}
+
+// WithStateLockTimeout is WithStateLock with a bound on how long the caller
+// may wait for the exclusive state lock. timeout <= 0 waits without a ceiling
+// (the historical behavior). A positive timeout returns ErrLockTimeout when
+// the lock is still held after that duration.
+func WithStateLockTimeout(poolDir string, timeout time.Duration, fn func() error) error {
 	if err := os.MkdirAll(poolDir, 0755); err != nil {
 		return err
 	}
@@ -599,7 +613,7 @@ func WithStateLock(poolDir string, fn func() error) error {
 	}
 	defer f.Close()
 
-	if err := lockFile(f); err != nil {
+	if err := lockFileWait(f, timeout); err != nil {
 		return err
 	}
 	defer unlockFile(f)
