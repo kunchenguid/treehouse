@@ -160,13 +160,7 @@ func DestroyWorktree(poolDir, worktreePath string, opts DestroyOptions) (Destroy
 		if err := WriteState(poolDir, state); err != nil {
 			return err
 		}
-		for i := range state.Worktrees {
-			if state.Worktrees[i].Path == worktreePath {
-				entry := state.Worktrees[i]
-				target = &entry
-				break
-			}
-		}
+		target = findWorktreeByPath(&state, worktreePath)
 		return nil
 	}); err != nil {
 		return DestroyResult{}, err
