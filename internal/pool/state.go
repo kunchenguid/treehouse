@@ -174,8 +174,9 @@ func ReadState(poolDir string) (State, error) {
 // a free twin that Acquire would hand out. Aliases share the slot name, so only
 // entries whose names repeat are statted. The entry kept is the most protective
 // one (see aliasRank); its own path spelling and reservation are preserved.
-// Only `return` clears an ordinary lease, so every member holding one is kept:
-// twins leased to two sessions stay separate until each holder returns its own.
+// A reservation is cleared only by its holder, so every member holding one (an
+// ordinary lease or a live owner) is kept: twins reserved by two sessions stay
+// separate until each holder releases its own.
 func collapseAliasedEntries(s State, stat func(string) (os.FileInfo, error)) State {
 	byName := make(map[string]int, len(s.Worktrees))
 	for _, wt := range s.Worktrees {
@@ -218,7 +219,7 @@ func collapseAliasedEntries(s State, stat func(string) (os.FileInfo, error)) Sta
 			}
 		}
 		for _, member := range group {
-			if member.index != keep && !holdsOrdinaryLease(s.Worktrees[member.index]) {
+			if member.index != keep && !holdsReservation(s.Worktrees[member.index]) {
 				drop[member.index] = true
 			}
 		}
@@ -240,17 +241,18 @@ func collapseAliasedEntries(s State, stat func(string) (os.FileInfo, error)) Sta
 // directory: an in-progress destroy first, then an explicit lease over a
 // recovered one, any lease over a live owner reservation, any reservation over
 // none, and finally the older entry, so a reservation is never dropped for an
-// idle twin.
+// idle twin. An owner whose process is gone reserves nothing, as in healState.
 func aliasRank(a, b WorktreeEntry) bool {
 	score := func(wt WorktreeEntry) int {
+		alive := ownerAlive(wt)
 		switch {
-		case wt.Destroying:
+		case wt.Destroying && alive:
 			return 5
 		case holdsOrdinaryLease(wt):
 			return 4
 		case wt.Leased:
 			return 3
-		case wt.OwnerPID != 0:
+		case alive:
 			return 2
 		default:
 			return 1
@@ -266,6 +268,12 @@ func aliasRank(a, b WorktreeEntry) bool {
 // opposed to a quarantine treehouse placed on it.
 func holdsOrdinaryLease(wt WorktreeEntry) bool {
 	return wt.Leased && !IsQuarantinedLeaseHolder(wt.LeaseHolder)
+}
+
+// holdsReservation reports whether wt is reserved by a party that releases it
+// itself: the holder of an ordinary lease, or a live `get` or destroy process.
+func holdsReservation(wt WorktreeEntry) bool {
+	return holdsOrdinaryLease(wt) || ownerAlive(wt)
 }
 
 func hasSeedState(wt WorktreeEntry) bool {

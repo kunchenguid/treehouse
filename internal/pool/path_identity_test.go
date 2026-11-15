@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/treehouse/v3/internal/process"
 )
 
 func TestPoolPathIdentityScanStatsRecordedPathsOnce(t *testing.T) {
@@ -358,5 +360,122 @@ func TestReturnOfDoublyLeasedSlotClearsOnlyItsOwnLease(t *testing.T) {
 	}
 	if kept := state.Worktrees[0]; kept.Path != first.Path || !kept.Leased || kept.LeaseID != first.LeaseID || kept.LeaseHolder != "session-a" {
 		t.Fatalf("session-b's return changed session-a's lease: %+v", kept)
+	}
+}
+
+// liveOwner returns the owner identity of this test process, which ownerAlive
+// reports alive, and the same PID under another start time, which it reports
+// gone: the reservation of a process whose PID has since been reused.
+func liveOwner(t *testing.T) (pid int32, startedAt, staleStartedAt int64) {
+	t.Helper()
+	pid = int32(os.Getpid())
+	startedAt, ok := process.StartedAt(pid)
+	if !ok {
+		t.Skip("this process's start time is unavailable")
+	}
+	return pid, startedAt, startedAt - 1
+}
+
+func TestCollapseAliasedEntriesKeepsLiveOwnerReservations(t *testing.T) {
+	poolDir, alias := aliasedPool(t)
+	makeFakeWorktree(t, poolDir, "1", "repo")
+	pid, startedAt, stale := liveOwner(t)
+	older := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	newer := older.Add(24 * time.Hour)
+	physicalPath, aliasPath := filepath.Join(poolDir, "1", "repo"), filepath.Join(alias, "1", "repo")
+	liveGet := WorktreeEntry{OwnerPID: pid, OwnerStartedAt: startedAt, CreatedAt: newer}
+	for _, tc := range []struct {
+		name     string
+		physical WorktreeEntry
+		aliased  WorktreeEntry
+		want     []string
+	}{
+		{"live owner stays beside an ordinary lease",
+			WorktreeEntry{Leased: true, LeaseID: "a", LeaseHolder: "session-a", CreatedAt: older},
+			liveGet, []string{physicalPath, aliasPath}},
+		{"live owner stays beside a recovered lease",
+			WorktreeEntry{Leased: true, LeaseHolder: RecoveredLeaseHolder, CreatedAt: older},
+			liveGet, []string{physicalPath, aliasPath}},
+		{"two live owners both stay",
+			WorktreeEntry{OwnerPID: pid, OwnerStartedAt: startedAt, CreatedAt: older},
+			liveGet, []string{physicalPath, aliasPath}},
+		{"live owner beats older twin whose owner is gone",
+			WorktreeEntry{OwnerPID: pid, OwnerStartedAt: stale, CreatedAt: older},
+			liveGet, []string{aliasPath}},
+		{"live owner beats older free twin",
+			WorktreeEntry{CreatedAt: older},
+			liveGet, []string{aliasPath}},
+		{"live owner beats older destroy whose process is gone",
+			WorktreeEntry{Destroying: true, OwnerPID: pid, OwnerStartedAt: stale, CreatedAt: older},
+			liveGet, []string{aliasPath}},
+		{"recovered lease beats older destroy whose process is gone",
+			WorktreeEntry{Destroying: true, OwnerPID: pid, OwnerStartedAt: stale, CreatedAt: older},
+			WorktreeEntry{Leased: true, LeaseHolder: RecoveredLeaseHolder, CreatedAt: newer}, []string{aliasPath}},
+		{"live destroy beats older recovered lease",
+			WorktreeEntry{Leased: true, LeaseHolder: RecoveredLeaseHolder, CreatedAt: older},
+			WorktreeEntry{Destroying: true, OwnerPID: pid, OwnerStartedAt: startedAt, CreatedAt: newer}, []string{aliasPath}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			physical, aliased := tc.physical, tc.aliased
+			physical.Name, physical.Path = "1", physicalPath
+			aliased.Name, aliased.Path = "1", aliasPath
+			recorded := map[string]WorktreeEntry{physicalPath: physical, aliasPath: aliased}
+			got := collapseAliasedEntries(State{Worktrees: []WorktreeEntry{physical, aliased}}, os.Stat)
+			if len(got.Worktrees) != len(tc.want) {
+				t.Fatalf("got %d entries, want %v: %+v", len(got.Worktrees), tc.want, got.Worktrees)
+			}
+			for i, path := range tc.want {
+				want := recorded[path]
+				if entry := got.Worktrees[i]; entry.Path != path || entry.OwnerPID != want.OwnerPID || entry.OwnerStartedAt != want.OwnerStartedAt ||
+					entry.Destroying != want.Destroying || entry.Leased != want.Leased || entry.LeaseID != want.LeaseID {
+					t.Fatalf("entry %d = %+v, want %+v unchanged", i, entry, want)
+				}
+			}
+		})
+	}
+}
+
+func TestLiveGetOnTwinSurvivesReturnOfTheOtherLease(t *testing.T) {
+	repoDir, _ := setupRepo(t)
+	poolDir := filepath.Join(t.TempDir(), "pool")
+	if err := os.MkdirAll(poolDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, alias := aliasedPoolOf(t, poolDir)
+	pid, startedAt, _ := liveOwner(t)
+	first, err := AcquireLeaseInfo(repoDir, poolDir, 1, nil, "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(poolDir, first.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := ReadState(poolDir)
+	if err != nil || len(state.Worktrees) != 1 {
+		t.Fatalf("state after acquire: %+v, %v", state, err)
+	}
+	twin := WorktreeEntry{Name: state.Worktrees[0].Name, Path: filepath.Join(alias, rel), CreatedAt: time.Now().UTC(), OwnerPID: pid, OwnerStartedAt: startedAt}
+	setSeedInventory(&twin, nil, true)
+	state.Worktrees = append(state.Worktrees, twin)
+	if err := WriteState(poolDir, state); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Release(poolDir, first.Path); err != nil {
+		t.Fatal(err)
+	}
+	if path, err := Acquire(repoDir, poolDir, 1, nil); err == nil {
+		t.Fatalf("handed out %s while a live get still holds it", path)
+	}
+	state, err = ReadState(poolDir)
+	if err != nil || len(state.Worktrees) != 1 {
+		t.Fatalf("state after session-a returned: %+v, %v", state.Worktrees, err)
+	}
+	if kept := state.Worktrees[0]; kept.Path != twin.Path || kept.Leased || kept.OwnerPID != pid || kept.OwnerStartedAt != startedAt {
+		t.Fatalf("the live get's reservation changed: %+v", kept)
+	}
+	if err := ReleaseConditional(alias, twin.Path, "", ReleasePreconditions{RequireOwnedByCaller: true}, nil); err != nil {
+		t.Fatalf("the live get could not release its own reservation: %v", err)
 	}
 }
