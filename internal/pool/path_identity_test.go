@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestPoolPathIdentityScanStatsRecordedPathsOnce(t *testing.T) {
@@ -156,5 +157,103 @@ func TestReleasePathIdentity(t *testing.T) {
 	state, err := ReadState(poolDir)
 	if err != nil || len(state.Worktrees) != 1 || state.Worktrees[0].Path != path || state.Worktrees[0].Leased {
 		t.Fatalf("release did not preserve the canonical entry: %+v, %v", state, err)
+	}
+}
+
+// aliasedPool returns a pool directory and a second spelling of it, standing in
+// for a symlinked root or a second mount of the same filesystem.
+func aliasedPool(t *testing.T) (string, string) {
+	t.Helper()
+	poolDir := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "pool")
+	if err := os.Symlink(poolDir, alias); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+	return poolDir, alias
+}
+
+func TestCollapseAliasedEntriesKeepsTheReservation(t *testing.T) {
+	poolDir, alias := aliasedPool(t)
+	makeFakeWorktree(t, poolDir, "1", "repo")
+	makeFakeWorktree(t, poolDir, "2", "repo")
+	older := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	newer := older.Add(24 * time.Hour)
+	for _, tc := range []struct {
+		name     string
+		physical WorktreeEntry
+		aliased  WorktreeEntry
+		wantPath string
+		wantID   string
+	}{
+		{"leased original beats free twin",
+			WorktreeEntry{Leased: true, LeaseID: "a", LeaseHolder: "session-a", CreatedAt: older},
+			WorktreeEntry{CreatedAt: newer}, poolDir, "a"},
+		{"leased twin beats free original",
+			WorktreeEntry{CreatedAt: older},
+			WorktreeEntry{Leased: true, LeaseID: "b", LeaseHolder: "session-b", CreatedAt: newer}, alias, "b"},
+		{"explicit lease beats recovered lease",
+			WorktreeEntry{Leased: true, LeaseHolder: RecoveredLeaseHolder, CreatedAt: older},
+			WorktreeEntry{Leased: true, LeaseID: "c", LeaseHolder: "session-c", CreatedAt: newer}, alias, "c"},
+		{"recovered lease beats free twin",
+			WorktreeEntry{CreatedAt: older},
+			WorktreeEntry{Leased: true, LeaseHolder: RecoveredLeaseHolder, CreatedAt: newer}, alias, ""},
+		{"two free entries keep the older",
+			WorktreeEntry{CreatedAt: newer},
+			WorktreeEntry{CreatedAt: older}, alias, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			physical, aliased := tc.physical, tc.aliased
+			physical.Name, physical.Path = "1", filepath.Join(poolDir, "1", "repo")
+			aliased.Name, aliased.Path = "1", filepath.Join(alias, "1", "repo")
+			other := WorktreeEntry{Name: "2", Path: filepath.Join(poolDir, "2", "repo"), CreatedAt: older}
+			got := collapseAliasedEntries(State{Worktrees: []WorktreeEntry{physical, other, aliased}}, os.Stat)
+			if len(got.Worktrees) != 2 {
+				t.Fatalf("got %d entries, want 2: %+v", len(got.Worktrees), got.Worktrees)
+			}
+			kept := got.Worktrees[0]
+			if kept.Name != "1" {
+				kept = got.Worktrees[1]
+			}
+			if want := filepath.Join(tc.wantPath, "1", "repo"); kept.Path != want || kept.LeaseID != tc.wantID {
+				t.Fatalf("kept %s lease %q, want %s lease %q", kept.Path, kept.LeaseID, want, tc.wantID)
+			}
+		})
+	}
+}
+
+func TestCollapseAliasedEntriesLeavesDistinctSlotsAlone(t *testing.T) {
+	poolDir := t.TempDir()
+	otherPool := t.TempDir()
+	makeFakeWorktree(t, poolDir, "1", "repo")
+	makeFakeWorktree(t, otherPool, "1", "repo")
+	state := State{Worktrees: []WorktreeEntry{
+		{Name: "1", Path: filepath.Join(poolDir, "1", "repo"), Leased: true, LeaseID: "a"},
+		{Name: "1", Path: filepath.Join(otherPool, "1", "repo")},
+		{Name: "1", Path: filepath.Join(poolDir, "missing", "repo")},
+	}}
+	if got := collapseAliasedEntries(state, os.Stat); len(got.Worktrees) != 3 {
+		t.Fatalf("merged entries that are different or unprovable directories: %+v", got.Worktrees)
+	}
+}
+
+func TestReadStateDropsFreeTwinOfLeasedSlot(t *testing.T) {
+	poolDir, alias := aliasedPool(t)
+	makeFakeWorktree(t, poolDir, "1", "repo")
+	leased := WorktreeEntry{Name: "1", Path: filepath.Join(poolDir, "1", "repo"), CreatedAt: time.Now().Add(-time.Hour).UTC(),
+		Leased: true, LeaseID: "lease-1", LeaseHolder: "session-a", LeasedAt: time.Now().Add(-time.Hour).UTC()}
+	twin := WorktreeEntry{Name: "1", Path: filepath.Join(alias, "1", "repo"), CreatedAt: time.Now().UTC()}
+	setSeedInventory(&leased, nil, true)
+	setSeedInventory(&twin, nil, true)
+	if err := WriteState(poolDir, State{Worktrees: []WorktreeEntry{leased, twin}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{poolDir, alias} {
+		got, err := ReadState(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Worktrees) != 1 || !got.Worktrees[0].Leased || got.Worktrees[0].LeaseID != "lease-1" || got.Worktrees[0].Path != leased.Path {
+			t.Fatalf("ReadState(%s) = %+v, want only the leased entry", root, got.Worktrees)
+		}
 	}
 }
