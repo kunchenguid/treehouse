@@ -174,6 +174,8 @@ func ReadState(poolDir string) (State, error) {
 // a free twin that Acquire would hand out. Aliases share the slot name, so only
 // entries whose names repeat are statted. The entry kept is the most protective
 // one (see aliasRank); its own path spelling and reservation are preserved.
+// Only `return` clears an ordinary lease, so every member holding one is kept:
+// twins leased to two sessions stay separate until each holder returns its own.
 func collapseAliasedEntries(s State, stat func(string) (os.FileInfo, error)) State {
 	byName := make(map[string]int, len(s.Worktrees))
 	for _, wt := range s.Worktrees {
@@ -215,14 +217,9 @@ func collapseAliasedEntries(s State, stat func(string) (os.FileInfo, error)) Sta
 				keep = member.index
 			}
 		}
-		kept := s.Worktrees[keep]
 		for _, member := range group {
-			if member.index == keep {
-				continue
-			}
-			drop[member.index] = true
-			if other := s.Worktrees[member.index]; other.Leased && other.LeaseID != "" && other.LeaseID != kept.LeaseID {
-				fmt.Fprintf(os.Stderr, "treehouse: WARNING: %s was also recorded as %s with its own lease (%s); keeping the lease on %s - verify who is using it before returning it\n", kept.Path, other.Path, other.LeaseID, kept.Path)
+			if member.index != keep && !holdsOrdinaryLease(s.Worktrees[member.index]) {
+				drop[member.index] = true
 			}
 		}
 	}
@@ -249,7 +246,7 @@ func aliasRank(a, b WorktreeEntry) bool {
 		switch {
 		case wt.Destroying:
 			return 5
-		case wt.Leased && !IsQuarantinedLeaseHolder(wt.LeaseHolder):
+		case holdsOrdinaryLease(wt):
 			return 4
 		case wt.Leased:
 			return 3
@@ -263,6 +260,12 @@ func aliasRank(a, b WorktreeEntry) bool {
 		return sa > sb
 	}
 	return a.CreatedAt.Before(b.CreatedAt)
+}
+
+// holdsOrdinaryLease reports whether wt carries a lease a holder took, as
+// opposed to a quarantine treehouse placed on it.
+func holdsOrdinaryLease(wt WorktreeEntry) bool {
+	return wt.Leased && !IsQuarantinedLeaseHolder(wt.LeaseHolder)
 }
 
 func hasSeedState(wt WorktreeEntry) bool {

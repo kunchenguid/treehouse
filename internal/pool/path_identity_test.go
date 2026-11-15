@@ -164,7 +164,11 @@ func TestReleasePathIdentity(t *testing.T) {
 // for a symlinked root or a second mount of the same filesystem.
 func aliasedPool(t *testing.T) (string, string) {
 	t.Helper()
-	poolDir := t.TempDir()
+	return aliasedPoolOf(t, t.TempDir())
+}
+
+func aliasedPoolOf(t *testing.T, poolDir string) (string, string) {
+	t.Helper()
 	alias := filepath.Join(t.TempDir(), "pool")
 	if err := os.Symlink(poolDir, alias); err != nil {
 		t.Skipf("directory symlinks unavailable: %v", err)
@@ -255,5 +259,104 @@ func TestReadStateDropsFreeTwinOfLeasedSlot(t *testing.T) {
 		if len(got.Worktrees) != 1 || !got.Worktrees[0].Leased || got.Worktrees[0].LeaseID != "lease-1" || got.Worktrees[0].Path != leased.Path {
 			t.Fatalf("ReadState(%s) = %+v, want only the leased entry", root, got.Worktrees)
 		}
+	}
+}
+
+func TestCollapseAliasedEntriesKeepsEveryOrdinaryLease(t *testing.T) {
+	poolDir, alias := aliasedPool(t)
+	_, secondAlias := aliasedPoolOf(t, poolDir)
+	makeFakeWorktree(t, poolDir, "1", "repo")
+	created := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	state := State{Worktrees: []WorktreeEntry{
+		{Name: "1", Path: filepath.Join(poolDir, "1", "repo"), Leased: true, LeaseID: "a", LeaseHolder: "session-a", CreatedAt: created},
+		{Name: "1", Path: filepath.Join(secondAlias, "1", "repo"), CreatedAt: created.Add(time.Hour)},
+		{Name: "1", Path: filepath.Join(alias, "1", "repo"), Leased: true, LeaseID: "b", LeaseHolder: "session-b", CreatedAt: created.Add(2 * time.Hour)},
+	}}
+	got := collapseAliasedEntries(state, os.Stat)
+	if len(got.Worktrees) != 2 {
+		t.Fatalf("got %d entries, want the two leases: %+v", len(got.Worktrees), got.Worktrees)
+	}
+	for i, want := range []WorktreeEntry{state.Worktrees[0], state.Worktrees[2]} {
+		if entry := got.Worktrees[i]; entry.Path != want.Path || !entry.Leased || entry.LeaseID != want.LeaseID || entry.LeaseHolder != want.LeaseHolder {
+			t.Fatalf("entry %d = %+v, want the lease %q on %s", i, entry, want.LeaseID, want.Path)
+		}
+	}
+}
+
+func TestCollapseAliasedEntriesStatsOnlyRepeatedSlotNames(t *testing.T) {
+	poolDir, alias := aliasedPool(t)
+	for _, name := range []string{"1", "2", "3"} {
+		makeFakeWorktree(t, poolDir, name, "repo")
+	}
+	entry := func(root, name string) WorktreeEntry {
+		return WorktreeEntry{Name: name, Path: filepath.Join(root, name, "repo")}
+	}
+	for _, tc := range []struct {
+		name      string
+		state     State
+		wantStats map[string]int
+	}{
+		{"unique names", State{Worktrees: []WorktreeEntry{entry(poolDir, "1"), entry(alias, "2"), entry(poolDir, "3")}}, map[string]int{}},
+		{"one repeated name", State{Worktrees: []WorktreeEntry{entry(poolDir, "1"), entry(poolDir, "2"), entry(alias, "2"), entry(poolDir, "3")}},
+			map[string]int{filepath.Join(poolDir, "2", "repo"): 1, filepath.Join(alias, "2", "repo"): 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := make(map[string]int)
+			collapseAliasedEntries(tc.state, func(path string) (os.FileInfo, error) {
+				calls[path]++
+				return os.Stat(path)
+			})
+			if len(calls) != len(tc.wantStats) {
+				t.Fatalf("statted %v, want %v", calls, tc.wantStats)
+			}
+			for path, want := range tc.wantStats {
+				if calls[path] != want {
+					t.Errorf("%s statted %d times, want %d", path, calls[path], want)
+				}
+			}
+		})
+	}
+}
+
+func TestReturnOfDoublyLeasedSlotClearsOnlyItsOwnLease(t *testing.T) {
+	repoDir, _ := setupRepo(t)
+	poolDir := filepath.Join(t.TempDir(), "pool")
+	if err := os.MkdirAll(poolDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, alias := aliasedPoolOf(t, poolDir)
+	first, err := AcquireLeaseInfo(repoDir, poolDir, 1, nil, "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(poolDir, first.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := ReadState(poolDir)
+	if err != nil || len(state.Worktrees) != 1 {
+		t.Fatalf("state after acquire: %+v, %v", state, err)
+	}
+	twin := state.Worktrees[0]
+	twin.Path, twin.LeaseID, twin.LeaseHolder = filepath.Join(alias, rel), "lease-b", "session-b"
+	setSeedInventory(&twin, nil, true)
+	state.Worktrees = append(state.Worktrees, twin)
+	if err := WriteState(poolDir, state); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err = ReadState(poolDir)
+	if err != nil || len(state.Worktrees) != 2 || state.Worktrees[0].LeaseID != first.LeaseID || state.Worktrees[1].LeaseID != "lease-b" {
+		t.Fatalf("read dropped a lease only its holder may return: %+v, %v", state.Worktrees, err)
+	}
+	if err := Release(alias, twin.Path); err != nil {
+		t.Fatal(err)
+	}
+	state, err = ReadState(poolDir)
+	if err != nil || len(state.Worktrees) != 1 {
+		t.Fatalf("state after session-b returned: %+v, %v", state.Worktrees, err)
+	}
+	if kept := state.Worktrees[0]; kept.Path != first.Path || !kept.Leased || kept.LeaseID != first.LeaseID || kept.LeaseHolder != "session-a" {
+		t.Fatalf("session-b's return changed session-a's lease: %+v", kept)
 	}
 }
