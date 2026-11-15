@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -236,6 +237,86 @@ func TestSeedWorktreeManifestOverrideAndCleanup(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(wtPath, "default.seed")); !os.IsNotExist(err) {
 		t.Fatalf("empty override fell back to committed selection: %v", err)
+	}
+}
+
+func TestSeedWorktreePersonalLayersBothGitStores(t *testing.T) {
+	requireJJ(t)
+	for _, mode := range []string{"non-colocated", "colocated"} {
+		t.Run(mode, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
+			t.Setenv("GIT_CONFIG_COUNT", "0")
+			isolateJJConfig(t)
+			repo := filepath.Join(t.TempDir(), "repo")
+			args := []string{"git", "init", repo}
+			if mode == "colocated" {
+				args = append(args, "--colocate")
+			}
+			mustJJ(t, "", args...)
+			writeFile(t, filepath.Join(repo, ".gitignore"), "*.seed\n")
+			writeFile(t, filepath.Join(repo, ".worktreeinclude"), "repository.seed\n!veto.seed\n")
+			mustJJ(t, repo, "commit", "-m", "repository policy")
+			mustJJ(t, repo, "bookmark", "create", "main", "-r", "@-")
+			path := addWorkspace(t, repo)
+			// Change the source revision without changing the destination policy.
+			writeFile(t, filepath.Join(repo, ".worktreeinclude"), "wrong-revision.seed\n")
+			mustJJ(t, repo, "commit", "-m", "source policy only")
+			store := mustJJ(t, repo, "git", "root", "--ignore-working-copy")
+			personal := filepath.Join(home, "personal include")
+			writeFile(t, personal, "user.seed\nveto.seed")
+			mustGit(t, repo, "--git-dir="+store, "config", "worktree.includeFile", personal)
+			info := filepath.Join(store, "info")
+			if err := os.MkdirAll(info, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(info, "worktreeinclude"), "clone.seed\n")
+			for _, name := range []string{"repository.seed", "user.seed", "clone.seed", "veto.seed", "wrong-revision.seed"} {
+				writeFile(t, filepath.Join(repo, name), name+"\n")
+			}
+			seeded, err := New().SeedWorktree(repo, path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"clone.seed", "repository.seed", "user.seed"}
+			slices.Sort(seeded)
+			if !slices.Equal(seeded, want) {
+				t.Fatalf("seeded paths %q, want %q", seeded, want)
+			}
+			for _, name := range seeded {
+				data, err := os.ReadFile(filepath.Join(path, name))
+				if err != nil || string(data) != name+"\n" {
+					t.Fatalf("seed %s = %q, %v", name, data, err)
+				}
+			}
+			// A real jj snapshot must leave the new ignored personal seeds untracked.
+			if dirty, err := New().IsDirty(path); err != nil || dirty {
+				t.Fatalf("seeded workspace dirty = %t, %v", dirty, err)
+			}
+			writeFile(t, filepath.Join(path, "unmanaged.seed"), "keep\n")
+			if err := os.Remove(personal); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(filepath.Join(info, "worktreeinclude")); err != nil {
+				t.Fatal(err)
+			}
+			if err := New().ResetWorktreeWithSeededPaths(path, "main", seeded); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range seeded {
+				if _, err := os.Stat(filepath.Join(path, name)); !os.IsNotExist(err) {
+					t.Fatalf("seed %s survived authenticated cleanup: %v", name, err)
+				}
+			}
+			data, err := os.ReadFile(filepath.Join(path, "unmanaged.seed"))
+			if err != nil || string(data) != "keep\n" {
+				t.Fatalf("unmanaged ignored file = %q, %v", data, err)
+			}
+		})
 	}
 }
 
