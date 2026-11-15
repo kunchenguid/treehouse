@@ -203,6 +203,12 @@ func TestCollapseAliasedEntriesKeepsTheReservation(t *testing.T) {
 		{"recovered lease beats free twin",
 			WorktreeEntry{CreatedAt: older},
 			WorktreeEntry{Leased: true, LeaseHolder: RecoveredLeaseHolder, CreatedAt: newer}, alias, ""},
+		{"interrupted acquisition beats older recovered lease",
+			WorktreeEntry{Leased: true, LeaseHolder: RecoveredLeaseHolder, CreatedAt: older},
+			WorktreeEntry{Leased: true, LeaseHolder: acquisitionIncompleteLeaseHolder, CreatedAt: newer}, alias, ""},
+		{"interrupted acquisition beats newer recovered lease",
+			WorktreeEntry{Leased: true, LeaseHolder: acquisitionIncompleteLeaseHolder, CreatedAt: older},
+			WorktreeEntry{Leased: true, LeaseHolder: RecoveredLeaseHolder, CreatedAt: newer}, poolDir, ""},
 		{"two free entries keep the older",
 			WorktreeEntry{CreatedAt: newer},
 			WorktreeEntry{CreatedAt: older}, alias, ""},
@@ -360,6 +366,38 @@ func TestReturnOfDoublyLeasedSlotClearsOnlyItsOwnLease(t *testing.T) {
 	}
 	if kept := state.Worktrees[0]; kept.Path != first.Path || !kept.Leased || kept.LeaseID != first.LeaseID || kept.LeaseHolder != "session-a" {
 		t.Fatalf("session-b's return changed session-a's lease: %+v", kept)
+	}
+}
+
+// README "Recovering missing pool state": an interrupted acquisition is never
+// freed automatically. A read that kept the older twin instead would quarantine
+// it as recovered once the state key is gone, and the recovery pass before the
+// next command would free a clean slot and hand out the unfinished worktree.
+func TestInterruptedAcquisitionOnTwinIsNotFreedByRecovery(t *testing.T) {
+	repoDir, poolDir := setupLocalRepo(t)
+	path := idleSlots(t, repoDir, poolDir, 1)[0]
+	_, alias := aliasedPoolOf(t, poolDir)
+	rel, err := filepath.Rel(poolDir, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := entryFor(t, poolDir, path)
+	twin := WorktreeEntry{Name: original.Name, Path: filepath.Join(alias, rel), CreatedAt: original.CreatedAt.Add(time.Hour),
+		Leased: true, LeaseHolder: acquisitionIncompleteLeaseHolder, LeasedAt: original.CreatedAt.Add(time.Hour)}
+	writeRawState(t, poolDir, State{Version: stateVersion, Worktrees: []WorktreeEntry{original, twin}})
+	if err := os.Remove(stateKeyPath(poolDir)); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := AcquireLease(repoDir, poolDir, 1, nil, "session-b"); err == nil {
+		t.Fatalf("handed out %s, the worktree of an interrupted acquisition", got)
+	}
+	state, err := ReadState(poolDir)
+	if err != nil || len(state.Worktrees) != 1 {
+		t.Fatalf("state after the refused acquire: %+v, %v", state.Worktrees, err)
+	}
+	if kept := state.Worktrees[0]; kept.Path != twin.Path || !kept.Leased || kept.LeaseHolder != acquisitionIncompleteLeaseHolder {
+		t.Fatalf("the interrupted acquisition lost its quarantine: %+v", kept)
 	}
 }
 
