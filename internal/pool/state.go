@@ -164,7 +164,118 @@ func ReadState(poolDir string) (State, error) {
 		}
 	}
 	s.Version = stateVersion
-	return recoverMissingStateEntries(poolDir, s)
+	return recoverMissingStateEntries(poolDir, collapseAliasedEntries(s, os.Stat))
+}
+
+// collapseAliasedEntries merges entries that record one directory under two
+// spellings. Releases before the identity-aware recovery scan registered a slot
+// again when the pool was reached through another root (a symlink or a second
+// mount of the same filesystem), so one directory could carry a leased entry and
+// a free twin that Acquire would hand out. Aliases share the slot name, so only
+// entries whose names repeat are statted. The entry kept is the most protective
+// one (see aliasRank); its own path spelling and reservation are preserved.
+// A reservation is cleared only explicitly, so every member holding one (an
+// ordinary lease or a live owner) is kept: twins reserved by two sessions stay
+// separate until each holder releases its own, and an interrupted acquisition
+// stays quarantined until it is returned by name.
+func collapseAliasedEntries(s State, stat func(string) (os.FileInfo, error)) State {
+	byName := make(map[string]int, len(s.Worktrees))
+	for _, wt := range s.Worktrees {
+		byName[wt.Name]++
+	}
+	type identified struct {
+		index int
+		info  os.FileInfo
+	}
+	var groups [][]identified
+	for i, wt := range s.Worktrees {
+		if byName[wt.Name] < 2 {
+			continue
+		}
+		info, err := stat(wt.Path)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		placed := false
+		for g := range groups {
+			if os.SameFile(groups[g][0].info, info) {
+				groups[g] = append(groups[g], identified{i, info})
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			groups = append(groups, []identified{{i, info}})
+		}
+	}
+	drop := make(map[int]bool)
+	for _, group := range groups {
+		if len(group) < 2 {
+			continue
+		}
+		keep := group[0].index
+		for _, member := range group[1:] {
+			if aliasRank(s.Worktrees[member.index], s.Worktrees[keep]) {
+				keep = member.index
+			}
+		}
+		for _, member := range group {
+			if member.index != keep && !holdsReservation(s.Worktrees[member.index]) {
+				drop[member.index] = true
+			}
+		}
+	}
+	if len(drop) == 0 {
+		return s
+	}
+	merged := s.Worktrees[:0:0]
+	for i, wt := range s.Worktrees {
+		if !drop[i] {
+			merged = append(merged, wt)
+		}
+	}
+	s.Worktrees = merged
+	return s
+}
+
+// aliasRank reports whether a should be kept over b when both record the same
+// directory: an in-progress destroy first, then an ordinary lease over a
+// recovered one, any lease over a live owner reservation, any reservation over
+// none, and finally the older entry, so a reservation is never dropped for an
+// idle twin. An owner whose process is gone reserves nothing, as in healState.
+func aliasRank(a, b WorktreeEntry) bool {
+	score := func(wt WorktreeEntry) int {
+		alive := ownerAlive(wt)
+		switch {
+		case wt.Destroying && alive:
+			return 5
+		case holdsOrdinaryLease(wt):
+			return 4
+		case wt.Leased:
+			return 3
+		case alive:
+			return 2
+		default:
+			return 1
+		}
+	}
+	if sa, sb := score(a), score(b); sa != sb {
+		return sa > sb
+	}
+	return a.CreatedAt.Before(b.CreatedAt)
+}
+
+// holdsOrdinaryLease reports whether wt carries a lease only a return clears:
+// a holder's own, or the quarantine of an interrupted or failed acquisition.
+// A recovered lease is the one kind treehouse frees by itself.
+func holdsOrdinaryLease(wt WorktreeEntry) bool {
+	return wt.Leased && wt.LeaseHolder != RecoveredLeaseHolder
+}
+
+// holdsReservation reports whether wt is reserved until someone releases it
+// explicitly: an ordinary lease, or a live `get` or destroy process.
+func holdsReservation(wt WorktreeEntry) bool {
+	return holdsOrdinaryLease(wt) || ownerAlive(wt)
 }
 
 func hasSeedState(wt WorktreeEntry) bool {

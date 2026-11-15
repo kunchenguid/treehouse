@@ -345,7 +345,7 @@ A name is the slot's own identity and belongs to it for its whole lifetime; it i
 
 An argument is read as a path first and only then as a name, so every argument that resolves today keeps resolving to exactly the same worktree. An argument holding a path separator is a path and only a path: its failure keeps reporting the path diagnosis rather than a misleading "no worktree named".
 
-Paths through a symlinked pool root and its physical location identify the same registered worktree. `return` and single-worktree `destroy` accept either spelling, while `status` keeps the path recorded in pool state. Changing only the root spelling does not create a second state entry or replace the existing lease.
+Paths through a symlinked pool root and its physical location identify the same registered worktree. `return` and single-worktree `destroy` accept either spelling, while `status` keeps the path recorded in pool state. Changing only the root spelling does not create a second state entry or replace the existing lease. A state file written by an earlier release can record one worktree under both spellings; treehouse merges those entries each time it reads pool state. The most protective entry stays (a running `destroy`, then an ordinary lease, a recovered lease, a running `get`, and finally the oldest entry), along with every other entry that has a holder of its own (an ordinary lease, or a running `get` or `destroy`), so each session's `return` still clears only its own. The quarantine of an interrupted or failed acquisition counts as an ordinary lease here: it stays until it is returned by name. The remaining copies are dropped.
 
 #### Returning everything at once
 
