@@ -812,7 +812,7 @@ func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean boo
 		return fmt.Errorf("worktree reset requires resolved commit IDs")
 	}
 	var cleanupIdentity os.FileInfo
-	if cleanSeeds && seededPaths != nil {
+	if verify != nil || cleanSeeds && seededPaths != nil {
 		worktree, err := openDirectoryNoFollow(worktreePath)
 		if err != nil {
 			return err
@@ -851,6 +851,15 @@ func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean boo
 		}
 	}
 	rollback := func(step string, cause error) error {
+		if verify == nil {
+			return fmt.Errorf("%s failed: %w", step, cause)
+		}
+		root, worktree, err := openCleanupRoot(worktreePath, cleanupIdentity, authenticateLinkedWorktree)
+		if err != nil {
+			return fmt.Errorf("%s failed: %w (restore skipped because worktree was replaced: %v)", step, cause, err)
+		}
+		root.Close()
+		worktree.Close()
 		_, restoreErr := runGit(worktreePath, "read-tree", "--reset", "-u", expectedHead)
 		if restoreErr != nil {
 			return fmt.Errorf("%s failed: %w (also could not restore HEAD %s: %v)", step, cause, expectedHead, restoreErr)
