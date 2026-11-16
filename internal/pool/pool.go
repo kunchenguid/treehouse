@@ -1145,10 +1145,16 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 				branch = requested
 			}
 		}
+		var cleanResetRef, cleanHead string
 		if preconditions.RequireClean {
 			if err := checkClean(wt, branch); err != nil {
 				return err
 			}
+			safe, ref, head, err := vcs.IsWorktreeSafeToReset(worktreePath, branch)
+			if err != nil || !safe {
+				return &NotCleanError{Path: worktreePath, Blocker: BlockedByUnpushed, Detail: "cannot verify the reset target is safe"}
+			}
+			cleanResetRef, cleanHead = ref, head
 		}
 		if beforeReset != nil {
 			if err := beforeReset(); err != nil {
@@ -1163,11 +1169,17 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 			if !wt.SeedInventoryKnown {
 				seededPaths = nil
 			}
-			if err := vcs.ResetWorktreeWithSeededPaths(worktreePath, branch, seededPaths); err != nil {
+			var resetErr error
+			if preconditions.RequireClean {
+				resetErr = vcs.ResetWorktreeToRefWithSeededPaths(worktreePath, cleanResetRef, cleanHead, true, seededPaths)
+			} else {
+				resetErr = vcs.ResetWorktreeWithSeededPaths(worktreePath, branch, seededPaths)
+			}
+			if resetErr != nil {
 				// The base resolved when the caller checked it but not now (it
 				// was deleted in between). Park on the default rather than
 				// strand the reservation with the processes already killed.
-				if fallback == "" || fallback == branch {
+				if preconditions.RequireClean || fallback == "" || fallback == branch {
 					return err
 				}
 				fmt.Fprintf(os.Stderr, "🌳 Warning: cannot park the worktree on %q (%v); using %s instead.\n", branch, err, fallback)
