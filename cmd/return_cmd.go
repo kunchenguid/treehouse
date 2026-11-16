@@ -88,11 +88,14 @@ them and return each worktree by name.
   treehouse return <path|name> --if-clean
 
 --if-clean returns the worktree only if nothing would be lost: no live
-process in it, no uncommitted changes (untracked files included), and no
-commit that neither a remote-tracking ref nor the base branch it is parked on
-contains. The checks run under the same pool lock as the reset, after any
---if-lease-* condition matched. It never prompts and never terminates
-processes. On a refusal the worktree and its lease are left exactly as found,
+process in it, no uncommitted changes (untracked files included), no seeded
+file that differs from the file it was copied from, and no commit that
+neither a remote-tracking ref nor the base branch it is parked on contains.
+It records HEAD first and judges every check against it, under the same pool
+lock as the reset, after any --if-lease-* condition matched, then checks again
+immediately before the reset. It changes nothing until every check passes:
+it never prompts, terminates processes, or runs a checkout. On a refusal the
+worktree, its checkout, and its lease are left exactly as found,
 the exit status is 4, and stdout carries one word naming the blocker:
 processes, dirty, or unpushed. It cannot be combined with --force or --all.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -195,24 +198,13 @@ func releaseWorktree(target returnTarget, preconditions pool.ReleasePrecondition
 			return err
 		}
 	}
-	return pool.ReleaseConditional(target.poolDir, target.path, returnBaseBranch(target.path), preconditions, func() error {
-		if !preconditions.RequireClean {
-			return finalizeWorktreeReturn(target.path)
-		}
-		if !returnForce && vcs.WorktreeBackendName(target.path) != "" {
-			if err := vcs.DetachWorktree(target.path); err != nil {
-				return fmt.Errorf("failed to detach worktree HEAD: %w", err)
-			}
-		}
-		procs, err := unprotectedProcessesInWorktree(target.path)
-		if err != nil {
-			return &pool.NotCleanError{Path: target.path, Blocker: pool.BlockedByProcesses, Detail: "cannot verify worktree processes"}
-		}
-		if len(procs) > 0 {
-			return &pool.NotCleanError{Path: target.path, Blocker: pool.BlockedByProcesses, Detail: "worktree has live processes"}
-		}
-		return nil
-	})
+	// A clean-only release must change nothing until it has verified
+	// everything, so it gets no detach-and-terminate step.
+	var finalize func() error
+	if !preconditions.RequireClean {
+		finalize = func() error { return finalizeWorktreeReturn(target.path) }
+	}
+	return pool.ReleaseConditional(target.poolDir, target.path, returnBaseBranch(target.path), preconditions, finalize)
 }
 
 // bulkReturnPreconditions carries the LEASE the `--all` listing observed into

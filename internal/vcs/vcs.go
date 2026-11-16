@@ -111,11 +111,16 @@ type Backend interface {
 	// returns "" when there are none. It fails closed: anything it cannot
 	// verify is described rather than reported clean.
 	UncommittedWork(worktreePath string) string
-	// IsHeadLanded reports whether every commit the worktree's head reaches is
-	// contained in a remote-tracking ref or in the local base branch, so a
-	// reset to base orphans no commit. It fails closed (false) when it cannot
-	// verify.
-	IsHeadLanded(worktreePath, base string) bool
+	// IsCommitLanded reports whether every commit reachable from commit, the
+	// worktree head recorded by IsWorktreeSafeToReset, is contained in a
+	// remote-tracking ref or in the local base branch, so a reset to base
+	// orphans no commit. It fails closed (false) when it cannot verify.
+	IsCommitLanded(worktreePath, commit, base string) bool
+	// ResetWorktreeToRefVerified is ResetWorktreeToRefWithSeededPaths with
+	// requireClean, plus verify, which runs after the HEAD comparison and
+	// immediately before the first destructive step (for git, while holding
+	// HEAD's lock). An error from verify aborts the reset with nothing changed.
+	ResetWorktreeToRefVerified(worktreePath, ref, expectedHead string, seededPaths []string, verify func() error) error
 }
 
 var (
@@ -254,6 +259,11 @@ func normalizeVCSNameFrom(source, v string) string {
 // RecoveryWorktree verifies a Git checkout and returns only root-level untracked paths.
 func RecoveryWorktree(path string) ([]string, string) {
 	return gitvcs.RecoveryWorktree(path)
+}
+
+// RecoveryHeadContained checks whether HEAD is reachable from a remote ref or base.
+func RecoveryHeadContained(path, base string) bool {
+	return gitvcs.RecoveryHeadContained(path, base)
 }
 
 // FindRepoRoot returns the repository or worktree root for the current
@@ -591,6 +601,16 @@ func ResetWorktreeToRefWithSeededPaths(worktreePath, ref, expectedHead string, r
 	return b.ResetWorktreeToRefWithSeededPaths(worktreePath, ref, expectedHead, requireClean, seededPaths)
 }
 
+// ResetWorktreeToRefVerified is the guarded reset with verify run immediately
+// before the first destructive step; see Backend.ResetWorktreeToRefVerified.
+func ResetWorktreeToRefVerified(worktreePath, ref, expectedHead string, seededPaths []string, verify func() error) error {
+	b, err := destructiveBackendForWorktree(worktreePath)
+	if err != nil {
+		return err
+	}
+	return b.ResetWorktreeToRefVerified(worktreePath, ref, expectedHead, seededPaths, verify)
+}
+
 // IsWorktreeSafeToReset reports whether worktreePath can be reset to branch
 // without discarding committed work and returns the immutable reset target and
 // the worktree HEAD recorded at check time.
@@ -676,13 +696,13 @@ func UncommittedWork(worktreePath string) string {
 	return b.UncommittedWork(worktreePath)
 }
 
-// IsHeadLanded reports whether every commit the slot's head reaches is
+// IsCommitLanded reports whether every commit reachable from commit is
 // contained in a remote-tracking ref or the local base branch. Like
 // UncommittedWork it dispatches only on the slot's own marker and fails
 // closed.
-func IsHeadLanded(worktreePath, base string) bool {
+func IsCommitLanded(worktreePath, commit, base string) bool {
 	b := slotMarkerBackend(worktreePath)
-	return b != nil && b.IsHeadLanded(worktreePath, base)
+	return b != nil && b.IsCommitLanded(worktreePath, commit, base)
 }
 
 // ShortHash returns a short stable hash of s, used for pool directory naming.

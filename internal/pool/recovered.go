@@ -87,7 +87,7 @@ func headContained(wt *WorktreeEntry) bool {
 	if base == "" {
 		base, _ = vcs.DefaultBranchForWorktree(wt.Path)
 	}
-	return vcs.IsHeadLanded(wt.Path, base)
+	return vcs.RecoveryHeadContained(wt.Path, base)
 }
 
 // recoveryBackupDir is the one backup folder a slot's recovery ever uses. It is

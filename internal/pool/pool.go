@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -995,12 +996,16 @@ type ReleasePreconditions struct {
 	// including incomplete acquisitions. Bulk release checks it under the state
 	// lock so quarantine applied after listing still requires a named return.
 	RefuseRecovered bool
-	// RequireClean refuses, with a *NotCleanError, a worktree that has a live
-	// process, uncommitted work, or a head not landed on a remote-tracking ref
-	// or the base it would be parked on. Only ReleaseConditional checks it: it
-	// reads the worktree rather than the state entry, so it runs under the
-	// release's state lock immediately before beforeReset, so no other
-	// treehouse operation can come between the verdict and the reset.
+	// RequireClean releases only a worktree whose reset would lose nothing:
+	// no live process, no uncommitted or seeded-file change, and a head
+	// landed on a remote-tracking ref or the base it would be parked on. Only
+	// ReleaseConditional judges it, under its state lock: it snapshots HEAD
+	// and the reset target, judges every check against that snapshot without
+	// changing anything, and judges them again immediately before the reset.
+	// Any refusal is a *NotCleanError that left the worktree, its checkout,
+	// and any lease exactly as they were found. Such a release never runs
+	// beforeReset: terminating processes or detaching HEAD is exactly what it
+	// must not do.
 	RequireClean bool
 }
 
@@ -1026,11 +1031,64 @@ func (e *NotCleanError) Error() string {
 	return fmt.Sprintf("worktree %s is not clean (%s): %s", e.Path, e.Blocker, e.Detail)
 }
 
+// resetIfClean is the RequireClean reset: snapshot, verify against the
+// snapshot, then act. HEAD and the reset target are recorded first, so a
+// commit that lands while the checks run moves HEAD off the snapshot and the
+// guarded reset refuses it instead of resetting it away. Nothing is changed -
+// no detach, no hook, no signal - until every check has passed, and the guarded
+// reset runs them all again after it has locked and compared HEAD, immediately
+// before it removes or rewrites anything.
+func resetIfClean(wt *WorktreeEntry, base string, seededPaths []string) error {
+	if vcs.WorktreeBackendName(wt.Path) == "" {
+		return &NotCleanError{Path: wt.Path, Blocker: BlockedByDirty, Detail: "its VCS marker is missing or unreadable, so its contents cannot be verified"}
+	}
+	snapshot := func() (ref, head string, err error) {
+		// Only the resolved target and the recorded HEAD are used; whether HEAD
+		// is merged into the base is deliberately not required, because work
+		// that landed on any remote-tracking ref is safe to reset away from.
+		_, ref, head, err = vcs.IsWorktreeSafeToReset(wt.Path, base)
+		if err == nil && (ref == "" || head == "") {
+			err = fmt.Errorf("cannot resolve HEAD or the reset target of %s", wt.Path)
+		}
+		return ref, head, err
+	}
+	ref, head, err := snapshot()
+	if err != nil {
+		return err
+	}
+	verify := func() error { return checkClean(wt, base, head, seededPaths) }
+	if err := verify(); err != nil {
+		return err
+	}
+	resetErr := vcs.ResetWorktreeToRefVerified(wt.Path, ref, head, seededPaths, verify)
+	if resetErr == nil {
+		return nil
+	}
+	var notClean *NotCleanError
+	if errors.As(resetErr, &notClean) {
+		return resetErr
+	}
+	// The guarded reset refused before changing anything. When the worktree
+	// moved underneath it, name what the move left behind; otherwise report
+	// the failure itself. Neither is ever a success.
+	if _, now, err := snapshot(); err == nil && now != head {
+		if err := checkClean(wt, base, now, seededPaths); err != nil {
+			return err
+		}
+		return fmt.Errorf("HEAD of %s moved during the return (%s to %s); nothing was changed, so retry: %w", wt.Path, head, now, resetErr)
+	}
+	if err := checkClean(wt, base, head, seededPaths); err != nil {
+		return err
+	}
+	return resetErr
+}
+
 // checkClean reports the first reason a reset of wt to base would destroy work
-// or pull a worktree out from under a live process. Processes come first: a
-// worktree something is still writing into has no stable dirtiness to judge.
-// Every check fails closed, so what cannot be verified refuses.
-func checkClean(wt *WorktreeEntry, base string) error {
+// or pull a worktree out from under a live process, judging landedness against
+// head, the recorded snapshot. Processes come first: a worktree something is
+// still writing into has no stable dirtiness to judge. Every check fails
+// closed, so what cannot be verified refuses.
+func checkClean(wt *WorktreeEntry, base, head string, seededPaths []string) error {
 	refuse := func(blocker CleanBlocker, detail string) error {
 		return &NotCleanError{Path: wt.Path, Blocker: blocker, Detail: detail}
 	}
@@ -1051,10 +1109,75 @@ func checkClean(wt *WorktreeEntry, base string) error {
 	if detail := vcs.UncommittedWork(wt.Path); detail != "" {
 		return refuse(BlockedByDirty, detail)
 	}
-	if !vcs.IsHeadLanded(wt.Path, base) {
-		return refuse(BlockedByUnpushed, "its head has commits that no remote-tracking ref or the base branch contains, or containment cannot be verified")
+	if detail := seededChanges(wt.Path, seededPaths); detail != "" {
+		return refuse(BlockedByDirty, detail)
+	}
+	if !vcs.IsCommitLanded(wt.Path, head, base) {
+		return refuse(BlockedByUnpushed, fmt.Sprintf("HEAD %s has commits that no remote-tracking ref or the base branch contains, or containment cannot be verified", head))
 	}
 	return nil
+}
+
+// seededChanges describes a seeded file the reset would delete although it no
+// longer matches the file it was copied from, or "" when there is none. The
+// reset removes every trusted seeded path without reading it, and the files
+// are ignored, so no dirtiness check sees an edit to one. A seeded file
+// already gone has nothing left to lose; one whose source is gone or
+// unreadable cannot be verified and refuses.
+func seededChanges(worktreePath string, seededPaths []string) string {
+	if len(seededPaths) == 0 {
+		return ""
+	}
+	repoRoot, err := vcs.FindMainRepoRootFrom(worktreePath)
+	if err != nil {
+		return fmt.Sprintf("cannot locate the repository its seeded files were copied from (%v)", err)
+	}
+	source, err := os.OpenRoot(repoRoot)
+	if err != nil {
+		return fmt.Sprintf("cannot open the repository its seeded files were copied from (%v)", err)
+	}
+	defer source.Close()
+	worktree, err := os.OpenRoot(worktreePath)
+	if err != nil {
+		return fmt.Sprintf("cannot open it to verify its seeded files (%v)", err)
+	}
+	defer worktree.Close()
+	for _, name := range seededPaths {
+		rel := filepath.FromSlash(name)
+		copied, err := readSeed(worktree, rel)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Sprintf("cannot verify seeded file %s (%v)", name, err)
+		}
+		original, err := readSeed(source, rel)
+		if err != nil {
+			return fmt.Sprintf("seeded file %s cannot be compared with the file it was copied from (%v)", name, err)
+		}
+		if !bytes.Equal(copied, original) {
+			return fmt.Sprintf("seeded file %s differs from the file it was copied from", name)
+		}
+	}
+	return ""
+}
+
+// readSeed returns what seeding copies for a path: a regular file's bytes or a
+// symlink's target, marked so the two can never compare equal.
+func readSeed(root *os.Root, rel string) ([]byte, error) {
+	info, err := root.Lstat(rel)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case info.Mode().IsRegular():
+		data, err := root.ReadFile(rel)
+		return append([]byte("file:"), data...), err
+	case info.Mode()&os.ModeSymlink != 0:
+		target, err := root.Readlink(rel)
+		return []byte("symlink:" + target), err
+	}
+	return nil, fmt.Errorf("%s is neither a regular file nor a symlink", rel)
 }
 
 // Release resets a managed worktree, clears its short-lived owner reservation or
@@ -1145,44 +1268,34 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 				branch = requested
 			}
 		}
-		var cleanResetRef, cleanHead string
+		seededPaths := wt.SeededPaths
+		if !wt.SeedInventoryKnown {
+			seededPaths = nil
+		}
 		if preconditions.RequireClean {
-			if err := checkClean(wt, branch); err != nil {
+			if err := resetIfClean(wt, branch, seededPaths); err != nil {
 				return err
 			}
-			_, ref, head, err := vcs.IsWorktreeSafeToReset(worktreePath, branch)
-			if err != nil || ref == "" || head == "" {
-				return &NotCleanError{Path: worktreePath, Blocker: BlockedByUnpushed, Detail: "cannot verify the reset target"}
-			}
-			cleanResetRef, cleanHead = ref, head
+			warnUntrustedSeedInventory(wt)
+			wt.BaseBranch = requested
+			releaseEntry(wt)
+			return WriteState(poolDir, state)
 		}
 		if beforeReset != nil {
 			if err := beforeReset(); err != nil {
 				return err
 			}
 		}
-		if !wt.SeedInventoryKnown {
-			fmt.Fprintf(os.Stderr, "🌳 Warning: %s was recovered without a trusted record of the ignored files treehouse seeded into it; any such files are not cleaned up and remain in the worktree.\n", worktreePath)
-		}
+		warnUntrustedSeedInventory(wt)
 		if !markerless {
-			seededPaths := wt.SeededPaths
-			if !wt.SeedInventoryKnown {
-				seededPaths = nil
-			}
-			var resetErr error
-			if preconditions.RequireClean {
-				resetErr = vcs.ResetWorktreeToRefWithSeededPaths(worktreePath, cleanResetRef, cleanHead, true, seededPaths)
-			} else {
-				resetErr = vcs.ResetWorktreeWithSeededPaths(worktreePath, branch, seededPaths)
-			}
-			if resetErr != nil {
+			if err := vcs.ResetWorktreeWithSeededPaths(worktreePath, branch, seededPaths); err != nil {
 				// The base resolved when the caller checked it but not now (it
 				// was deleted in between). Park on the default rather than
 				// strand the reservation with the processes already killed.
-				if preconditions.RequireClean || fallback == "" || fallback == branch {
-					return resetErr
+				if fallback == "" || fallback == branch {
+					return err
 				}
-				fmt.Fprintf(os.Stderr, "🌳 Warning: cannot park the worktree on %q (%v); using %s instead.\n", branch, resetErr, fallback)
+				fmt.Fprintf(os.Stderr, "🌳 Warning: cannot park the worktree on %q (%v); using %s instead.\n", branch, err, fallback)
 				if err := vcs.ResetWorktreeWithSeededPaths(worktreePath, fallback, seededPaths); err != nil {
 					return err
 				}
@@ -1195,6 +1308,12 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 		releaseEntry(wt)
 		return WriteState(poolDir, state)
 	})
+}
+
+func warnUntrustedSeedInventory(wt *WorktreeEntry) {
+	if !wt.SeedInventoryKnown {
+		fmt.Fprintf(os.Stderr, "🌳 Warning: %s was recovered without a trusted record of the ignored files treehouse seeded into it; any such files are not cleaned up and remain in the worktree.\n", wt.Path)
+	}
 }
 
 func releasableWorktree(state *State, worktreePath string, preconditions ReleasePreconditions) (*WorktreeEntry, error) {

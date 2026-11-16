@@ -157,14 +157,19 @@ func TestCleanChecksFailClosedOnMarkerlessSlot(t *testing.T) {
 	if err := os.MkdirAll(slot, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if !IsHeadLanded(repo, "main") || UncommittedWork(repo) != "" {
+	out, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := strings.TrimSpace(string(out))
+	if !IsCommitLanded(repo, head, "main") || UncommittedWork(repo) != "" {
 		t.Fatal("test setup: the enclosing repository must itself read clean and landed")
 	}
 
 	if detail := UncommittedWork(slot); detail == "" {
 		t.Fatal("a markerless slot must not read as free of uncommitted work")
 	}
-	if IsHeadLanded(slot, "main") {
+	if IsCommitLanded(slot, head, "main") {
 		t.Fatal("a markerless slot must not read as landed")
 	}
 }

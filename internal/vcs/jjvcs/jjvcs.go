@@ -585,17 +585,31 @@ func (b *Backend) UncommittedWork(worktreePath string) string {
 	return ""
 }
 
-// IsHeadLanded reports whether every ancestor of the working copy's parents is
-// contained in a remote bookmark or the local base bookmark. The working-copy
-// commit itself is UncommittedWork's concern. Only ancestry counts, exactly
-// like IsHeadMergedIntoRef.
-func (*Backend) IsHeadLanded(worktreePath, base string) bool {
+// IsCommitLanded reports whether every ancestor of the parents of commit, the
+// working-copy commit recorded by IsWorktreeSafeToReset, is contained in a
+// remote bookmark or the local base bookmark. The working-copy commit itself
+// is UncommittedWork's concern. Only ancestry counts, exactly like
+// IsHeadMergedIntoRef.
+func (*Backend) IsCommitLanded(worktreePath, commit, base string) bool {
+	if !isCommitID(commit) {
+		return false
+	}
 	landed := "remote_bookmarks()"
 	if base != "" {
 		landed += fmt.Sprintf(" | present(%s)", base)
 	}
-	out, err := runJJ(worktreePath, "log", "-r", fmt.Sprintf("@- ~ ::(%s)", landed), "--no-graph", "-T", `commit_id ++ "\n"`)
+	out, err := runJJ(worktreePath, "log", "-r", fmt.Sprintf("commit_id(%s)- ~ ::(%s)", commit, landed), "--no-graph", "-T", `commit_id ++ "\n"`)
 	return err == nil && out == ""
+}
+
+// ResetWorktreeToRefVerified runs verify, then the guarded reset. jj takes no
+// lock to hold across both; the reset's own revset still refuses when the
+// working copy changed after verify.
+func (b *Backend) ResetWorktreeToRefVerified(worktreePath, ref, expectedHead string, seededPaths []string, verify func() error) error {
+	if err := verify(); err != nil {
+		return err
+	}
+	return b.ResetWorktreeToRefWithSeededPaths(worktreePath, ref, expectedHead, true, seededPaths)
 }
 
 // branchRef returns the revset to base new or reset worktrees on: whichever

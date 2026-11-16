@@ -795,17 +795,19 @@ func ResetWorktreeWithSeededPaths(worktreePath, branch string, seededPaths []str
 // is updated with read-tree/clean, which do not need the lock; see lockHead
 // for how HEAD itself is committed.
 func ResetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool) error {
-	return resetWorktreeToRef(worktreePath, ref, expectedHead, requireClean, nil, false)
+	return resetWorktreeToRef(worktreePath, ref, expectedHead, requireClean, nil, false, nil)
 }
 
 // ResetWorktreeToRefWithSeededPaths removes the pool's trusted seed inventory
 // before restoring tracked content. A nil inventory does not authorize any
 // ignored-file deletion.
 func ResetWorktreeToRefWithSeededPaths(worktreePath, ref, expectedHead string, requireClean bool, seededPaths []string) error {
-	return resetWorktreeToRef(worktreePath, ref, expectedHead, requireClean, seededPaths, true)
+	return resetWorktreeToRef(worktreePath, ref, expectedHead, requireClean, seededPaths, true, nil)
 }
 
-func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool, seededPaths []string, cleanSeeds bool) error {
+// resetWorktreeToRef runs verify, when non-nil, after HEAD is locked and
+// compared and before anything is removed or rewritten.
+func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool, seededPaths []string, cleanSeeds bool, verify func() error) error {
 	if !isCommitID(expectedHead) || !isCommitID(ref) {
 		return fmt.Errorf("worktree reset requires resolved commit IDs")
 	}
@@ -834,6 +836,11 @@ func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean boo
 		}
 		if dirty {
 			return fmt.Errorf("worktree became dirty after safety check")
+		}
+	}
+	if verify != nil {
+		if err := verify(); err != nil {
+			return err
 		}
 	}
 	if cleanSeeds {
@@ -1662,8 +1669,12 @@ func (*Backend) UncommittedWork(worktreePath string) string {
 	return ""
 }
 
-func (*Backend) IsHeadLanded(worktreePath, base string) bool {
-	return RecoveryHeadContained(worktreePath, base)
+func (*Backend) IsCommitLanded(worktreePath, commit, base string) bool {
+	return isCommitID(commit) && commitContained(worktreePath, commit, base)
+}
+
+func (*Backend) ResetWorktreeToRefVerified(worktreePath, ref, expectedHead string, seededPaths []string, verify func() error) error {
+	return resetWorktreeToRef(worktreePath, ref, expectedHead, true, seededPaths, true, verify)
 }
 
 // IsOriginAccessError reports whether err reads like a failure to reach or

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -121,7 +122,9 @@ func TestReturnIfCleanRefusesUncommittedChanges(t *testing.T) {
 // TestReturnIfCleanRefusesUnpushedCommitsUntilTheyLand covers both commit
 // shapes the issue names: a commit on a detached HEAD, reachable only from the
 // reflog once reset, and one on a branch created in the slot. Pushing the
-// work is what makes the same return succeed.
+// work is what makes the same return succeed. It is pushed to a feature
+// branch, never merged into the base: work on any remote-tracking ref has
+// landed (a Greptile round-2 regression refused exactly this).
 func TestReturnIfCleanRefusesUnpushedCommitsUntilTheyLand(t *testing.T) {
 	for _, branch := range []string{"", "agent/feature"} {
 		name := "detached"
@@ -354,4 +357,154 @@ func TestJJReturnIfClean(t *testing.T) {
 		stdout, stderr, code := returnLeaseIfClean(t, repoDir, homeDir, lease)
 		assertReturnedAvailable(t, repoDir, homeDir, lease, stdout, stderr, code)
 	})
+}
+
+// seededRepo is setupTestRepo plus a committed .worktreeinclude that seeds one
+// ignored file, local.seed, into every acquired worktree.
+func seededRepo(t *testing.T) (repoDir, homeDir string) {
+	t.Helper()
+	repoDir, homeDir = setupTestRepo(t)
+	gitCmd(t, repoDir, "config", "core.autocrlf", "false")
+	for name, contents := range map[string]string{
+		".gitignore":       "*.seed\n",
+		".worktreeinclude": "local.seed\n",
+		"local.seed":       "secret=1\n",
+	} {
+		if err := os.WriteFile(filepath.Join(repoDir, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCmd(t, repoDir, "add", ".gitignore", ".worktreeinclude")
+	gitCmd(t, repoDir, "commit", "-m", "seed local.seed")
+	gitCmd(t, repoDir, "push", "origin", "main")
+	return repoDir, homeDir
+}
+
+// Greptile, rounds 1 to 3: the reset deletes every seeded file without reading
+// it, and seeded files are ignored, so an edit to one was invisible to the
+// dirtiness checks and deleted by a successful --if-clean.
+func TestReturnIfCleanRefusesAnEditedOrUnverifiableSeededFile(t *testing.T) {
+	t.Run("edited", func(t *testing.T) {
+		repoDir, homeDir := seededRepo(t)
+		lease := acquireLeaseJSON(t, repoDir, homeDir, "dibs")
+		seed := filepath.Join(lease.Path, "local.seed")
+		if err := os.WriteFile(seed, []byte("secret=2\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, code := returnLeaseIfClean(t, repoDir, homeDir, lease)
+		assertRefusedAndKept(t, repoDir, homeDir, lease, pool.BlockedByDirty, stdout, stderr, code)
+		if got, err := os.ReadFile(seed); err != nil || string(got) != "secret=2\n" {
+			t.Fatalf("the edited seeded file was not kept: %q, %v", got, err)
+		}
+	})
+
+	t.Run("source gone", func(t *testing.T) {
+		repoDir, homeDir := seededRepo(t)
+		lease := acquireLeaseJSON(t, repoDir, homeDir, "dibs")
+		if err := os.Remove(filepath.Join(repoDir, "local.seed")); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, code := returnLeaseIfClean(t, repoDir, homeDir, lease)
+		assertRefusedAndKept(t, repoDir, homeDir, lease, pool.BlockedByDirty, stdout, stderr, code)
+		if _, err := os.Stat(filepath.Join(lease.Path, "local.seed")); err != nil {
+			t.Fatalf("a seeded file that could not be verified was deleted: %v", err)
+		}
+	})
+
+	t.Run("untouched", func(t *testing.T) {
+		repoDir, homeDir := seededRepo(t)
+		lease := acquireLeaseJSON(t, repoDir, homeDir, "dibs")
+		stdout, stderr, code := returnLeaseIfClean(t, repoDir, homeDir, lease)
+		assertReturnedAvailable(t, repoDir, homeDir, lease, stdout, stderr, code)
+		if _, err := os.Stat(filepath.Join(lease.Path, "local.seed")); !os.IsNotExist(err) {
+			t.Fatalf("an unchanged seeded file should be cleaned up as usual: %v", err)
+		}
+	})
+}
+
+// A refusal leaves the checkout exactly as found: the branch an agent has
+// checked out stays checked out, so its next commit still lands on it.
+func TestReturnIfCleanRefusalKeepsTheCheckedOutBranch(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	lease := acquireLeaseJSON(t, repoDir, homeDir, "dibs")
+	gitCmd(t, lease.Path, "switch", "-c", "agent/feature")
+	gitCmd(t, lease.Path, "push", "origin", "agent/feature")
+
+	signals := t.TempDir()
+	readyFile := filepath.Join(signals, "ready")
+	releaseFile := filepath.Join(signals, "release")
+	agent := exec.Command(waitShellBin)
+	agent.Dir = lease.Path
+	agent.Env = append(os.Environ(), "TREEHOUSE_TEST_READY="+readyFile, "TREEHOUSE_TEST_RELEASE="+releaseFile)
+	if err := agent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		os.WriteFile(releaseFile, nil, 0o644)
+		agent.Wait()
+	})
+	deadline := time.Now().Add(60 * time.Second)
+	for _, err := os.Stat(readyFile); err != nil; _, err = os.Stat(readyFile) {
+		if time.Now().After(deadline) {
+			t.Fatal("the agent process never started in the worktree")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	stdout, stderr, code := returnLeaseIfClean(t, repoDir, homeDir, lease)
+	assertRefusedAndKept(t, repoDir, homeDir, lease, pool.BlockedByProcesses, stdout, stderr, code)
+	if branch := gitCmd(t, lease.Path, "symbolic-ref", "--short", "HEAD"); branch != "agent/feature" {
+		t.Fatalf("the refusal changed the checkout: HEAD is on %q, want agent/feature", branch)
+	}
+}
+
+// Greptile, rounds 1 and 3: the return detached HEAD with `git checkout`
+// after its first check. The post-checkout hook could create work the reset
+// then discarded (round 1), or start a worker the final process check refused
+// after the branch had already been detached (round 3). A clean-only return
+// runs no checkout: the guarded reset moves HEAD itself, so no checkout hook
+// runs and the branch it leaves is not moved. The hook here does both.
+func TestReturnIfCleanRunsNoCheckoutHook(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("post-checkout fixture requires /bin/sh")
+	}
+	repoDir, homeDir := setupTestRepo(t)
+	lease := acquireLeaseJSON(t, repoDir, homeDir, "dibs")
+	gitCmd(t, lease.Path, "switch", "-c", "agent/feature")
+	gitCmd(t, lease.Path, "push", "origin", "agent/feature")
+	branchTip := gitCmd(t, lease.Path, "rev-parse", "agent/feature")
+
+	hooks := t.TempDir()
+	hook := "#!/bin/sh\nprintf ran > hook-ran\nif [ -n \"$TREEHOUSE_TEST_HOOK_WORKER\" ]; then sleep 30 </dev/null >/dev/null 2>&1 & fi\n"
+	if err := os.WriteFile(filepath.Join(hooks, "post-checkout"), []byte(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repoDir, "config", "core.hooksPath", hooks)
+	// An ambient GIT_CONFIG_* hooks override would silently disable the hook
+	// and make this test vacuous, so the environment pins it off.
+	hookEnv := []string{"GIT_CONFIG_COUNT=0"}
+	marker := filepath.Join(lease.Path, "hook-ran")
+
+	// Prove the hook is live for a real checkout in this worktree.
+	probe := exec.Command("git", "checkout", "-q", "agent/feature")
+	probe.Dir = lease.Path
+	probe.Env = append(os.Environ(), hookEnv...)
+	if out, err := probe.CombinedOutput(); err != nil {
+		t.Fatalf("probe checkout failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("test setup: the post-checkout hook did not run: %v", err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, append(hookEnv, "TREEHOUSE_TEST_HOOK_WORKER=1"), "return", lease.Path, "--if-lease-id", lease.LeaseID, "--if-clean")
+	assertReturnedAvailable(t, repoDir, homeDir, lease, stdout, stderr, code)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("a clean-only return ran a checkout hook: %v", err)
+	}
+	if tip := gitCmd(t, repoDir, "rev-parse", "agent/feature"); tip != branchTip {
+		t.Fatalf("the return moved branch agent/feature from %s to %s", branchTip, tip)
+	}
 }
