@@ -1014,9 +1014,10 @@ type ReleasePreconditions struct {
 type CleanBlocker string
 
 const (
-	BlockedByProcesses CleanBlocker = "processes"
-	BlockedByDirty     CleanBlocker = "dirty"
-	BlockedByUnpushed  CleanBlocker = "unpushed"
+	BlockedByProcesses   CleanBlocker = "processes"
+	BlockedByDirty       CleanBlocker = "dirty"
+	BlockedByUnpushed    CleanBlocker = "unpushed"
+	BlockedByUnsupported CleanBlocker = "unsupported"
 )
 
 // NotCleanError reports a RequireClean release that left the worktree and any
@@ -1039,7 +1040,11 @@ func (e *NotCleanError) Error() string {
 // reset runs them all again after it has locked and compared HEAD, immediately
 // before it removes or rewrites anything.
 func resetIfClean(wt *WorktreeEntry, base string, seededPaths []string) error {
-	if vcs.WorktreeBackendName(wt.Path) == "" {
+	backend := vcs.WorktreeBackendName(wt.Path)
+	if backend == "jj" {
+		return &NotCleanError{Path: wt.Path, Blocker: BlockedByUnsupported, Detail: "--if-clean cannot verify and reset jj workspaces atomically; it is available only for git worktrees"}
+	}
+	if backend == "" {
 		return &NotCleanError{Path: wt.Path, Blocker: BlockedByDirty, Detail: "its VCS marker is missing or unreadable, so its contents cannot be verified"}
 	}
 	snapshot := func() (ref, head string, err error) {

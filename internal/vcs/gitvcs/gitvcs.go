@@ -835,6 +835,9 @@ func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean boo
 			return err
 		}
 		if dirty {
+			if verify != nil {
+				return verify()
+			}
 			return fmt.Errorf("worktree became dirty after safety check")
 		}
 	}
