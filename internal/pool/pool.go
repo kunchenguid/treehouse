@@ -1082,9 +1082,6 @@ func resetIfClean(wt *WorktreeEntry, base string, seededPaths []string) error {
 		}
 		return fmt.Errorf("HEAD of %s moved during the return (%s to %s); nothing was changed, so retry: %w", wt.Path, head, now, resetErr)
 	}
-	if err := checkClean(wt, base, head, seededPaths); err != nil {
-		return err
-	}
 	return resetErr
 }
 
@@ -1149,10 +1146,17 @@ func seededChanges(worktreePath string, seededPaths []string) string {
 	defer worktree.Close()
 	for _, name := range seededPaths {
 		rel := filepath.FromSlash(name)
-		copied, err := readSeed(worktree, rel)
+		copiedInfo, err := worktree.Lstat(rel)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
+		if err != nil {
+			return fmt.Sprintf("cannot verify seeded file %s (%v)", name, err)
+		}
+		if !copiedInfo.Mode().IsRegular() {
+			return fmt.Sprintf("seeded file %s is not a regular file", name)
+		}
+		copied, err := readSeed(worktree, rel)
 		if err != nil {
 			return fmt.Sprintf("cannot verify seeded file %s (%v)", name, err)
 		}
@@ -1167,8 +1171,7 @@ func seededChanges(worktreePath string, seededPaths []string) string {
 	return ""
 }
 
-// readSeed returns what seeding copies for a path: a regular file's bytes or a
-// symlink's target, marked so the two can never compare equal.
+// readSeed returns the regular-file bytes seeding writes for a path.
 func readSeed(root *os.Root, rel string) ([]byte, error) {
 	info, err := root.Lstat(rel)
 	if err != nil {
@@ -1177,10 +1180,10 @@ func readSeed(root *os.Root, rel string) ([]byte, error) {
 	switch {
 	case info.Mode().IsRegular():
 		data, err := root.ReadFile(rel)
-		return append([]byte("file:"), data...), err
+		return data, err
 	case info.Mode()&os.ModeSymlink != 0:
 		target, err := root.Readlink(rel)
-		return []byte("symlink:" + target), err
+		return []byte(target), err
 	}
 	return nil, fmt.Errorf("%s is neither a regular file nor a symlink", rel)
 }

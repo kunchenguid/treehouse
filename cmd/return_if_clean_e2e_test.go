@@ -401,6 +401,39 @@ func seededRepo(t *testing.T) (repoDir, homeDir string) {
 // it, and seeded files are ignored, so an edit to one was invisible to the
 // dirtiness checks and deleted by a successful --if-clean.
 func TestReturnIfCleanRefusesAnEditedOrUnverifiableSeededFile(t *testing.T) {
+	t.Run("symlink source", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink creation may require elevated privileges")
+		}
+		repoDir, homeDir := seededRepo(t)
+		source := filepath.Join(repoDir, "local.seed")
+		if err := os.Remove(source); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("target=1\\n", source); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+		lease := acquireLeaseJSON(t, repoDir, homeDir, "dibs")
+		seed := filepath.Join(lease.Path, "local.seed")
+		stdout, stderr, code := returnLeaseIfClean(t, repoDir, homeDir, lease)
+		assertReturnedAvailable(t, repoDir, homeDir, lease, stdout, stderr, code)
+
+		repoDir, homeDir = seededRepo(t)
+		source = filepath.Join(repoDir, "local.seed")
+		if err := os.Remove(source); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("target=1\\n", source); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+		lease = acquireLeaseJSON(t, repoDir, homeDir, "dibs")
+		seed = filepath.Join(lease.Path, "local.seed")
+		if err := os.WriteFile(seed, []byte("edited"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, code = returnLeaseIfClean(t, repoDir, homeDir, lease)
+		assertRefusedAndKept(t, repoDir, homeDir, lease, pool.BlockedByDirty, stdout, stderr, code)
+	})
 	t.Run("edited", func(t *testing.T) {
 		repoDir, homeDir := seededRepo(t)
 		lease := acquireLeaseJSON(t, repoDir, homeDir, "dibs")

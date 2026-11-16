@@ -850,22 +850,28 @@ func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean boo
 			return err
 		}
 	}
-	if cleanSeeds {
-		if seededPaths != nil {
-			err = removeSeededPaths(worktreePath, seededPaths, cleanupIdentity)
+	rollback := func(step string, cause error) error {
+		_, restoreErr := runGit(worktreePath, "read-tree", "--reset", "-u", expectedHead)
+		if restoreErr != nil {
+			return fmt.Errorf("%s failed: %w (also could not restore HEAD %s: %v)", step, cause, expectedHead, restoreErr)
 		}
-		if err != nil {
-			return err
+		return fmt.Errorf("%s failed: %w", step, cause)
+	}
+	if cleanSeeds && seededPaths != nil {
+		if err := removeSeededPaths(worktreePath, seededPaths, cleanupIdentity); err != nil {
+			return rollback("remove seeded paths", err)
 		}
 	}
-
 	if _, err := runGit(worktreePath, "read-tree", "--reset", "-u", ref); err != nil {
-		return err
+		return rollback("read-tree reset", err)
 	}
 	if _, err := runGit(worktreePath, "clean", "-fd"); err != nil {
-		return err
+		return rollback("git clean", err)
 	}
-	return move.commit()
+	if err := move.commit(); err != nil {
+		return rollback("commit reset HEAD", err)
+	}
+	return nil
 }
 
 // headMove holds a worktree's HEAD lock across a reset; commit moves HEAD to the reset target and releases it.
