@@ -322,14 +322,18 @@ func TestJJReturnIfClean(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(lease.Path, "notes.txt"), []byte("wip\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
+		before := jjCmd(t, lease.Path, "log", "-r", "@", "--no-graph", "-T", "commit_id")
 		stdout, stderr, code := returnLeaseIfClean(t, repoDir, homeDir, lease)
-		assertRefusedAndKept(t, repoDir, homeDir, lease, pool.BlockedByDirty, stdout, stderr, code)
+		assertRefusedAndKept(t, repoDir, homeDir, lease, pool.BlockedByUnsupported, stdout, stderr, code)
 		if _, err := os.Stat(filepath.Join(lease.Path, "notes.txt")); err != nil {
 			t.Fatalf("refusal discarded the working-copy change: %v", err)
 		}
-		_, stderr, code = runTreehouse(t, repoDir, homeDir, nil, "return", lease.Path, "--force")
+		if after := jjCmd(t, lease.Path, "log", "-r", "@", "--no-graph", "-T", "commit_id"); after != before {
+			t.Fatalf("refusal moved @ from %s to %s", before, after)
+		}
+		_, stderr, code = runTreehouse(t, repoDir, homeDir, nil, "return", lease.Path)
 		if code != 0 {
-			t.Fatalf("return --force failed (exit %d): %s", code, stderr)
+			t.Fatalf("plain return failed (exit %d): %s", code, stderr)
 		}
 	})
 
@@ -341,21 +345,28 @@ func TestJJReturnIfClean(t *testing.T) {
 		jjCmd(t, lease.Path, "commit", "-m", "agent work")
 
 		stdout, stderr, code := returnLeaseIfClean(t, repoDir, homeDir, lease)
-		assertRefusedAndKept(t, repoDir, homeDir, lease, pool.BlockedByUnpushed, stdout, stderr, code)
-
-		// Pushed with git from the colocated main repository and fetched back,
-		// because jj's own push flags differ across the versions it supports.
-		work := jjCmd(t, lease.Path, "log", "-r", "@-", "--no-graph", "-T", "commit_id")
-		gitCmd(t, repoDir, "push", "origin", work+":refs/heads/landed")
-		jjCmd(t, lease.Path, "git", "fetch", "--remote", "origin")
-		stdout, stderr, code = returnLeaseIfClean(t, repoDir, homeDir, lease)
-		assertReturnedAvailable(t, repoDir, homeDir, lease, stdout, stderr, code)
+		before := jjCmd(t, lease.Path, "log", "-r", "@", "--no-graph", "-T", "commit_id")
+		assertRefusedAndKept(t, repoDir, homeDir, lease, pool.BlockedByUnsupported, stdout, stderr, code)
+		if subject := jjCmd(t, lease.Path, "log", "-r", "@-", "--no-graph", "-T", "description"); subject != "agent work" {
+			t.Fatalf("refusal discarded committed work: %q", subject)
+		}
+		if after := jjCmd(t, lease.Path, "log", "-r", "@", "--no-graph", "-T", "commit_id"); after != before {
+			t.Fatalf("refusal moved @ from %s to %s", before, after)
+		}
+		_, stderr, code = runTreehouse(t, repoDir, homeDir, nil, "return", lease.Path)
+		if code != 0 {
+			t.Fatalf("plain return failed (exit %d): %s", code, stderr)
+		}
 	})
 
 	t.Run("clean slot", func(t *testing.T) {
 		lease := acquireLeaseJSON(t, repoDir, homeDir, "dibs")
 		stdout, stderr, code := returnLeaseIfClean(t, repoDir, homeDir, lease)
-		assertReturnedAvailable(t, repoDir, homeDir, lease, stdout, stderr, code)
+		assertRefusedAndKept(t, repoDir, homeDir, lease, pool.BlockedByUnsupported, stdout, stderr, code)
+		_, stderr, code = runTreehouse(t, repoDir, homeDir, nil, "return", lease.Path)
+		if code != 0 {
+			t.Fatalf("plain return failed (exit %d): %s", code, stderr)
+		}
 	})
 }
 
