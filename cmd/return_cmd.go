@@ -71,6 +71,9 @@ quiet: standing in a slot is not holding it, and 'treehouse enter' promises not
 to touch pool state. Stand in a slot that is leased, dirty, or running
 something and --all returns it like any other.
 
+--all also leaves alone an unlanded slot (idle with commits not merged into
+the base; name it to return it).
+
 Holding leased and in-use slots in scope is deliberately wider than 'prune' and
 'destroy --all', which never touch a leased slot: --all exists to reclaim a
 whole pool. Each worktree is returned exactly as naming it would be, including
@@ -204,6 +207,13 @@ func bulkReturnPreconditions(wt pool.WorktreeStatus) pool.ReleasePreconditions {
 
 // returnableStatus reports whether `return --all` acts on a slot in this state.
 //
+// Unlanded is excluded for the same reason it always was (it used to read
+// available): the slot is idle, clean and unowned, so nobody holds it, and a
+// bulk return must not reset commits `get` itself refuses to touch; a named
+// return is the deliberate act. The bulk listing skips the merge-state proof
+// (pool.List), so it sees such a slot as available; the case stays so a switch
+// to pool.ListWithMergeState cannot make this run start resetting it.
+//
 // Available is excluded because there is nothing to return: the slot is already
 // parked and a later `get` will hand it out. Damaged is excluded because its
 // marker is missing, unreadable, or invalid, so neither the detach nor the reset
@@ -235,7 +245,7 @@ func returnableStatus(wt pool.WorktreeStatus) bool {
 		return false
 	}
 	switch wt.Status {
-	case pool.StatusAvailable, pool.StatusDamaged:
+	case pool.StatusAvailable, pool.StatusUnlanded, pool.StatusDamaged:
 		return false
 	case pool.StatusLocked:
 		return wt.LockOwned
@@ -256,6 +266,8 @@ func returnableStatus(wt pool.WorktreeStatus) bool {
 // every retry forever. A run where every slot was skipped still exits 0:
 // nothing it set out to return was still there to return.
 //
+// Unlanded slots are unheld like available ones: idle, clean, and not reset by
+// bulk return; name them to return them.
 // A slot nobody holds - available, damaged, or one the caller merely stands
 // in - is never a target at all and is counted separately. A slot protected
 // by the quarantine refusal above is counted held and skipped.
