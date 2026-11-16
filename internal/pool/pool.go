@@ -995,6 +995,66 @@ type ReleasePreconditions struct {
 	// including incomplete acquisitions. Bulk release checks it under the state
 	// lock so quarantine applied after listing still requires a named return.
 	RefuseRecovered bool
+	// RequireClean refuses, with a *NotCleanError, a worktree that has a live
+	// process, uncommitted work, or a head not landed on a remote-tracking ref
+	// or the base it would be parked on. Only ReleaseConditional checks it: it
+	// reads the worktree rather than the state entry, so it runs under the
+	// release's state lock immediately before beforeReset, so no other
+	// treehouse operation can come between the verdict and the reset.
+	RequireClean bool
+}
+
+// CleanBlocker names what stopped a RequireClean release. The values are a
+// machine-readable contract.
+type CleanBlocker string
+
+const (
+	BlockedByProcesses CleanBlocker = "processes"
+	BlockedByDirty     CleanBlocker = "dirty"
+	BlockedByUnpushed  CleanBlocker = "unpushed"
+)
+
+// NotCleanError reports a RequireClean release that left the worktree and any
+// lease on it exactly as they were found.
+type NotCleanError struct {
+	Path    string
+	Blocker CleanBlocker
+	Detail  string
+}
+
+func (e *NotCleanError) Error() string {
+	return fmt.Sprintf("worktree %s is not clean (%s): %s", e.Path, e.Blocker, e.Detail)
+}
+
+// checkClean reports the first reason a reset of wt to base would destroy work
+// or pull a worktree out from under a live process. Processes come first: a
+// worktree something is still writing into has no stable dirtiness to judge.
+// Every check fails closed, so what cannot be verified refuses.
+func checkClean(wt *WorktreeEntry, base string) error {
+	refuse := func(blocker CleanBlocker, detail string) error {
+		return &NotCleanError{Path: wt.Path, Blocker: blocker, Detail: detail}
+	}
+	procs, err := findProcessesInWorktree(wt.Path)
+	if err == nil {
+		procs, err = dropProtectedProcesses(procs)
+	}
+	if err != nil {
+		return refuse(BlockedByProcesses, fmt.Sprintf("cannot verify which processes use it (%v)", err))
+	}
+	if len(procs) > 0 {
+		names := make([]string, len(procs))
+		for i, p := range procs {
+			names[i] = p.String()
+		}
+		return refuse(BlockedByProcesses, "live processes are using it: "+strings.Join(names, ", "))
+	}
+	if detail := vcs.UncommittedWork(wt.Path); detail != "" {
+		return refuse(BlockedByDirty, detail)
+	}
+	if !vcs.IsHeadLanded(wt.Path, base) {
+		return refuse(BlockedByUnpushed, "its head has commits that no remote-tracking ref or the base branch contains, or containment cannot be verified")
+	}
+	return nil
 }
 
 // Release resets a managed worktree, clears its short-lived owner reservation or
@@ -1083,6 +1143,11 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 			branch, fallback = defaultBranch, defaultBranch
 			if requested != "" {
 				branch = requested
+			}
+		}
+		if preconditions.RequireClean {
+			if err := checkClean(wt, branch); err != nil {
+				return err
 			}
 		}
 		if beforeReset != nil {

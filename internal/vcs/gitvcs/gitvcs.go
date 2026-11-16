@@ -1648,6 +1648,24 @@ func (*Backend) IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 }
 func (*Backend) IsDirty(worktreePath string) (bool, error) { return IsDirty(worktreePath) }
 
+// UncommittedWork uses the recovery check rather than IsDirty, because it
+// also sees edits hidden by skip-worktree, assume-unchanged, or a submodule's
+// ignore setting.
+func (*Backend) UncommittedWork(worktreePath string) string {
+	untracked, reason := RecoveryWorktree(worktreePath)
+	if reason != "" {
+		return reason
+	}
+	if len(untracked) > 0 {
+		return fmt.Sprintf("%d untracked path(s) are present, starting with %s", len(untracked), untracked[0])
+	}
+	return ""
+}
+
+func (*Backend) IsHeadLanded(worktreePath, base string) bool {
+	return RecoveryHeadContained(worktreePath, base)
+}
+
 // IsOriginAccessError reports whether err reads like a failure to reach or
 // use the origin remote, in git's own vocabulary. The patterns lived in the
 // pool package before backends existed; they are owned here now so pool code

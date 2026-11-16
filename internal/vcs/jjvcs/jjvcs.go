@@ -570,6 +570,34 @@ func (*Backend) IsDirty(worktreePath string) (bool, error) {
 	return out != "clean", nil
 }
 
+// UncommittedWork reports a working-copy commit with changes or a
+// description. The workspace is brought up to date first, as a reset does, so
+// a sibling workspace having moved the repository is not misread as a failure.
+func (b *Backend) UncommittedWork(worktreePath string) string {
+	_, _ = runJJ(worktreePath, "workspace", "update-stale")
+	dirty, err := b.IsDirty(worktreePath)
+	if err != nil {
+		return "cannot verify the working-copy commit"
+	}
+	if dirty {
+		return "the working-copy commit has changes or a description"
+	}
+	return ""
+}
+
+// IsHeadLanded reports whether every ancestor of the working copy's parents is
+// contained in a remote bookmark or the local base bookmark. The working-copy
+// commit itself is UncommittedWork's concern. Only ancestry counts, exactly
+// like IsHeadMergedIntoRef.
+func (*Backend) IsHeadLanded(worktreePath, base string) bool {
+	landed := "remote_bookmarks()"
+	if base != "" {
+		landed += fmt.Sprintf(" | present(%s)", base)
+	}
+	out, err := runJJ(worktreePath, "log", "-r", fmt.Sprintf("@- ~ ::(%s)", landed), "--no-graph", "-T", `commit_id ++ "\n"`)
+	return err == nil && out == ""
+}
+
 // branchRef returns the revset to base new or reset worktrees on: whichever
 // of the local bookmark or its origin counterpart is further ahead, matching
 // the git backend's freshest-wins behavior. On divergence origin wins.

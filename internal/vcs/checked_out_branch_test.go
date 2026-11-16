@@ -147,3 +147,24 @@ func TestCheckedOutBranchUnreadableMarkerIsAnError(t *testing.T) {
 		t.Fatalf("failed read must not be reported as detached")
 	}
 }
+
+// A markerless slot under a clean, landed repository must not borrow that
+// repository's verdict: the clean-only return checks fail closed instead.
+func TestCleanChecksFailClosedOnMarkerlessSlot(t *testing.T) {
+	isolateUserConfig(t)
+	repo := gitRepoWithBranch(t, "")
+	slot := filepath.Join(repo, "pool", "1", "slot")
+	if err := os.MkdirAll(slot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !IsHeadLanded(repo, "main") || UncommittedWork(repo) != "" {
+		t.Fatal("test setup: the enclosing repository must itself read clean and landed")
+	}
+
+	if detail := UncommittedWork(slot); detail == "" {
+		t.Fatal("a markerless slot must not read as free of uncommitted work")
+	}
+	if IsHeadLanded(slot, "main") {
+		t.Fatal("a markerless slot must not read as landed")
+	}
+}

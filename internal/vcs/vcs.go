@@ -107,6 +107,15 @@ type Backend interface {
 	IsHeadMergedIntoRef(worktreePath, ref string) (bool, error)
 	// IsDirty reports tracked or untracked local changes.
 	IsDirty(worktreePath string) (bool, error)
+	// UncommittedWork describes the local changes a reset would discard, or
+	// returns "" when there are none. It fails closed: anything it cannot
+	// verify is described rather than reported clean.
+	UncommittedWork(worktreePath string) string
+	// IsHeadLanded reports whether every commit the worktree's head reaches is
+	// contained in a remote-tracking ref or in the local base branch, so a
+	// reset to base orphans no commit. It fails closed (false) when it cannot
+	// verify.
+	IsHeadLanded(worktreePath, base string) bool
 }
 
 var (
@@ -245,11 +254,6 @@ func normalizeVCSNameFrom(source, v string) string {
 // RecoveryWorktree verifies a Git checkout and returns only root-level untracked paths.
 func RecoveryWorktree(path string) ([]string, string) {
 	return gitvcs.RecoveryWorktree(path)
-}
-
-// RecoveryHeadContained checks whether HEAD is reachable from a remote ref or base.
-func RecoveryHeadContained(path, base string) bool {
-	return gitvcs.RecoveryHeadContained(path, base)
 }
 
 // FindRepoRoot returns the repository or worktree root for the current
@@ -658,6 +662,27 @@ func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 // IsDirty reports tracked or untracked local changes in the worktree.
 func IsDirty(worktreePath string) (bool, error) {
 	return backendForWorktree(worktreePath).IsDirty(worktreePath)
+}
+
+// UncommittedWork describes the local changes a reset of the slot would
+// discard, or returns "" when there are none. Only the slot's own marker
+// answers: a markerless slot is reported, never read through the repository
+// enclosing an in-project pool.
+func UncommittedWork(worktreePath string) string {
+	b := slotMarkerBackend(worktreePath)
+	if b == nil {
+		return "the worktree's VCS marker is missing or unreadable, so its changes cannot be verified"
+	}
+	return b.UncommittedWork(worktreePath)
+}
+
+// IsHeadLanded reports whether every commit the slot's head reaches is
+// contained in a remote-tracking ref or the local base branch. Like
+// UncommittedWork it dispatches only on the slot's own marker and fails
+// closed.
+func IsHeadLanded(worktreePath, base string) bool {
+	b := slotMarkerBackend(worktreePath)
+	return b != nil && b.IsHeadLanded(worktreePath, base)
 }
 
 // ShortHash returns a short stable hash of s, used for pool directory naming.
