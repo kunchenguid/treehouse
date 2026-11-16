@@ -1150,9 +1150,9 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 			if err := checkClean(wt, branch); err != nil {
 				return err
 			}
-			safe, ref, head, err := vcs.IsWorktreeSafeToReset(worktreePath, branch)
-			if err != nil || !safe {
-				return &NotCleanError{Path: worktreePath, Blocker: BlockedByUnpushed, Detail: "cannot verify the reset target is safe"}
+			_, ref, head, err := vcs.IsWorktreeSafeToReset(worktreePath, branch)
+			if err != nil || ref == "" || head == "" {
+				return &NotCleanError{Path: worktreePath, Blocker: BlockedByUnpushed, Detail: "cannot verify the reset target"}
 			}
 			cleanResetRef, cleanHead = ref, head
 		}
@@ -1180,9 +1180,9 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 				// was deleted in between). Park on the default rather than
 				// strand the reservation with the processes already killed.
 				if preconditions.RequireClean || fallback == "" || fallback == branch {
-					return err
+					return resetErr
 				}
-				fmt.Fprintf(os.Stderr, "🌳 Warning: cannot park the worktree on %q (%v); using %s instead.\n", branch, err, fallback)
+				fmt.Fprintf(os.Stderr, "🌳 Warning: cannot park the worktree on %q (%v); using %s instead.\n", branch, resetErr, fallback)
 				if err := vcs.ResetWorktreeWithSeededPaths(worktreePath, fallback, seededPaths); err != nil {
 					return err
 				}

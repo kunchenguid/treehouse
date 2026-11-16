@@ -196,7 +196,22 @@ func releaseWorktree(target returnTarget, preconditions pool.ReleasePrecondition
 		}
 	}
 	return pool.ReleaseConditional(target.poolDir, target.path, returnBaseBranch(target.path), preconditions, func() error {
-		return finalizeWorktreeReturn(target.path)
+		if !preconditions.RequireClean {
+			return finalizeWorktreeReturn(target.path)
+		}
+		if !returnForce && vcs.WorktreeBackendName(target.path) != "" {
+			if err := vcs.DetachWorktree(target.path); err != nil {
+				return fmt.Errorf("failed to detach worktree HEAD: %w", err)
+			}
+		}
+		procs, err := unprotectedProcessesInWorktree(target.path)
+		if err != nil {
+			return &pool.NotCleanError{Path: target.path, Blocker: pool.BlockedByProcesses, Detail: "cannot verify worktree processes"}
+		}
+		if len(procs) > 0 {
+			return &pool.NotCleanError{Path: target.path, Blocker: pool.BlockedByProcesses, Detail: "worktree has live processes"}
+		}
+		return nil
 	})
 }
 
