@@ -2,6 +2,7 @@ package gitvcs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1594,5 +1595,41 @@ func mustGit(t *testing.T, dir string, args ...string) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
+// A tree that is dirty when the verified reset takes HEAD's lock must refuse
+// with the caller's verdict when it gives one, and must still refuse when the
+// verdict comes back empty: nothing was reset, so a nil return would report a
+// reset that never happened.
+func TestResetWorktreeToRefVerifiedRefusesADirtyTree(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		verdict error
+	}{
+		{"verdict names the change", errors.New("dirty: notes.txt")},
+		{"verdict is empty", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wtPath, resetRef, head := setupSafeResetWorktree(t, refFormatInitFlag(t, "files"))
+			notes := filepath.Join(wtPath, "notes.txt")
+			if err := os.WriteFile(notes, []byte("wip\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			err := ResetWorktreeToRefVerified(wtPath, resetRef, head, nil, func() error { return tc.verdict })
+			if err == nil {
+				t.Fatal("a dirty tree must not report a successful reset")
+			}
+			if tc.verdict != nil && !errors.Is(err, tc.verdict) {
+				t.Fatalf("expected the caller's verdict, got %v", err)
+			}
+			if _, err := os.Stat(notes); err != nil {
+				t.Fatalf("the refusal discarded the change: %v", err)
+			}
+			if got, _ := runGit(wtPath, "rev-parse", "HEAD"); got != head {
+				t.Fatalf("the refusal moved HEAD from %s to %s", head, got)
+			}
+		})
 	}
 }

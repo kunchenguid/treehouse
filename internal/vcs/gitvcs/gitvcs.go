@@ -835,8 +835,12 @@ func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean boo
 			return err
 		}
 		if dirty {
+			// A clean-only caller names the change; a nil verdict must still
+			// refuse, because the tree is dirty and nothing was reset.
 			if verify != nil {
-				return verify()
+				if err := verify(); err != nil {
+					return err
+				}
 			}
 			return fmt.Errorf("worktree became dirty after safety check")
 		}
@@ -1658,10 +1662,11 @@ func (*Backend) IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 }
 func (*Backend) IsDirty(worktreePath string) (bool, error) { return IsDirty(worktreePath) }
 
-// UncommittedWork uses the recovery check rather than IsDirty, because it
-// also sees edits hidden by skip-worktree, assume-unchanged, or a submodule's
-// ignore setting.
-func (*Backend) UncommittedWork(worktreePath string) string {
+// UncommittedWork describes the local changes a reset would discard, or ""
+// when there are none. It uses the recovery check rather than IsDirty, because
+// it also sees edits hidden by skip-worktree, assume-unchanged, or a
+// submodule's ignore setting, and it fails closed.
+func UncommittedWork(worktreePath string) string {
 	untracked, reason := RecoveryWorktree(worktreePath)
 	if reason != "" {
 		return reason
@@ -1672,11 +1677,16 @@ func (*Backend) UncommittedWork(worktreePath string) string {
 	return ""
 }
 
-func (*Backend) IsCommitLanded(worktreePath, commit, base string) bool {
+// IsCommitLanded reports whether every commit reachable from commit is
+// contained in a remote-tracking ref or the local base branch. It fails closed.
+func IsCommitLanded(worktreePath, commit, base string) bool {
 	return isCommitID(commit) && commitContained(worktreePath, commit, base)
 }
 
-func (*Backend) ResetWorktreeToRefVerified(worktreePath, ref, expectedHead string, seededPaths []string, verify func() error) error {
+// ResetWorktreeToRefVerified is ResetWorktreeToRefWithSeededPaths with
+// requireClean, plus verify, run under HEAD's lock immediately before anything
+// is removed or rewritten.
+func ResetWorktreeToRefVerified(worktreePath, ref, expectedHead string, seededPaths []string, verify func() error) error {
 	return resetWorktreeToRef(worktreePath, ref, expectedHead, true, seededPaths, true, verify)
 }
 

@@ -331,13 +331,15 @@ func TestJJReturnIfClean(t *testing.T) {
 		if after := jjCmd(t, lease.Path, "log", "-r", "@", "--no-graph", "-T", "commit_id"); after != before {
 			t.Fatalf("refusal moved @ from %s to %s", before, after)
 		}
-		_, stderr, code = runTreehouse(t, repoDir, homeDir, nil, "return", lease.Path)
+		// Plain return is unchanged: on a dirty workspace it still asks before
+		// cleaning, so --force answers it.
+		_, stderr, code = runTreehouse(t, repoDir, homeDir, nil, "return", lease.Path, "--force")
 		if code != 0 {
-			t.Fatalf("plain return failed (exit %d): %s", code, stderr)
+			t.Fatalf("plain return --force failed (exit %d): %s", code, stderr)
 		}
 	})
 
-	t.Run("unpushed commit until pushed", func(t *testing.T) {
+	t.Run("unpushed commit", func(t *testing.T) {
 		lease := acquireLeaseJSON(t, repoDir, homeDir, "dibs")
 		if err := os.WriteFile(filepath.Join(lease.Path, "feature.txt"), []byte("work\n"), 0o644); err != nil {
 			t.Fatal(err)
@@ -361,8 +363,12 @@ func TestJJReturnIfClean(t *testing.T) {
 
 	t.Run("clean slot", func(t *testing.T) {
 		lease := acquireLeaseJSON(t, repoDir, homeDir, "dibs")
+		before := jjCmd(t, lease.Path, "log", "-r", "@", "--no-graph", "-T", "commit_id")
 		stdout, stderr, code := returnLeaseIfClean(t, repoDir, homeDir, lease)
 		assertRefusedAndKept(t, repoDir, homeDir, lease, pool.BlockedByUnsupported, stdout, stderr, code)
+		if after := jjCmd(t, lease.Path, "log", "-r", "@", "--no-graph", "-T", "commit_id"); after != before {
+			t.Fatalf("refusal moved @ from %s to %s", before, after)
+		}
 		_, stderr, code = runTreehouse(t, repoDir, homeDir, nil, "return", lease.Path)
 		if code != 0 {
 			t.Fatalf("plain return failed (exit %d): %s", code, stderr)

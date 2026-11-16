@@ -364,10 +364,7 @@ func (b *Backend) ResetWorktreeWithSeededPaths(worktreePath, branch string, seed
 // before rebase/abandon so uncommitted working-copy changes that landed after
 // the caller's dirty check are not discarded.
 func (b *Backend) ResetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool) error {
-	return b.resetWorktreeToRef(worktreePath, ref, expectedHead, requireClean, nil)
-}
 
-func (b *Backend) resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool, verify func() error) error {
 	// A sibling workspace may have moved the repo since this workspace was
 	// last used; recover first so the commands below see current state.
 	_, _ = runJJ(worktreePath, "workspace", "update-stale")
@@ -386,11 +383,6 @@ func (b *Backend) resetWorktreeToRef(worktreePath, ref, expectedHead string, req
 			return fmt.Errorf("worktree became dirty after safety check")
 		}
 	} else {
-		if verify != nil {
-			if err := verify(); err != nil {
-				return err
-			}
-		}
 		if _, err := runJJ(worktreePath, "rebase", "-d", ref, "-r", revset); err != nil {
 			if parked, perr := b.parkedOnRef(worktreePath, ref); perr == nil && parked {
 				if head, herr := worktreeHead(worktreePath); herr == nil && head == expectedHead {
@@ -409,11 +401,6 @@ func (b *Backend) resetWorktreeToRef(worktreePath, ref, expectedHead string, req
 		return nil
 	}
 
-	if verify != nil {
-		if err := verify(); err != nil {
-			return err
-		}
-	}
 	if _, err := runJJ(worktreePath, "abandon", "-r", revset); err != nil {
 		return err
 	}
@@ -581,55 +568,6 @@ func (*Backend) IsDirty(worktreePath string) (bool, error) {
 		return false, err
 	}
 	return out != "clean", nil
-}
-
-// UncommittedWork reports a working-copy commit with changes or a
-// description. The workspace is brought up to date first, as a reset does, so
-// a sibling workspace having moved the repository is not misread as a failure.
-func (b *Backend) UncommittedWork(worktreePath string) string {
-	_, _ = runJJ(worktreePath, "workspace", "update-stale")
-	dirty, err := b.IsDirty(worktreePath)
-	if err != nil {
-		return "cannot verify the working-copy commit"
-	}
-	if dirty {
-		return "the working-copy commit has changes or a description"
-	}
-	return ""
-}
-
-// IsCommitLanded reports whether every ancestor of the parents of commit, the
-// working-copy commit recorded by IsWorktreeSafeToReset, is contained in a
-// remote bookmark or the local base bookmark. The working-copy commit itself
-// is UncommittedWork's concern. Only ancestry counts, exactly like
-// IsHeadMergedIntoRef.
-func (*Backend) IsCommitLanded(worktreePath, commit, base string) bool {
-	if !isCommitID(commit) {
-		return false
-	}
-	landed := "remote_bookmarks()"
-	if base != "" {
-		landed += fmt.Sprintf(" | present(%s)", base)
-	}
-	out, err := runJJ(worktreePath, "log", "-r", fmt.Sprintf("commit_id(%s)- ~ ::(%s)", commit, landed), "--no-graph", "-T", `commit_id ++ "\n"`)
-	return err == nil && out == ""
-}
-
-// ResetWorktreeToRefVerified runs verify immediately before the guarded reset.
-// jj's reset revset refuses when the working copy changes after verify.
-func (b *Backend) ResetWorktreeToRefVerified(worktreePath, ref, expectedHead string, seededPaths []string, verify func() error) error {
-	if len(seededPaths) > 0 {
-		if err := gitvcs.AuthenticateJJSeededCleanup(worktreePath); err != nil {
-			return err
-		}
-	}
-	if err := b.resetWorktreeToRef(worktreePath, ref, expectedHead, true, verify); err != nil {
-		return err
-	}
-	if seededPaths == nil {
-		return nil
-	}
-	return gitvcs.RemoveSeededPathsFromJJWorkspace(worktreePath, seededPaths)
 }
 
 // branchRef returns the revset to base new or reset worktrees on: whichever

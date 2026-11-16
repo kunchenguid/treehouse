@@ -97,7 +97,9 @@ immediately before the reset. It changes nothing until every check passes:
 it never prompts, terminates processes, or runs a checkout. On a refusal the
 worktree, its checkout, and its lease are left exactly as found,
 the exit status is 4, and stdout carries one word naming the blocker:
-processes, dirty, unpushed, or unsupported (jj workspaces). It cannot be combined with --force or --all.`,
+processes, dirty, unpushed, or unsupported. --if-clean supports Git
+worktrees only; a jj workspace is refused as unsupported before any change.
+It cannot be combined with --force or --all.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("if-lease-id") && returnIfLeaseID == "" {
 			return fmt.Errorf("--if-lease-id cannot be empty")

@@ -207,7 +207,7 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `return`  | `--all`   | Return held worktrees in this repository's pool; skip available, damaged, and quarantined slots, a `you're here` slot nobody else holds, and a `locked` slot whose `HEAD.lock` is not Treehouse-owned |
 | `return`  | `--if-lease-id` | Return only if the current lease has the expected per-acquisition identity |
 | `return`  | `--if-lease-holder` | Return only if the current lease has the expected holder |
-| `return`  | `--if-clean` | Return only if no live process, uncommitted change, or unpushed commit would be lost; otherwise exit `4` and print the blocker |
+| `return`  | `--if-clean` | Return only if no live process, uncommitted change, or unpushed commit would be lost; otherwise exit `4` and print the blocker. Git worktrees only: jj workspaces are refused with `unsupported` |
 | `prune`   | `--yes`   | Delete listed prune candidates instead of doing a dry run |
 | `prune`   | `--all`   | Sweep every managed pool under the user-level treehouse root |
 | `prune`   | `--global` | Alias for `--all` |
@@ -379,7 +379,7 @@ Each worktree is returned exactly as naming it would be, including the confirmat
 | `0`  | The worktree was returned and any lease on it was released |
 | `1`  | The return failed: unmet lease conditions, process termination, or reset |
 | `3`  | The worktree was not returned, and is exactly as it was found: it has uncommitted changes and cleaning was declined, or the confirmation could not be answered |
-| `4`  | `--if-clean` only: the worktree was not returned, and it and its lease are exactly as they were found, because returning it would lose work or interrupt a process; stdout names the blocker |
+| `4`  | `--if-clean` only: the worktree was not returned, and it and its lease are exactly as they were found, because returning it would lose work or interrupt a process, or because it is a jj workspace (`unsupported`); stdout names the blocker |
 
 `--all` reports the same statuses for the whole run: `0` when every held worktree was returned or skipped, `3` when the only thing that stopped a return was an abort, and `1` when any worktree failed. A skip is never a failure: nothing went wrong, so a retry would only report it again. A run in which every held slot was skipped still exits `0` and leaves the pool exactly as it was - nothing it set out to return was still there to return. A failure outranks an abort because the two need opposite responses - retry one, clean or `--force` the other.
 
