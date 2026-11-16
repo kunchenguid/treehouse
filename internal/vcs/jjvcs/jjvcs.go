@@ -364,7 +364,10 @@ func (b *Backend) ResetWorktreeWithSeededPaths(worktreePath, branch string, seed
 // before rebase/abandon so uncommitted working-copy changes that landed after
 // the caller's dirty check are not discarded.
 func (b *Backend) ResetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool) error {
+	return b.resetWorktreeToRef(worktreePath, ref, expectedHead, requireClean, nil)
+}
 
+func (b *Backend) resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool, verify func() error) error {
 	// A sibling workspace may have moved the repo since this workspace was
 	// last used; recover first so the commands below see current state.
 	_, _ = runJJ(worktreePath, "workspace", "update-stale")
@@ -383,6 +386,11 @@ func (b *Backend) ResetWorktreeToRef(worktreePath, ref, expectedHead string, req
 			return fmt.Errorf("worktree became dirty after safety check")
 		}
 	} else {
+		if verify != nil {
+			if err := verify(); err != nil {
+				return err
+			}
+		}
 		if _, err := runJJ(worktreePath, "rebase", "-d", ref, "-r", revset); err != nil {
 			if parked, perr := b.parkedOnRef(worktreePath, ref); perr == nil && parked {
 				if head, herr := worktreeHead(worktreePath); herr == nil && head == expectedHead {
@@ -401,6 +409,11 @@ func (b *Backend) ResetWorktreeToRef(worktreePath, ref, expectedHead string, req
 		return nil
 	}
 
+	if verify != nil {
+		if err := verify(); err != nil {
+			return err
+		}
+	}
 	if _, err := runJJ(worktreePath, "abandon", "-r", revset); err != nil {
 		return err
 	}
@@ -602,14 +615,21 @@ func (*Backend) IsCommitLanded(worktreePath, commit, base string) bool {
 	return err == nil && out == ""
 }
 
-// ResetWorktreeToRefVerified runs verify, then the guarded reset. jj takes no
-// lock to hold across both; the reset's own revset still refuses when the
-// working copy changed after verify.
+// ResetWorktreeToRefVerified runs verify immediately before the guarded reset.
+// jj's reset revset refuses when the working copy changes after verify.
 func (b *Backend) ResetWorktreeToRefVerified(worktreePath, ref, expectedHead string, seededPaths []string, verify func() error) error {
-	if err := verify(); err != nil {
+	if len(seededPaths) > 0 {
+		if err := gitvcs.AuthenticateJJSeededCleanup(worktreePath); err != nil {
+			return err
+		}
+	}
+	if err := b.resetWorktreeToRef(worktreePath, ref, expectedHead, true, verify); err != nil {
 		return err
 	}
-	return b.ResetWorktreeToRefWithSeededPaths(worktreePath, ref, expectedHead, true, seededPaths)
+	if seededPaths == nil {
+		return nil
+	}
+	return gitvcs.RemoveSeededPathsFromJJWorkspace(worktreePath, seededPaths)
 }
 
 // branchRef returns the revset to base new or reset worktrees on: whichever
