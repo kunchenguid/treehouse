@@ -3,8 +3,55 @@ package gitvcs
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestRelativeWorktreeRegistrationCanBeCleanedFromOtherDirectory(t *testing.T) {
+	wtPath, resetRef, head := setupSafeResetWorktree(t, refFormatInitFlag(t, "files"))
+	gitdir, err := runGit(wtPath, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitdir = strings.TrimSpace(gitdir)
+	marker := "gitdir: " + gitdir + "\n"
+	if err := os.WriteFile(filepath.Join(wtPath, ".git"), []byte(marker), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	backlink, err := filepath.Rel(gitdir, filepath.Join(wtPath, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitdir, "gitdir"), []byte(backlink+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	otherDir := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(otherDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+	info, err := os.Stat(wtPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, handle, err := openCleanupRoot(wtPath, info, authenticateLinkedWorktree)
+	if err != nil {
+		t.Fatalf("open relative registration: %v", err)
+	}
+	root.Close()
+	handle.Close()
+	if err := ResetWorktreeToRefVerified(wtPath, resetRef, head, nil, func() error { return nil }); err != nil {
+		t.Fatalf("verified reset: %v", err)
+	}
+	got, err := runGit(wtPath, "rev-parse", "HEAD")
+	if err != nil || strings.TrimSpace(got) != resetRef {
+		t.Fatalf("HEAD = %q, err = %v; want %s", strings.TrimSpace(got), err, resetRef)
+	}
+}
 
 func TestValidateWorktreeRegistration(t *testing.T) {
 	for _, kind := range []string{"absolute", "relative", "wrong-slot", "missing-backlink", "missing-registration", "empty-backlink", "malformed-marker", "wrong-filename"} {

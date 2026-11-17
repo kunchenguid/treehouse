@@ -1392,14 +1392,11 @@ func authenticateLinkedWorktree(root *os.Root, worktreePath string) error {
 	if !ok || gitDir == "" {
 		return fmt.Errorf("refusing to clean unregistered worktree %s", worktreePath)
 	}
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(worktreePath, gitDir)
-	}
-	backlink, err := os.ReadFile(filepath.Join(filepath.Clean(gitDir), "gitdir"))
+	_, backlink, err := resolveWorktreeRegistration(worktreePath, gitDir)
 	if err != nil {
 		return fmt.Errorf("refusing to clean unregistered worktree %s", worktreePath)
 	}
-	backlinkInfo, err := os.Stat(filepath.Clean(string(bytes.TrimSpace(backlink))))
+	backlinkInfo, err := os.Stat(backlink)
 	if err != nil || !os.SameFile(marker, backlinkInfo) {
 		return fmt.Errorf("refusing to clean unregistered worktree %s", worktreePath)
 	}
