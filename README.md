@@ -207,7 +207,7 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `return`  | `--all`   | Return held worktrees in this repository's pool; skip available, damaged, and quarantined slots, a `you're here` slot nobody else holds, and a `locked` slot whose `HEAD.lock` is not Treehouse-owned |
 | `return`  | `--if-lease-id` | Return only if the current lease has the expected per-acquisition identity |
 | `return`  | `--if-lease-holder` | Return only if the current lease has the expected holder |
-| `return`  | `--if-clean` | Return only if no live process, uncommitted change, or unpushed commit would be lost; otherwise exit `4` and print the blocker. Git worktrees only: jj workspaces are refused with `unsupported` |
+| `return`  | `--if-clean` | Return only if no live process, uncommitted or changed seeded file, or unpushed commit would be lost; otherwise exit `4` and print the blocker. Git worktrees only: jj workspaces are refused with `unsupported` |
 | `prune`   | `--yes`   | Delete listed prune candidates instead of doing a dry run |
 | `prune`   | `--all`   | Sweep every managed pool under the user-level treehouse root |
 | `prune`   | `--global` | Alias for `--all` |
