@@ -1633,3 +1633,89 @@ func TestResetWorktreeToRefVerifiedRefusesADirtyTree(t *testing.T) {
 		})
 	}
 }
+
+// Greptile on PR 217, "Restore overwrites another checkout": a worktree
+// directory replaced while a clean-only reset runs must leave the replacement
+// untouched. The replacement here is a clone of the same repository holding
+// both commits, with an uncommitted edit, so any read-tree or restore that
+// reached it by pathname would erase the edit.
+func TestResetWorktreeToRefVerifiedLeavesAReplacementCheckoutUntouched(t *testing.T) {
+	wtPath, resetRef, head := setupSafeResetWorktree(t, refFormatInitFlag(t, "files"))
+	commonDir, err := runGit(wtPath, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoDir := filepath.Dir(commonDir)
+	moved := wtPath + "-moved"
+	replaced := false
+
+	err = ResetWorktreeToRefVerified(wtPath, resetRef, head, nil, func() error {
+		if err := os.Rename(wtPath, moved); err != nil {
+			return err
+		}
+		mustGit(t, "", "clone", "-q", repoDir, wtPath)
+		if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("replacement edit\n"), 0o644); err != nil {
+			return err
+		}
+		replaced = true
+		return nil
+	})
+	if !replaced {
+		t.Fatalf("test setup: the worktree was not replaced: %v", err)
+	}
+	if err == nil {
+		t.Fatal("a reset whose worktree was replaced must not report success")
+	}
+	if got, readErr := os.ReadFile(filepath.Join(wtPath, "README.md")); readErr != nil || string(got) != "replacement edit\n" {
+		t.Fatalf("the replacement checkout was modified: README.md = %q, %v (reset error: %v)", got, readErr, err)
+	}
+	if status, _ := runGit(wtPath, "status", "--porcelain"); status != "M README.md" {
+		t.Fatalf("the replacement checkout's index or tree changed: status %q", status)
+	}
+	if got, _ := runGit(moved, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("the original worktree's HEAD moved from %s to %s", head, got)
+	}
+}
+
+// Greptile on PR 217, "Failed reset looks unchanged": when a clean-only reset
+// fails after it has rewritten the tree, it restores the recorded commit's
+// tree and index, leaves HEAD there, and reports the failure.
+func TestResetWorktreeToRefVerifiedRestoresTheTreeWhenALateStepFails(t *testing.T) {
+	base := t.TempDir()
+	repoDir := filepath.Join(base, "repo")
+	wtPath := filepath.Join(base, "worktree")
+	initRepoWithFormat(t, repoDir, refFormatInitFlag(t, "files"))
+	mustGit(t, repoDir, "worktree", "add", "--detach", wtPath, "main")
+	head, err := runGit(wtPath, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(wtPath, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFile(t, repoDir, "README.md", "next")
+	resetRef, err := runGit(repoDir, "rev-parse", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	injected := errors.New("injected HEAD publish failure")
+	old := commitHeadMove
+	commitHeadMove = func(move headMove) error { return injected }
+	t.Cleanup(func() { commitHeadMove = old })
+
+	err = ResetWorktreeToRefVerified(wtPath, resetRef, head, nil, func() error { return nil })
+	if !errors.Is(err, injected) {
+		t.Fatalf("expected the late failure to be reported, got %v", err)
+	}
+	if got, _ := runGit(wtPath, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("HEAD moved from %s to %s", head, got)
+	}
+	if got, readErr := os.ReadFile(filepath.Join(wtPath, "README.md")); readErr != nil || string(got) != string(before) {
+		t.Fatalf("the tree was not restored: README.md = %q, %v; want %q", got, readErr, before)
+	}
+	if status, _ := runGit(wtPath, "status", "--porcelain"); status != "" {
+		t.Fatalf("the tree or index differs from the recorded HEAD after the failure: %q", status)
+	}
+}

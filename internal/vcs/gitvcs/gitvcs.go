@@ -849,6 +849,15 @@ func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean boo
 		if err := verify(); err != nil {
 			return err
 		}
+		// The verdict is about the directory recorded before HEAD was locked.
+		// Refuse before the first write when another directory now sits at the
+		// path, seeded files or not: every step below acts by pathname.
+		root, worktree, err := openCleanupRoot(worktreePath, cleanupIdentity, authenticateLinkedWorktree)
+		if err != nil {
+			return err
+		}
+		root.Close()
+		worktree.Close()
 	}
 	rollback := func(step string, cause error) error {
 		if verify == nil {
@@ -877,11 +886,15 @@ func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean boo
 	if _, err := runGit(worktreePath, "clean", "-fd"); err != nil {
 		return rollback("git clean", err)
 	}
-	if err := move.commit(); err != nil {
+	if err := commitHeadMove(move); err != nil {
 		return rollback("commit reset HEAD", err)
 	}
 	return nil
 }
+
+// commitHeadMove publishes a reset's new HEAD. It is a variable so tests can
+// fail the last step of a reset after the tree was already rewritten.
+var commitHeadMove = func(move headMove) error { return move.commit() }
 
 // headMove holds a worktree's HEAD lock across a reset; commit moves HEAD to the reset target and releases it.
 type headMove interface {
