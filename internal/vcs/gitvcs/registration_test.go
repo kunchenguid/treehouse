@@ -18,7 +18,18 @@ func TestRelativeWorktreeRegistrationCanBeCleanedFromOtherDirectory(t *testing.T
 	if err := os.WriteFile(filepath.Join(wtPath, ".git"), []byte(marker), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	backlink, err := filepath.Rel(gitdir, filepath.Join(wtPath, ".git"))
+	// Resolve symlinks first (macOS temp dirs live under /var -> /private/var):
+	// a backlink computed across two spellings climbs to / and resolves from
+	// any working directory, which would hide a cwd-relative lookup.
+	realGitdir, err := filepath.EvalSymlinks(gitdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realWorktree, err := filepath.EvalSymlinks(wtPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backlink, err := filepath.Rel(realGitdir, filepath.Join(realWorktree, ".git"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,6 +45,9 @@ func TestRelativeWorktreeRegistrationCanBeCleanedFromOtherDirectory(t *testing.T
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+	if _, err := os.Stat(backlink); err == nil {
+		t.Fatalf("test setup: backlink %q resolves from the working directory, so it cannot catch a cwd-relative lookup", backlink)
+	}
 	info, err := os.Stat(wtPath)
 	if err != nil {
 		t.Fatal(err)

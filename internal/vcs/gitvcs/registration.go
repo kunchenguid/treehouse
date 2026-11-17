@@ -7,10 +7,10 @@ import (
 	"strings"
 )
 
-// ValidateWorktreeRegistration verifies both directions of a linked worktree's
-// registration without running Git against a potentially unrelated HEAD/index.
-// A leftover .git file is not ownership proof: Git can reuse its registration
-// name after an interrupted worktree add. Main checkouts have a .git directory.
+// resolveWorktreeRegistration resolves the gitdir named by a linked worktree's
+// .git file and the backlink recorded in that gitdir. A relative gitdir is
+// read against the worktree and a relative backlink against the gitdir, as Git
+// writes them, never against the process's working directory.
 func resolveWorktreeRegistration(worktreePath, gitdir string) (string, string, error) {
 	if gitdir == "" {
 		return "", "", fmt.Errorf("empty gitdir registration")
@@ -33,6 +33,10 @@ func resolveWorktreeRegistration(worktreePath, gitdir string) (string, string, e
 	return gitdir, filepath.Clean(backlink), nil
 }
 
+// ValidateWorktreeRegistration verifies both directions of a linked worktree's
+// registration without running Git against a potentially unrelated HEAD/index.
+// A leftover .git file is not ownership proof: Git can reuse its registration
+// name after an interrupted worktree add. Main checkouts have a .git directory.
 func ValidateWorktreeRegistration(worktreePath string) error {
 	marker := filepath.Join(worktreePath, ".git")
 	info, err := os.Stat(marker)
