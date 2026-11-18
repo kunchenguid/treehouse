@@ -1,5 +1,19 @@
 # Changelog
 
+## [3.2.0](https://github.com/kunchenguid/treehouse/compare/v3.1.8...v3.2.0) (2026-11-18)
+
+
+### Features
+
+* **pool:** add return --if-clean ([#217](https://github.com/kunchenguid/treehouse/issues/217)) ([38fcb38](https://github.com/kunchenguid/treehouse/commit/38fcb38fe361ae603290ada55f70379e595e5393))
+
+
+### Bug Fixes
+
+* **pool:** merge state entries that record one worktree under two paths ([#215](https://github.com/kunchenguid/treehouse/issues/215)) ([bd3cc28](https://github.com/kunchenguid/treehouse/commit/bd3cc280decabfdadcc5a092aa8f640261e22eb3))
+* **pool:** preserve worktree identity across symlinked pool paths ([#208](https://github.com/kunchenguid/treehouse/issues/208)) ([a28452a](https://github.com/kunchenguid/treehouse/commit/a28452ae156652cb2d923d05116da1c81c530955))
+* **updater:** keep update-check cache fresh when install is up to date ([#213](https://github.com/kunchenguid/treehouse/issues/213)) ([2b17bbf](https://github.com/kunchenguid/treehouse/commit/2b17bbfe06826e4234bcdf0fd6ff6856ec81ecae))
+
 ## [3.1.8](https://github.com/kunchenguid/treehouse/compare/v3.1.7...v3.1.8) (2026-10-30)
 
 
