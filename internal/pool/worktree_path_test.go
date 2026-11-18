@@ -544,6 +544,34 @@ func TestResolveWorktreePath_AllowsASiblingOfThePools(t *testing.T) {
 	}
 }
 
+func TestFreeTemplatedSlot_SkipsRegisteredNumbersAfterAnOccupiedPath(t *testing.T) {
+	repoRoot, poolDir := synthPaths(t)
+	occupied := filepath.Join(filepath.Dir(repoRoot), "myrepo-1")
+	if err := os.MkdirAll(occupied, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := State{Worktrees: []WorktreeEntry{{Name: "2"}, {Name: "3"}, {Name: "8"}}}
+	var name, path string
+	var err error
+	warnings := captureStderr(t, func() {
+		name, path, err = freeTemplatedSlot(repoRoot, poolDir, state, 2, acquireOptions{
+			worktreePath: "{repo_parent}/{repo}-{slot}",
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(filepath.Dir(repoRoot), "myrepo-4"); name != "4" || path != want {
+		t.Fatalf("got slot %q at %q, want slot 4 at %q", name, path, want)
+	}
+	if !strings.Contains(warnings, "skipped slot 1") {
+		t.Errorf("stderr %q does not report the occupied path", warnings)
+	}
+	if entries, err := os.ReadDir(occupied); err != nil || len(entries) != 0 {
+		t.Errorf("occupied directory changed: entries %v err %v", entries, err)
+	}
+}
+
 // TestAcquire_WorktreePathSkipsAnOccupiedCandidate covers a directory treehouse
 // does not own sitting where the first candidate name resolves. It is never
 // adopted, but it must not stop the pool from handing out a slot either, and the

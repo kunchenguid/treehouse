@@ -4712,3 +4712,36 @@ func TestReleasePreconditions_LeaseIdentityAndAbsenceAreSeparatePredicates(t *te
 		t.Fatalf("RequireUnleased on the now-parked worktree must pass: %v", err)
 	}
 }
+
+func TestNextSlotNumber_ReusesTheLowestFreedNumber(t *testing.T) {
+	entries := func(names ...string) State {
+		var s State
+		for _, name := range names {
+			s.Worktrees = append(s.Worktrees, WorktreeEntry{Name: name})
+		}
+		return s
+	}
+	for _, tc := range []struct {
+		state State
+		want  int
+	}{
+		{entries(), 1},
+		{entries("1", "2", "3"), 4},
+		// Slots 1 through 7 were destroyed while slot 8 stays in use.
+		{entries("8"), 1},
+		{entries("1", "8"), 2},
+		{entries("2", "3", "8"), 1},
+		{entries("1", "2", "4"), 3},
+		{entries("x", "2"), 1},
+	} {
+		if got := nextSlotNumber(tc.state); got != tc.want {
+			t.Errorf("nextSlotNumber(%v) = %d, want %d", tc.state.Worktrees, got, tc.want)
+		}
+	}
+	if got := freeSlotNumber(entries("1", "2", "4", "5"), 3); got != 3 {
+		t.Errorf("freeSlotNumber from 3 = %d, want 3", got)
+	}
+	if got := freeSlotNumber(entries("1", "2", "4", "5"), 4); got != 6 {
+		t.Errorf("freeSlotNumber from 4 = %d, want 6", got)
+	}
+}
