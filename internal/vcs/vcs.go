@@ -587,6 +587,19 @@ func ResetWorktreeToRefWithSeededPaths(worktreePath, ref, expectedHead string, r
 	return b.ResetWorktreeToRefWithSeededPaths(worktreePath, ref, expectedHead, requireClean, seededPaths)
 }
 
+// ResetWorktreeToRefVerified is the guarded reset with requireClean, plus
+// verify, which runs while HEAD's lock is held, after HEAD is compared and
+// immediately before anything is removed or rewritten. An error from verify
+// aborts the reset with nothing changed. Like the other clean-return helpers
+// it is Git-only: jj takes no lock that could hold a verdict until its reset,
+// so any other slot is refused.
+func ResetWorktreeToRefVerified(worktreePath, ref, expectedHead string, seededPaths []string, verify func() error) error {
+	if err := requireGitSlot(worktreePath); err != nil {
+		return err
+	}
+	return gitvcs.ResetWorktreeToRefVerified(worktreePath, ref, expectedHead, seededPaths, verify)
+}
+
 // IsWorktreeSafeToReset reports whether worktreePath can be reset to branch
 // without discarding committed work and returns the immutable reset target and
 // the worktree HEAD recorded at check time.
@@ -658,6 +671,36 @@ func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 // IsDirty reports tracked or untracked local changes in the worktree.
 func IsDirty(worktreePath string) (bool, error) {
 	return backendForWorktree(worktreePath).IsDirty(worktreePath)
+}
+
+// UncommittedWork describes the local changes a reset of a Git slot would
+// discard, or returns "" when there are none. It is Git-only and fails closed:
+// a slot whose own marker is not a valid Git one is described, never read
+// through the repository enclosing an in-project pool.
+func UncommittedWork(worktreePath string) string {
+	if err := requireGitSlot(worktreePath); err != nil {
+		return err.Error()
+	}
+	return gitvcs.UncommittedWork(worktreePath)
+}
+
+// IsCommitLanded reports whether every commit reachable from commit is
+// contained in a remote-tracking ref or the local base branch of a Git slot.
+// It is Git-only and fails closed (false).
+func IsCommitLanded(worktreePath, commit, base string) bool {
+	return requireGitSlot(worktreePath) == nil && gitvcs.IsCommitLanded(worktreePath, commit, base)
+}
+
+// requireGitSlot admits only a slot whose own marker is a valid Git one.
+func requireGitSlot(worktreePath string) error {
+	name, err := WorktreeBackendNameChecked(worktreePath)
+	if err != nil {
+		return err
+	}
+	if name != "git" {
+		return fmt.Errorf("%s is not a Git worktree, so it cannot be verified", worktreePath)
+	}
+	return nil
 }
 
 // ShortHash returns a short stable hash of s, used for pool directory naming.

@@ -795,22 +795,24 @@ func ResetWorktreeWithSeededPaths(worktreePath, branch string, seededPaths []str
 // is updated with read-tree/clean, which do not need the lock; see lockHead
 // for how HEAD itself is committed.
 func ResetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool) error {
-	return resetWorktreeToRef(worktreePath, ref, expectedHead, requireClean, nil, false)
+	return resetWorktreeToRef(worktreePath, ref, expectedHead, requireClean, nil, false, nil)
 }
 
 // ResetWorktreeToRefWithSeededPaths removes the pool's trusted seed inventory
 // before restoring tracked content. A nil inventory does not authorize any
 // ignored-file deletion.
 func ResetWorktreeToRefWithSeededPaths(worktreePath, ref, expectedHead string, requireClean bool, seededPaths []string) error {
-	return resetWorktreeToRef(worktreePath, ref, expectedHead, requireClean, seededPaths, true)
+	return resetWorktreeToRef(worktreePath, ref, expectedHead, requireClean, seededPaths, true, nil)
 }
 
-func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool, seededPaths []string, cleanSeeds bool) error {
+// resetWorktreeToRef runs verify, when non-nil, after HEAD is locked and
+// compared and before anything is removed or rewritten.
+func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean bool, seededPaths []string, cleanSeeds bool, verify func() error) error {
 	if !isCommitID(expectedHead) || !isCommitID(ref) {
 		return fmt.Errorf("worktree reset requires resolved commit IDs")
 	}
 	var cleanupIdentity os.FileInfo
-	if cleanSeeds && seededPaths != nil {
+	if verify != nil || cleanSeeds && seededPaths != nil {
 		worktree, err := openDirectoryNoFollow(worktreePath)
 		if err != nil {
 			return err
@@ -833,26 +835,66 @@ func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean boo
 			return err
 		}
 		if dirty {
+			// A clean-only caller names the change; a nil verdict must still
+			// refuse, because the tree is dirty and nothing was reset.
+			if verify != nil {
+				if err := verify(); err != nil {
+					return err
+				}
+			}
 			return fmt.Errorf("worktree became dirty after safety check")
 		}
 	}
-	if cleanSeeds {
-		if seededPaths != nil {
-			err = removeSeededPaths(worktreePath, seededPaths, cleanupIdentity)
+	if verify != nil {
+		if err := verify(); err != nil {
+			return err
 		}
+		// The verdict is about the directory recorded before HEAD was locked.
+		// Refuse before the first write when another directory now sits at the
+		// path, seeded files or not: every step below acts by pathname.
+		root, worktree, err := openCleanupRoot(worktreePath, cleanupIdentity, authenticateLinkedWorktree)
 		if err != nil {
 			return err
 		}
+		root.Close()
+		worktree.Close()
 	}
-
+	rollback := func(step string, cause error) error {
+		if verify == nil {
+			return fmt.Errorf("%s failed: %w", step, cause)
+		}
+		root, worktree, err := openCleanupRoot(worktreePath, cleanupIdentity, authenticateLinkedWorktree)
+		if err != nil {
+			return fmt.Errorf("%s failed: %w (restore skipped because worktree was replaced: %v)", step, cause, err)
+		}
+		root.Close()
+		worktree.Close()
+		_, restoreErr := runGit(worktreePath, "read-tree", "--reset", "-u", expectedHead)
+		if restoreErr != nil {
+			return fmt.Errorf("%s failed: %w (also could not restore HEAD %s: %v)", step, cause, expectedHead, restoreErr)
+		}
+		return fmt.Errorf("%s failed: %w", step, cause)
+	}
+	if cleanSeeds && seededPaths != nil {
+		if err := removeSeededPaths(worktreePath, seededPaths, cleanupIdentity); err != nil {
+			return rollback("remove seeded paths", err)
+		}
+	}
 	if _, err := runGit(worktreePath, "read-tree", "--reset", "-u", ref); err != nil {
-		return err
+		return rollback("read-tree reset", err)
 	}
 	if _, err := runGit(worktreePath, "clean", "-fd"); err != nil {
-		return err
+		return rollback("git clean", err)
 	}
-	return move.commit()
+	if err := commitHeadMove(move); err != nil {
+		return rollback("commit reset HEAD", err)
+	}
+	return nil
 }
+
+// commitHeadMove publishes a reset's new HEAD. It is a variable so tests can
+// fail the last step of a reset after the tree was already rewritten.
+var commitHeadMove = func(move headMove) error { return move.commit() }
 
 // headMove holds a worktree's HEAD lock across a reset; commit moves HEAD to the reset target and releases it.
 type headMove interface {
@@ -1350,14 +1392,11 @@ func authenticateLinkedWorktree(root *os.Root, worktreePath string) error {
 	if !ok || gitDir == "" {
 		return fmt.Errorf("refusing to clean unregistered worktree %s", worktreePath)
 	}
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(worktreePath, gitDir)
-	}
-	backlink, err := os.ReadFile(filepath.Join(filepath.Clean(gitDir), "gitdir"))
+	_, backlink, err := resolveWorktreeRegistration(worktreePath, gitDir)
 	if err != nil {
 		return fmt.Errorf("refusing to clean unregistered worktree %s", worktreePath)
 	}
-	backlinkInfo, err := os.Stat(filepath.Clean(string(bytes.TrimSpace(backlink))))
+	backlinkInfo, err := os.Stat(backlink)
 	if err != nil || !os.SameFile(marker, backlinkInfo) {
 		return fmt.Errorf("refusing to clean unregistered worktree %s", worktreePath)
 	}
@@ -1647,6 +1686,34 @@ func (*Backend) IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 	return IsHeadMergedIntoRef(worktreePath, ref)
 }
 func (*Backend) IsDirty(worktreePath string) (bool, error) { return IsDirty(worktreePath) }
+
+// UncommittedWork describes the local changes a reset would discard, or ""
+// when there are none. It uses the recovery check rather than IsDirty, because
+// it also sees edits hidden by skip-worktree, assume-unchanged, or a
+// submodule's ignore setting, and it fails closed.
+func UncommittedWork(worktreePath string) string {
+	untracked, reason := RecoveryWorktree(worktreePath)
+	if reason != "" {
+		return reason
+	}
+	if len(untracked) > 0 {
+		return fmt.Sprintf("%d untracked path(s) are present, starting with %s", len(untracked), untracked[0])
+	}
+	return ""
+}
+
+// IsCommitLanded reports whether every commit reachable from commit is
+// contained in a remote-tracking ref or the local base branch. It fails closed.
+func IsCommitLanded(worktreePath, commit, base string) bool {
+	return isCommitID(commit) && commitContained(worktreePath, commit, base)
+}
+
+// ResetWorktreeToRefVerified is ResetWorktreeToRefWithSeededPaths with
+// requireClean, plus verify, run under HEAD's lock immediately before anything
+// is removed or rewritten.
+func ResetWorktreeToRefVerified(worktreePath, ref, expectedHead string, seededPaths []string, verify func() error) error {
+	return resetWorktreeToRef(worktreePath, ref, expectedHead, true, seededPaths, true, verify)
+}
 
 // IsOriginAccessError reports whether err reads like a failure to reach or
 // use the origin remote, in git's own vocabulary. The patterns lived in the
