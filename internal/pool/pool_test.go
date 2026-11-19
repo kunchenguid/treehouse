@@ -1309,25 +1309,91 @@ func assertFileContents(t *testing.T, path, want string) {
 	}
 }
 
-func TestAcquire_HookFailureDoesNotFailAcquire(t *testing.T) {
-	repoDir, poolDir := setupRepo(t)
-
-	hooks := []string{
-		"this-command-does-not-exist-xyzzy",
-		"echo ok > second-ran.txt",
+func TestAcquire_HookFailureQuarantines(t *testing.T) {
+	for _, reuse := range []bool{false, true} {
+		for _, leased := range []bool{false, true} {
+			t.Run(fmt.Sprintf("reuse=%t/leased=%t", reuse, leased), func(t *testing.T) {
+				repoDir, poolDir := setupLocalRepo(t)
+				// Partial ignored setup output alone must not make the slot reusable.
+				if err := os.WriteFile(filepath.Join(repoDir, ".git", "info", "exclude"), []byte("setup-partial.txt\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				var previous string
+				if reuse {
+					previous = acquireDisposable(t, repoDir, poolDir)
+				}
+				hooks := []string{"echo partial > setup-partial.txt && exit 42", "echo ok > second-ran.txt"}
+				var path string
+				var err error
+				if leased {
+					var lease LeaseInfo
+					lease, err = AcquireLeaseInfo(repoDir, poolDir, 1, hooks, "worker")
+					if lease != (LeaseInfo{}) {
+						t.Fatalf("failed setup returned a lease: %+v", lease)
+					}
+				} else {
+					path, err = Acquire(repoDir, poolDir, 1, hooks)
+				}
+				if err == nil || !strings.Contains(err.Error(), "post_create") || !strings.Contains(err.Error(), "exit 42") || path != "" {
+					t.Fatalf("expected setup failure without a path, got path=%q err=%v", path, err)
+				}
+				for range 2 {
+					statuses, err := List(poolDir)
+					if err != nil || len(statuses) != 1 || statuses[0].Status != StatusLeased || !IsQuarantinedLeaseHolder(statuses[0].LeaseHolder) || statuses[0].LeaseID != "" {
+						t.Fatalf("failed setup lost quarantine: %+v, %v", statuses, err)
+					}
+					path = statuses[0].Path
+				}
+				if reuse && path != previous {
+					t.Fatalf("tested path %s, expected reused slot %s", path, previous)
+				}
+				if _, err := os.Stat(filepath.Join(path, "setup-partial.txt")); err != nil {
+					t.Fatalf("partial setup output was lost: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(path, "second-ran.txt")); !os.IsNotExist(err) {
+					t.Fatalf("setup continued after failure: %v", err)
+				}
+				if _, err := Acquire(repoDir, poolDir, 1, nil); err == nil {
+					t.Fatal("failed setup slot was reused")
+				}
+			})
+		}
 	}
+}
 
-	wtPath, err := Acquire(repoDir, poolDir, 4, hooks)
-	if err != nil {
-		t.Fatalf("Acquire should not fail when a hook fails: %v", err)
+func TestAcquire_PostCreateCannotOverwriteChangedReservation(t *testing.T) {
+	repoDir, poolDir := setupLocalRepo(t)
+	hook := quoteForShell(os.Args[0]) + " -test.run=TestReplacePostCreateReservationProbe -- " + quoteForShell(poolDir)
+	lease, err := AcquireLeaseInfo(repoDir, poolDir, 1, []string{hook}, "original")
+	if err == nil || !strings.Contains(err.Error(), "reservation changed") || lease != (LeaseInfo{}) {
+		t.Fatalf("superseded acquisition succeeded: %+v, %v", lease, err)
 	}
-	if wtPath == "" {
-		t.Fatal("Acquire returned empty path")
+	state, err := ReadState(poolDir)
+	if err != nil || len(state.Worktrees) != 1 || state.Worktrees[0].LeaseHolder != "replacement" || state.Worktrees[0].LeaseID == "" {
+		t.Fatalf("replacement reservation overwritten: %+v, %v", state, err)
 	}
+}
 
-	// The second hook must still have run despite the first failing.
-	if _, err := os.Stat(filepath.Join(wtPath, "second-ran.txt")); err != nil {
-		t.Fatalf("expected second hook to run despite first failing: %v", err)
+func TestReplacePostCreateReservationProbe(t *testing.T) {
+	if len(os.Args) < 2 || os.Args[len(os.Args)-2] != "--" {
+		return
+	}
+	poolDir := os.Args[len(os.Args)-1]
+	if err := WithStateLock(poolDir, func() error {
+		state, err := ReadState(poolDir)
+		if err != nil {
+			return err
+		}
+		if len(state.Worktrees) != 1 || state.Worktrees[0].LeaseID != "" || state.Worktrees[0].LeaseHolder != acquisitionIncompleteLeaseHolder {
+			return fmt.Errorf("setup ran after acquisition was granted: %+v", state)
+		}
+		clearLease(&state.Worktrees[0])
+		if err := markAcquired(&state.Worktrees[0], acquireOptions{lease: true, leaseHolder: "replacement"}); err != nil {
+			return err
+		}
+		return WriteState(poolDir, state)
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

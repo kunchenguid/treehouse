@@ -461,7 +461,6 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 	}
 
 	var acquired LeaseInfo
-	var runPostCreate bool
 
 	err = WithStateLock(poolDir, func() error {
 		state, err := ReadState(poolDir)
@@ -648,27 +647,8 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 					return fmt.Errorf("failed to create branch %q in %s: %w", opts.branch, wt.Path, branchErr)
 				}
 			}
-			clearLease(&state.Worktrees[i])
-			if err := markAcquired(&state.Worktrees[i], opts); err != nil {
-				return err
-			}
 			acquired = leaseInfoFromEntry(state.Worktrees[i], branch)
-			if err := persistState(poolDir, state); err != nil {
-				// Preserve the completed seed inventory outside the mutable
-				// worktree before leaving this failed acquisition quarantined.
-				state.Worktrees[i].OwnerPID = 0
-				state.Worktrees[i].OwnerStartedAt = 0
-				clearLease(&state.Worktrees[i])
-				state.Worktrees[i].Leased = true
-				state.Worktrees[i].LeaseHolder = acquisitionIncompleteLeaseHolder
-				state.Worktrees[i].LeasedAt = time.Now()
-				if quarantineErr := persistState(poolDir, state); quarantineErr != nil {
-					return fmt.Errorf("%w (quarantine failed: %v)", err, quarantineErr)
-				}
-				return err
-			}
-			runPostCreate = true
-			return nil
+			return persistState(poolDir, state)
 		}
 
 		// No available worktree — create new if pool allows
@@ -833,26 +813,47 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		}
 
 		entry = state.Worktrees[len(state.Worktrees)-1]
-		clearLease(&entry)
-		if err := markAcquired(&entry, opts); err != nil {
-			return err
-		}
-		state.Worktrees[len(state.Worktrees)-1] = entry
-
 		acquired = leaseInfoFromEntry(entry, branch)
-		if err := persistState(poolDir, state); err != nil {
-			return err
-		}
-		runPostCreate = true
 		return nil
 	})
 	if err != nil {
 		return LeaseInfo{}, err
 	}
-	if runPostCreate {
-		hooks.Run(postCreate, acquired.Path, opts.hookStdout, opts.hookStderr)
+	// Keep the durable incomplete-acquisition quarantine through setup, for
+	// both fresh and recycled slots. Hooks run outside the state lock so they
+	// can inspect the pool or acquire another slot without deadlocking.
+	if err := hooks.RunRequired(postCreate, acquired.Path, opts.hookStdout, opts.hookStderr); err != nil {
+		return LeaseInfo{}, fmt.Errorf("post_create failed in %s; worktree quarantined for inspection: %w", acquired.Path, err)
 	}
 
+	err = WithStateLock(poolDir, func() error {
+		state, err := ReadState(poolDir)
+		if err != nil {
+			return err
+		}
+		for i := range state.Worktrees {
+			wt := &state.Worktrees[i]
+			if wt.Path != acquired.Path {
+				continue
+			}
+			// An explicit return or destroy during setup must not let this
+			// acquisition overwrite a newer reservation.
+			if wt.Destroying || !wt.Leased || wt.LeaseID != acquired.LeaseID ||
+				wt.LeaseHolder != acquisitionIncompleteLeaseHolder || !wt.LeasedAt.Equal(acquired.LeasedAt) {
+				break
+			}
+			clearLease(wt)
+			if err := markAcquired(wt, opts); err != nil {
+				return err
+			}
+			acquired = leaseInfoFromEntry(*wt, branch)
+			return persistState(poolDir, state)
+		}
+		return fmt.Errorf("acquisition reservation changed during post_create in %s", acquired.Path)
+	})
+	if err != nil {
+		return LeaseInfo{}, err
+	}
 	return acquired, nil
 }
 
