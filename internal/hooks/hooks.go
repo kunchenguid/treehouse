@@ -1,6 +1,5 @@
 // Package hooks runs user-configured shell commands at worktree lifecycle
-// points. Commands run sequentially in a given working directory. A failing
-// command is logged but does not stop later commands or fail the caller.
+// points. Commands run sequentially in a given working directory.
 package hooks
 
 import (
@@ -19,7 +18,17 @@ func Run(commands []string, workDir string, stdout, stderr io.Writer) {
 	}
 }
 
-func runOne(command, workDir string, stdout, stderr io.Writer) {
+// RunRequired runs commands like Run, but stops and returns the first failure.
+func RunRequired(commands []string, workDir string, stdout, stderr io.Writer) error {
+	for _, command := range commands {
+		if err := runOne(command, workDir, stdout, stderr); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func runOne(command, workDir string, stdout, stderr io.Writer) error {
 	cmd := newHookCommand(command)
 	cmd.Dir = workDir
 	cmd.Stdout = stdout
@@ -31,7 +40,9 @@ func runOne(command, workDir string, stdout, stderr io.Writer) {
 			exitCode = exitErr.ExitCode()
 		}
 		fmt.Fprintf(stderr, "🌳 hook command failed: %q (exit %d): %v\n", command, exitCode, err)
+		return fmt.Errorf("hook command %q failed (exit %d): %w", command, exitCode, err)
 	}
+	return nil
 }
 
 func windowsShellCommandLine(shell, command string) string {

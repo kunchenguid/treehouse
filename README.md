@@ -757,8 +757,8 @@ pre_destroy = ["./scripts/teardown.sh"]
 - `pre_destroy` runs before a worktree is removed by `treehouse destroy <path> --yes`, `treehouse destroy <pool> --all --yes`, or prune deletion commands such as `treehouse prune --yes` and `treehouse prune --prune-orphans --yes`.
 
 Commands in each list run sequentially in the worktree directory, via the OS shell (`/bin/sh -c` on Linux/macOS, `%COMSPEC% /c` on Windows).
-If a command exits non-zero, treehouse logs the command, exit code, and stderr, then continues with the remaining commands.
-A failing hook does not fail the overall `get`, `destroy`, or `prune` operation.
+If a `post_create` command exits non-zero, `get` fails with the command and exit code, stops the remaining setup commands, and grants no lease or subshell. The worktree stays quarantined as an incomplete acquisition for inspection, including any files setup wrote. This applies to both new and reused slots; after resolving the failure, explicitly return the worktree by path before acquiring it again.
+Failing `pre_destroy` commands are logged and do not stop later commands or fail `destroy` or `prune`.
 
 ## Development
 
