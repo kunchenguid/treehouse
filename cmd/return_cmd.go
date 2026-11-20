@@ -99,7 +99,14 @@ worktree, its checkout, and its lease are left exactly as found,
 the exit status is 4, and stdout carries one word naming the blocker:
 processes, dirty, unpushed, or unsupported. --if-clean supports Git
 worktrees only; a jj workspace is refused as unsupported before any change.
-It cannot be combined with --force or --all.`,
+It cannot be combined with --force or --all.
+
+A future major release will make plain 'treehouse return' (and --all) refuse
+the way --if-clean does, with exit 4 and the blocker on stdout. Until then a
+plain return behaves exactly as described above, but first warns on stderr for
+each worktree --if-clean would refuse, naming the blocker; a jj workspace
+warns that it will be refused as unsupported. Pass --if-clean to get the
+refusal now, or --force to keep discarding; neither prints the warning.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("if-lease-id") && returnIfLeaseID == "" {
 			return fmt.Errorf("--if-lease-id cannot be empty")
@@ -193,6 +200,13 @@ func releaseWorktree(target returnTarget, preconditions pool.ReleasePrecondition
 	if err := pool.ValidateReleasePreconditions(target.poolDir, target.path, preconditions, nil); err != nil {
 		return err
 	}
+	// Plain return is the only caller that has not chosen between discarding
+	// and keeping, so it is the one warned that its default will change. The
+	// warning comes before the confirmation and the termination, while the
+	// work it names is still there to be judged.
+	if !preconditions.RequireClean && !returnForce {
+		warnFutureCleanOnlyDefault(target)
+	}
 	// A clean-only return never prompts: the release refuses dirtiness
 	// itself, under the lock, instead of offering to discard it.
 	if !preconditions.RequireClean {
@@ -207,6 +221,28 @@ func releaseWorktree(target returnTarget, preconditions pool.ReleasePrecondition
 		finalize = func() error { return finalizeWorktreeReturn(target.path) }
 	}
 	return pool.ReleaseConditional(target.poolDir, target.path, returnBaseBranch(target.path), preconditions, finalize)
+}
+
+// warnFutureCleanOnlyDefault is the warning period before plain return becomes
+// clean-only by default: it prints, on stderr only, why a clean-only return
+// would refuse this worktree. It judges with the very checks --if-clean
+// releases under and changes nothing, so a plain return's stdout, behavior,
+// and exit status stay exactly as they were.
+func warnFutureCleanOnlyDefault(target returnTarget) {
+	err := pool.CheckReleaseClean(target.poolDir, target.path, returnBaseBranch(target.path))
+	if err == nil {
+		return
+	}
+	where := ui.PrettyPath(target.path)
+	var notClean *pool.NotCleanError
+	switch {
+	case errors.As(err, &notClean) && notClean.Blocker == pool.BlockedByUnsupported:
+		fmt.Fprintf(os.Stderr, "🌳 Warning: %s is a jj workspace (unsupported): a future major release will refuse to return it without --force (exit 4), because clean-only checks exist only for git worktrees. Pass --force to keep returning it.\n", where)
+	case errors.As(err, &notClean):
+		fmt.Fprintf(os.Stderr, "🌳 Warning: %s would be refused by --if-clean (%s: %s). A future major release will refuse this by default (exit 4); pass --if-clean to refuse now, or --force to keep discarding.\n", where, notClean.Blocker, notClean.Detail)
+	default:
+		fmt.Fprintf(os.Stderr, "🌳 Warning: cannot verify that %s is clean (%v). A future major release will not return it by default; pass --if-clean to refuse now, or --force to keep discarding.\n", where, err)
+	}
 }
 
 // bulkReturnPreconditions carries the LEASE the `--all` listing observed into
