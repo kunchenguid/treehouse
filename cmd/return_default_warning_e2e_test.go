@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -198,23 +197,43 @@ func TestPlainReturnWarnsAboutLiveProcessBeforeTerminatingIt(t *testing.T) {
 	}
 }
 
-func TestAdvisoryCheckFailureUsesGenericWarning(t *testing.T) {
-	oldStderr := os.Stderr
-	readEnd, writeEnd, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
+// When the advisory check itself cannot run, the plain return still behaves
+// exactly as before and only the warning says the slot could not be verified.
+// The realistic trigger is a slot parked on an explicit base branch that was
+// deleted since: the clean-only snapshot cannot resolve its reset target, and
+// --if-clean fails the same way, while plain return has always fallen back to
+// the default branch and exited 0.
+func TestPlainReturnWarnsWhenTheAdvisoryCheckFailsAndKeepsItsOutcome(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	gitCmd(t, repoDir, "branch", "release")
+	gitCmd(t, repoDir, "push", "origin", "release")
+	path, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "get", "--lease", "--base", "release")
+	if code != 0 {
+		t.Fatalf("get --lease --base release failed (exit %d): %s", code, stderr)
 	}
-	os.Stderr = writeEnd
-	warnFutureCleanOnlyDefault(returnTarget{poolDir: filepath.Join(t.TempDir(), "missing-pool"), path: filepath.Join(t.TempDir(), "slot")})
-	_ = writeEnd.Close()
-	os.Stderr = oldStderr
-	stderr, err := io.ReadAll(readEnd)
-	_ = readEnd.Close()
-	if err != nil {
-		t.Fatal(err)
+	path = strings.TrimSpace(path)
+	gitCmd(t, repoDir, "push", "origin", "--delete", "release")
+	gitCmd(t, repoDir, "branch", "-D", "release")
+
+	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "return", path)
+	if code != 0 || stdout != "" {
+		t.Fatalf("plain return must keep exit 0 and empty stdout, got exit %d stdout %q\nstderr: %s", code, stdout, stderr)
 	}
-	if strings.Contains(string(stderr), "future major release will refuse this by default (exit 4)") || !strings.Contains(string(stderr), "cannot verify that") {
-		t.Fatalf("expected generic advisory-check failure warning, got %s", stderr)
+	warnings := futureDefaultWarnings(stderr)
+	if len(warnings) != 1 {
+		t.Fatalf("expected exactly one default-change warning, got %d:\n%s", len(warnings), stderr)
+	}
+	for _, want := range []string{"🌳 Warning: cannot verify that", slotSuffix(path), "--if-clean", "--force"} {
+		if !strings.Contains(warnings[0], want) {
+			t.Fatalf("warning does not mention %q:\n%s", want, warnings[0])
+		}
+	}
+	// The fallback the base release always took is still taken and reported.
+	if !strings.Contains(stderr, `cannot park the worktree on "release"`) || !strings.Contains(stderr, "Worktree returned to pool.") {
+		t.Fatalf("expected the unchanged fallback-and-return report, got: %s", stderr)
+	}
+	if got := slotStatus(t, repoDir, homeDir, path); got != "available" {
+		t.Fatalf("expected the slot returned, got %q", got)
 	}
 }
 
