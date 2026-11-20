@@ -398,7 +398,7 @@ treehouse return --force \
 
 Treehouse compares supplied conditions while holding the pool state lock. A missing lease or mismatch exits nonzero before process termination, worktree reset, or state clearing. The same lock fences a matching return through the final clear, so the identity succeeds once and cannot release a later acquisition of the same path. `--if-lease-holder` is optional; use `--if-lease-id` for ABA protection when a holder may be reused.
 
-For backward compatibility, `treehouse return <path>` without either condition keeps its original unconditional path-only behavior. Existing path-only scripts and `treehouse get --lease` stdout are unchanged.
+For backward compatibility, `treehouse return <path>` without either condition keeps its original unconditional path-only behavior. Existing path-only scripts and `treehouse get --lease` stdout are unchanged. A future major release will make that plain return clean-only; see [Planned change: clean-only return by default](#planned-change-clean-only-return-by-default).
 
 A caller that must never discard work can add `--if-clean`:
 
@@ -407,6 +407,22 @@ blocker=$(treehouse return --if-lease-id "$lease_id" --if-clean "$path")
 ```
 
 The return then refuses unless the worktree has no live process (the set `status` lists), no uncommitted changes (untracked files included, and tracked edits hidden by skip-worktree, assume-unchanged, or a submodule's ignore setting), no seeded file (see [Seeding gitignored files](#seeding-gitignored-files)) that differs from the file it was copied from or whose source is gone, and no commit that neither a remote-tracking ref nor the base branch it would be parked on contains. `--if-clean` supports Git worktrees only; jj workspaces are refused with `unsupported` (exit 4), unchanged. Treehouse records `HEAD` first and judges every check against that commit, after any lease condition matched and under the same pool lock as the reset, so a commit that lands after the caller's own checks is still seen. It changes nothing until every check has passed: it never prompts, never terminates processes, and never runs a checkout or its hooks. The reset then checks everything again immediately before it removes anything, and refuses if `HEAD` has moved. A process can still start in the final instant after the process check; that race cannot be fenced. For other refusals, the worktree, its checkout, and its lease are left exactly as found. Refusals exit `4`, and stdout is one word: `processes`, `dirty`, `unpushed`, or `unsupported`. Anything that cannot be verified refuses under the check it belongs to. `--if-clean` cannot be combined with `--force` or `--all`.
+
+#### Planned change: clean-only return by default
+
+Plain `treehouse return` can still discard work: it terminates processes in the worktree, and it resets a clean worktree whose `HEAD` never landed, so a commit on a detached `HEAD` stays reachable only through the reflog. A future major release will make plain `treehouse return` and `treehouse return --all` refuse in every case `--if-clean` refuses.
+
+Until then, plain `return` and `return --all` warn first. Before any confirmation, process termination, or reset, they print one warning on stderr for each worktree that `--if-clean` would refuse. The warning names the worktree and the blocker (`processes`, `dirty`, or `unpushed`), or says that a jj workspace will be refused as `unsupported`. The return then continues unchanged: stdout, prompts, exit statuses, and effects stay the same. A worktree that `--if-clean` would return gets no warning, and a return with `--if-clean` or `--force` prints none.
+
+To migrate before the default changes:
+
+- **Callers that must keep work**: add `--if-clean` to single-worktree returns now. A refusal exits `4`, leaves the worktree and its lease as found, and prints the blocker alone on stdout. That is how the new default will behave.
+- **Callers that discard work on purpose**: pass `--force`. It stays the explicit way to clean, terminate processes, and return without prompting. Lease conditions (`--if-lease-id`, `--if-lease-holder`) and lock protections still apply to it.
+- **Exit statuses**: today a plain return of a dirty worktree that is not confirmed exits `3`. Under the new default it will exit `4` and print `dirty` on stdout, without prompting. Scripts that handle only `3`, pipe confirmation answers, or rely on return to terminate their workers must handle `4` or pass `--force`.
+- **`--all`**: the new default will check each held worktree, leave refused worktrees and their leases in place, and name them in the summary. Its exit status keeps today's order: `1` when any worktree failed, else `4` when a refusal kept any worktree, else `0`. `return --all --force` stays the explicit bulk cleanup.
+- **jj workspaces**: `--if-clean` cannot verify jj workspaces, so the new default will refuse them as `unsupported`. Pass `--force` to keep returning them.
+
+The warning and the planned change apply only to `treehouse return`. Exiting a `treehouse get` subshell is not affected.
 
 ### Recovering interrupted Git resets
 

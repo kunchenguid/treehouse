@@ -1040,31 +1040,11 @@ func (e *NotCleanError) Error() string {
 // reset runs them all again after it has locked and compared HEAD, immediately
 // before it removes or rewrites anything.
 func resetIfClean(wt *WorktreeEntry, base string, seededPaths []string) error {
-	backend := vcs.WorktreeBackendName(wt.Path)
-	if backend == "jj" {
-		return &NotCleanError{Path: wt.Path, Blocker: BlockedByUnsupported, Detail: "--if-clean cannot verify and reset jj workspaces atomically; it is available only for git worktrees"}
-	}
-	if backend == "" {
-		return &NotCleanError{Path: wt.Path, Blocker: BlockedByDirty, Detail: "its VCS marker is missing or unreadable, so its contents cannot be verified"}
-	}
-	snapshot := func() (ref, head string, err error) {
-		// Only the resolved target and the recorded HEAD are used; whether HEAD
-		// is merged into the base is deliberately not required, because work
-		// that landed on any remote-tracking ref is safe to reset away from.
-		_, ref, head, err = vcs.IsWorktreeSafeToReset(wt.Path, base)
-		if err == nil && (ref == "" || head == "") {
-			err = fmt.Errorf("cannot resolve HEAD or the reset target of %s", wt.Path)
-		}
-		return ref, head, err
-	}
-	ref, head, err := snapshot()
+	ref, head, err := verifyClean(wt, base, seededPaths)
 	if err != nil {
 		return err
 	}
 	verify := func() error { return checkClean(wt, base, head, seededPaths) }
-	if err := verify(); err != nil {
-		return err
-	}
 	resetErr := vcs.ResetWorktreeToRefVerified(wt.Path, ref, head, seededPaths, verify)
 	if resetErr == nil {
 		return nil
@@ -1076,13 +1056,46 @@ func resetIfClean(wt *WorktreeEntry, base string, seededPaths []string) error {
 	// The guarded reset refused before changing anything. When the worktree
 	// moved underneath it, name what the move left behind; otherwise report
 	// the failure itself. Neither is ever a success.
-	if _, now, err := snapshot(); err == nil && now != head {
+	if _, now, err := cleanSnapshot(wt.Path, base); err == nil && now != head {
 		if err := checkClean(wt, base, now, seededPaths); err != nil {
 			return err
 		}
 		return fmt.Errorf("HEAD of %s moved during the return (%s to %s); nothing was changed, so retry: %w", wt.Path, head, now, resetErr)
 	}
 	return resetErr
+}
+
+// verifyClean is the judging half of a RequireClean release, and changes
+// nothing: it refuses a slot whose backend it cannot verify, records HEAD and
+// the reset target, and runs every check against that snapshot. It returns the
+// snapshot a reset must be guarded by.
+func verifyClean(wt *WorktreeEntry, base string, seededPaths []string) (ref, head string, err error) {
+	switch vcs.WorktreeBackendName(wt.Path) {
+	case "jj":
+		return "", "", &NotCleanError{Path: wt.Path, Blocker: BlockedByUnsupported, Detail: "--if-clean cannot verify and reset jj workspaces atomically; it is available only for git worktrees"}
+	case "":
+		return "", "", &NotCleanError{Path: wt.Path, Blocker: BlockedByDirty, Detail: "its VCS marker is missing or unreadable, so its contents cannot be verified"}
+	}
+	ref, head, err = cleanSnapshot(wt.Path, base)
+	if err != nil {
+		return "", "", err
+	}
+	if err := checkClean(wt, base, head, seededPaths); err != nil {
+		return "", "", err
+	}
+	return ref, head, nil
+}
+
+// cleanSnapshot records the HEAD a clean-only release judges and the target it
+// would reset to. Only those two are used; whether HEAD is merged into the base
+// is deliberately not required, because work that landed on any
+// remote-tracking ref is safe to reset away from.
+func cleanSnapshot(worktreePath, base string) (ref, head string, err error) {
+	ref, head, err = vcs.WorktreeResetSnapshot(worktreePath, base)
+	if err == nil && (ref == "" || head == "") {
+		err = fmt.Errorf("cannot resolve HEAD or the reset target of %s", worktreePath)
+	}
+	return ref, head, err
 }
 
 // checkClean reports the first reason a reset of wt to base would destroy work
@@ -1262,24 +1275,11 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 			return err
 		}
 		worktreePath = wt.Path
-		branch, fallback, requested := "", "", ""
-		if !markerless {
-			requested = baseBranch
-			if requested == "" {
-				requested = wt.BaseBranch
-			}
-			if defaultErr != nil && requested == "" {
-				return defaultErr
-			}
-			branch, fallback = defaultBranch, defaultBranch
-			if requested != "" {
-				branch = requested
-			}
+		branch, fallback, requested, err := releaseParking(wt, markerless, baseBranch, defaultBranch, defaultErr)
+		if err != nil {
+			return err
 		}
-		seededPaths := wt.SeededPaths
-		if !wt.SeedInventoryKnown {
-			seededPaths = nil
-		}
+		seededPaths := trustedSeededPaths(wt)
 		if preconditions.RequireClean {
 			if err := resetIfClean(wt, branch, seededPaths); err != nil {
 				return err
@@ -1315,6 +1315,69 @@ func ReleaseConditional(poolDir, worktreePath, baseBranch string, preconditions 
 
 		releaseEntry(wt)
 		return WriteState(poolDir, state)
+	})
+}
+
+// releaseParking resolves the branch a release parks wt on: baseBranch, else
+// the base the slot was acquired with, else the inferred default, which is also
+// the fallback when the requested base cannot be checked out. requested is the
+// explicit base the entry keeps recording. A markerless slot is never reset, so
+// it resolves nothing.
+func releaseParking(wt *WorktreeEntry, markerless bool, baseBranch, defaultBranch string, defaultErr error) (branch, fallback, requested string, err error) {
+	if markerless {
+		return "", "", "", nil
+	}
+	requested = baseBranch
+	if requested == "" {
+		requested = wt.BaseBranch
+	}
+	if defaultErr != nil && requested == "" {
+		return "", "", "", defaultErr
+	}
+	branch, fallback = defaultBranch, defaultBranch
+	if requested != "" {
+		branch = requested
+	}
+	return branch, fallback, requested, nil
+}
+
+// trustedSeededPaths is the seeded-file inventory a reset may delete, or nil
+// when the entry was recovered without a trusted record of it.
+func trustedSeededPaths(wt *WorktreeEntry) []string {
+	if !wt.SeedInventoryKnown {
+		return nil
+	}
+	return wt.SeededPaths
+}
+
+// CheckReleaseClean reports what a RequireClean release of worktreePath would
+// decide right now, without changing anything: nil when it would pass, the
+// *NotCleanError it would refuse with, or the error that stops the check. It
+// runs the same checks against the same parking base under the same state
+// lock, but holds nothing afterwards, so the verdict is advisory and can be
+// stale by the time any release runs. A plain return uses it to warn about
+// what a clean-only return would refuse.
+func CheckReleaseClean(poolDir, worktreePath, baseBranch string) error {
+	markerless := vcs.WorktreeBackendName(worktreePath) == ""
+	defaultBranch, defaultErr := "", error(nil)
+	if !markerless {
+		defaultBranch, defaultErr = vcs.DefaultBranchForWorktree(worktreePath)
+	}
+	return WithStateLock(poolDir, func() error {
+		state, err := ReadState(poolDir)
+		if err != nil {
+			return err
+		}
+		wt, err := releasableWorktree(&state, worktreePath, ReleasePreconditions{})
+		if err != nil {
+			return err
+		}
+		branch, _, _, err := releaseParking(wt, markerless, baseBranch, defaultBranch, defaultErr)
+		if err != nil {
+			return err
+		}
+		_, _, err = verifyClean(wt, branch, trustedSeededPaths(wt))
+		return err
 	})
 }
 
