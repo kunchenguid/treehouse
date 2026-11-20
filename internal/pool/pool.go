@@ -1091,7 +1091,7 @@ func verifyClean(wt *WorktreeEntry, base string, seededPaths []string) (ref, hea
 // is deliberately not required, because work that landed on any
 // remote-tracking ref is safe to reset away from.
 func cleanSnapshot(worktreePath, base string) (ref, head string, err error) {
-	_, ref, head, err = vcs.IsWorktreeSafeToReset(worktreePath, base)
+	ref, head, err = vcs.WorktreeResetSnapshot(worktreePath, base)
 	if err == nil && (ref == "" || head == "") {
 		err = fmt.Errorf("cannot resolve HEAD or the reset target of %s", worktreePath)
 	}

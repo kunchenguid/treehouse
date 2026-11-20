@@ -600,6 +600,14 @@ func ResetWorktreeToRefVerified(worktreePath, ref, expectedHead string, seededPa
 	return gitvcs.ResetWorktreeToRefVerified(worktreePath, ref, expectedHead, seededPaths, verify)
 }
 
+// WorktreeResetSnapshot records the reset target and HEAD for a Git worktree.
+func WorktreeResetSnapshot(worktreePath, branch string) (string, string, error) {
+	if err := requireGitSlot(worktreePath); err != nil {
+		return "", "", err
+	}
+	return gitvcs.ResetSnapshot(worktreePath, branch)
+}
+
 // IsWorktreeSafeToReset reports whether worktreePath can be reset to branch
 // without discarding committed work and returns the immutable reset target and
 // the worktree HEAD recorded at check time.

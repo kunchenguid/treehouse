@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // These tests pin the warning period before plain `treehouse return` becomes
@@ -139,6 +141,83 @@ func TestPlainReturnWarnsAboutADirtyWorktreeAndKeepsItsOutcomes(t *testing.T) {
 // Nothing would be lost, so there is nothing to warn about: a slot parked as
 // acquired, and one whose commit landed on a remote-tracking branch other than
 // the base.
+func TestPlainReturnWarnsAboutLiveProcessBeforeTerminatingIt(t *testing.T) {
+	repoDir, homeDir := setupTestRepo(t)
+	lease := acquireLeaseJSON(t, repoDir, homeDir, "dibs")
+	signals := t.TempDir()
+	readyFile := filepath.Join(signals, "ready")
+	releaseFile := filepath.Join(signals, "release")
+	agent := exec.Command(waitShellBin)
+	agent.Dir = lease.Path
+	agent.Env = append(os.Environ(), "TREEHOUSE_TEST_READY="+readyFile, "TREEHOUSE_TEST_RELEASE="+releaseFile)
+	if err := agent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan struct{})
+	var agentErr error
+	go func() { agentErr = agent.Wait(); close(exited) }()
+	t.Cleanup(func() {
+		_ = os.WriteFile(releaseFile, nil, 0o644)
+		select {
+		case <-exited:
+		case <-time.After(10 * time.Second):
+			t.Error("worker did not exit during cleanup")
+		}
+	})
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		if _, err := os.Stat(readyFile); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the worker process never started in the worktree")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	stdout, stderr, code := runTreehouse(t, repoDir, homeDir, nil, "return", lease.Path)
+	if code != 0 || stdout != "" {
+		t.Fatalf("plain return must keep exit 0 and empty stdout, got exit %d stdout %q\nstderr: %s", code, stdout, stderr)
+	}
+	assertOneWarning(t, stderr, lease.Path, "processes")
+	warningAt := strings.Index(stderr, "future major release")
+	successAt := strings.Index(stderr, "Worktree returned to pool.")
+	if warningAt < 0 || successAt < 0 || warningAt > successAt {
+		t.Fatalf("warning must precede success: %s", stderr)
+	}
+	select {
+	case <-exited:
+		if agentErr == nil {
+			t.Fatal("plain return should terminate the live worker")
+		}
+	default:
+		t.Fatal("plain return left the live worker running")
+	}
+	if got := slotStatus(t, repoDir, homeDir, lease.Path); got != "available" {
+		t.Fatalf("expected the slot returned, got %q", got)
+	}
+}
+
+func TestAdvisoryCheckFailureUsesGenericWarning(t *testing.T) {
+	oldStderr := os.Stderr
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = writeEnd
+	warnFutureCleanOnlyDefault(returnTarget{poolDir: filepath.Join(t.TempDir(), "missing-pool"), path: filepath.Join(t.TempDir(), "slot")})
+	_ = writeEnd.Close()
+	os.Stderr = oldStderr
+	stderr, err := io.ReadAll(readEnd)
+	_ = readEnd.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stderr), "future major release will refuse this by default (exit 4)") || !strings.Contains(string(stderr), "cannot verify that") {
+		t.Fatalf("expected generic advisory-check failure warning, got %s", stderr)
+	}
+}
+
 func TestPlainReturnDoesNotWarnWhenNothingWouldBeLost(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 

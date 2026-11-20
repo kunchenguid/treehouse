@@ -1118,12 +1118,20 @@ func isCommitID(s string) bool {
 // ResetWorktreeToRef so verification and reset share one target and a later
 // HEAD change is refused. The check fails closed when the target or HEAD
 // cannot be resolved.
-func IsWorktreeSafeToReset(worktreePath, branch string) (bool, string, string, error) {
-	ref, err := resolveResetRef(worktreePath, branch)
+func ResetSnapshot(worktreePath, branch string) (ref, head string, err error) {
+	ref, err = resolveResetRef(worktreePath, branch)
 	if err != nil {
-		return false, "", "", err
+		return "", "", err
 	}
-	head, err := worktreeHead(worktreePath)
+	head, err = worktreeHead(worktreePath)
+	if err != nil {
+		return "", "", err
+	}
+	return ref, head, nil
+}
+
+func IsWorktreeSafeToReset(worktreePath, branch string) (bool, string, string, error) {
+	ref, head, err := ResetSnapshot(worktreePath, branch)
 	if err != nil {
 		return false, "", "", err
 	}
