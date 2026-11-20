@@ -207,6 +207,7 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `return`  | `--all`   | Return held worktrees in this repository's pool; skip available, damaged, and quarantined slots, a `you're here` slot nobody else holds, and a `locked` slot whose `HEAD.lock` is not Treehouse-owned |
 | `return`  | `--if-lease-id` | Return only if the current lease has the expected per-acquisition identity |
 | `return`  | `--if-lease-holder` | Return only if the current lease has the expected holder |
+| `return`  | `--if-clean` | Return only if no live process, uncommitted or changed seeded file, or unpushed commit would be lost; otherwise exit `4` and print the blocker. Git worktrees only: jj workspaces are refused with `unsupported` |
 | `prune`   | `--yes`   | Delete listed prune candidates instead of doing a dry run |
 | `prune`   | `--all`   | Sweep every managed pool under the user-level treehouse root |
 | `prune`   | `--global` | Alias for `--all` |
@@ -345,7 +346,7 @@ A name is the slot's own identity and belongs to it for its whole lifetime; it i
 
 An argument is read as a path first and only then as a name, so every argument that resolves today keeps resolving to exactly the same worktree. An argument holding a path separator is a path and only a path: its failure keeps reporting the path diagnosis rather than a misleading "no worktree named".
 
-Paths through a symlinked pool root and its physical location identify the same registered worktree. `return` and single-worktree `destroy` accept either spelling, while `status` keeps the path recorded in pool state. Changing only the root spelling does not create a second state entry or replace the existing lease.
+Paths through a symlinked pool root and its physical location identify the same registered worktree. `return` and single-worktree `destroy` accept either spelling, while `status` keeps the path recorded in pool state. Changing only the root spelling does not create a second state entry or replace the existing lease. A state file written by an earlier release can record one worktree under both spellings; treehouse merges those entries each time it reads pool state. The most protective entry stays (a running `destroy`, then an ordinary lease, a recovered lease, a running `get`, and finally the oldest entry), along with every other entry that has a holder of its own (an ordinary lease, or a running `get` or `destroy`), so each session's `return` still clears only its own. The quarantine of an interrupted or failed acquisition counts as an ordinary lease here: it stays until it is returned by name. The remaining copies are dropped.
 
 #### Returning everything at once
 
@@ -378,6 +379,7 @@ Each worktree is returned exactly as naming it would be, including the confirmat
 | `0`  | The worktree was returned and any lease on it was released |
 | `1`  | The return failed: unmet lease conditions, process termination, or reset |
 | `3`  | The worktree was not returned, and is exactly as it was found: it has uncommitted changes and cleaning was declined, or the confirmation could not be answered |
+| `4`  | `--if-clean` only: the worktree was not returned, and it and its lease are exactly as they were found, because returning it would lose work or interrupt a process, or because it is a jj workspace (`unsupported`); stdout names the blocker |
 
 `--all` reports the same statuses for the whole run: `0` when every held worktree was returned or skipped, `3` when the only thing that stopped a return was an abort, and `1` when any worktree failed. A skip is never a failure: nothing went wrong, so a retry would only report it again. A run in which every held slot was skipped still exits `0` and leaves the pool exactly as it was - nothing it set out to return was still there to return. A failure outranks an abort because the two need opposite responses - retry one, clean or `--force` the other.
 
@@ -397,6 +399,14 @@ treehouse return --force \
 Treehouse compares supplied conditions while holding the pool state lock. A missing lease or mismatch exits nonzero before process termination, worktree reset, or state clearing. The same lock fences a matching return through the final clear, so the identity succeeds once and cannot release a later acquisition of the same path. `--if-lease-holder` is optional; use `--if-lease-id` for ABA protection when a holder may be reused.
 
 For backward compatibility, `treehouse return <path>` without either condition keeps its original unconditional path-only behavior. Existing path-only scripts and `treehouse get --lease` stdout are unchanged.
+
+A caller that must never discard work can add `--if-clean`:
+
+```sh
+blocker=$(treehouse return --if-lease-id "$lease_id" --if-clean "$path")
+```
+
+The return then refuses unless the worktree has no live process (the set `status` lists), no uncommitted changes (untracked files included, and tracked edits hidden by skip-worktree, assume-unchanged, or a submodule's ignore setting), no seeded file (see [Seeding gitignored files](#seeding-gitignored-files)) that differs from the file it was copied from or whose source is gone, and no commit that neither a remote-tracking ref nor the base branch it would be parked on contains. `--if-clean` supports Git worktrees only; jj workspaces are refused with `unsupported` (exit 4), unchanged. Treehouse records `HEAD` first and judges every check against that commit, after any lease condition matched and under the same pool lock as the reset, so a commit that lands after the caller's own checks is still seen. It changes nothing until every check has passed: it never prompts, never terminates processes, and never runs a checkout or its hooks. The reset then checks everything again immediately before it removes anything, and refuses if `HEAD` has moved. A process can still start in the final instant after the process check; that race cannot be fenced. For other refusals, the worktree, its checkout, and its lease are left exactly as found. Refusals exit `4`, and stdout is one word: `processes`, `dirty`, `unpushed`, or `unsupported`. Anything that cannot be verified refuses under the check it belongs to. `--if-clean` cannot be combined with `--force` or `--all`.
 
 ### Recovering interrupted Git resets
 

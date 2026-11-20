@@ -21,6 +21,7 @@ var (
 	returnAll           bool
 	returnIfLeaseID     string
 	returnIfLeaseHolder string
+	returnIfClean       bool
 )
 
 var (
@@ -82,13 +83,32 @@ plain 'treehouse get' carries no lease to compare, so it is returned like any
 other in-use slot. --all takes no path or name, and cannot be combined with the
 --if-lease-* conditions, which target a single lease identity. Recovered
 entries and incomplete acquisitions are never returned by --all; inspect
-them and return each worktree by name.`,
+them and return each worktree by name.
+
+  treehouse return <path|name> --if-clean
+
+--if-clean returns the worktree only if nothing would be lost: no live
+process in it, no uncommitted changes (untracked files included), no seeded
+file that differs from the file it was copied from, and no commit that
+neither a remote-tracking ref nor the base branch it is parked on contains.
+It records HEAD first and judges every check against it, under the same pool
+lock as the reset, after any --if-lease-* condition matched, then checks again
+immediately before the reset. It changes nothing until every check passes:
+it never prompts, terminates processes, or runs a checkout. On a refusal the
+worktree, its checkout, and its lease are left exactly as found,
+the exit status is 4, and stdout carries one word naming the blocker:
+processes, dirty, unpushed, or unsupported. --if-clean supports Git
+worktrees only; a jj workspace is refused as unsupported before any change.
+It cannot be combined with --force or --all.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("if-lease-id") && returnIfLeaseID == "" {
 			return fmt.Errorf("--if-lease-id cannot be empty")
 		}
 
 		conditional := cmd.Flags().Changed("if-lease-id") || cmd.Flags().Changed("if-lease-holder")
+		if returnIfClean && returnForce {
+			return fmt.Errorf("--if-clean cannot be combined with --force; --force discards the work --if-clean protects")
+		}
 
 		if returnAll {
 			if len(args) > 0 {
@@ -96,6 +116,9 @@ them and return each worktree by name.`,
 			}
 			if conditional {
 				return fmt.Errorf("--all cannot be combined with --if-lease-id or --if-lease-holder; a lease condition identifies one acquisition, so name that worktree instead")
+			}
+			if returnIfClean {
+				return fmt.Errorf("--all cannot be combined with --if-clean; name each worktree to return it only if clean")
 			}
 			return returnHeldWorktrees()
 		}
@@ -112,7 +135,16 @@ them and return each worktree by name.`,
 		if cmd.Flags().Changed("if-lease-holder") {
 			preconditions.ExpectedLeaseHolder = &returnIfLeaseHolder
 		}
+		preconditions.RequireClean = returnIfClean
 		err = releaseWorktree(target, preconditions)
+		var notClean *pool.NotCleanError
+		if errors.As(err, &notClean) {
+			// The blocker is the only stdout output, so a caller can capture it
+			// without parsing diagnostics.
+			fmt.Fprintln(os.Stdout, notClean.Blocker)
+			return withExitCode(ExitNotClean, fmt.Errorf(
+				"🌳 worktree not returned: %s. It and its lease were left exactly as found", notClean.Detail))
+		}
 		// An abort is not a success: the worktree, and any lease on it, are
 		// exactly as they were found. Reporting exit 0 here let a caller
 		// conclude the slot was released, so a leaked lease starved the pool
@@ -141,6 +173,7 @@ func init() {
 	returnCmd.Flags().BoolVar(&returnAll, "all", false, "Return every held worktree in this repository's pool (leaves alone slots nobody holds)")
 	returnCmd.Flags().StringVar(&returnIfLeaseID, "if-lease-id", "", "Return only if the current lease has this identity")
 	returnCmd.Flags().StringVar(&returnIfLeaseHolder, "if-lease-holder", "", "Return only if the current lease has this holder")
+	returnCmd.Flags().BoolVar(&returnIfClean, "if-clean", false, "Return only if no process, uncommitted change, or unpushed commit would be lost; otherwise exit 4 and print the blocker")
 	rootCmd.AddCommand(returnCmd)
 }
 
@@ -160,12 +193,20 @@ func releaseWorktree(target returnTarget, preconditions pool.ReleasePrecondition
 	if err := pool.ValidateReleasePreconditions(target.poolDir, target.path, preconditions, nil); err != nil {
 		return err
 	}
-	if err := confirmWorktreeReturn(target.path); err != nil {
-		return err
+	// A clean-only return never prompts: the release refuses dirtiness
+	// itself, under the lock, instead of offering to discard it.
+	if !preconditions.RequireClean {
+		if err := confirmWorktreeReturn(target.path); err != nil {
+			return err
+		}
 	}
-	return pool.ReleaseConditional(target.poolDir, target.path, returnBaseBranch(target.path), preconditions, func() error {
-		return finalizeWorktreeReturn(target.path)
-	})
+	// A clean-only release must change nothing until it has verified
+	// everything, so it gets no detach-and-terminate step.
+	var finalize func() error
+	if !preconditions.RequireClean {
+		finalize = func() error { return finalizeWorktreeReturn(target.path) }
+	}
+	return pool.ReleaseConditional(target.poolDir, target.path, returnBaseBranch(target.path), preconditions, finalize)
 }
 
 // bulkReturnPreconditions carries the LEASE the `--all` listing observed into

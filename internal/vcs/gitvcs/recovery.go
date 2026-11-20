@@ -77,7 +77,12 @@ func recoveryNUL(data []byte) []string {
 // One walk replaces a merge-base per remote ref, which took minutes under the
 // state lock in repositories with thousands of remote refs.
 func RecoveryHeadContained(dir, base string) bool {
-	args := []string{"rev-list", "-n", "1", "HEAD", "--not", "--remotes"}
+	return commitContained(dir, "HEAD", base)
+}
+
+// commitContained is RecoveryHeadContained for any revision.
+func commitContained(dir, rev, base string) bool {
+	args := []string{"rev-list", "-n", "1", rev, "--not", "--remotes"}
 	if base != "" {
 		// rev-list fails on a missing ref, so only a verified base may join the
 		// walk; refs/remotes/origin/<base> is already covered by --remotes.

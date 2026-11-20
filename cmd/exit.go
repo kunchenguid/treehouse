@@ -17,6 +17,15 @@ const (
 	// worth retrying, while an unreturned dirty worktree stays unreturned
 	// until someone cleans it or passes --force.
 	ExitNotReturned = 3
+
+	// ExitNotClean reports that `treehouse return --if-clean` refused because
+	// a reset would have destroyed work or interrupted a live process; the
+	// worktree and any lease on it were left exactly as found. It is distinct
+	// from ExitNotReturned because the blocker is named on stdout and clears
+	// on its own once the work lands or the process exits, so a caller may
+	// retry later, while --force would destroy exactly what the caller asked
+	// treehouse to protect.
+	ExitNotClean = 4
 )
 
 // exitCodeError pairs an error with the exit status the process should carry.
