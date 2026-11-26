@@ -11,8 +11,11 @@ import (
 )
 
 type Config struct {
-	MaxTrees int    `toml:"max_trees"`
-	Root     string `toml:"root"`
+	MaxTrees int `toml:"max_trees"`
+	// MaxTreesSource records which layer supplied MaxTrees, for status and
+	// the pool-full diagnosis. It is never read from or written to TOML.
+	MaxTreesSource MaxTreesSource `toml:"-"`
+	Root           string         `toml:"root"`
 	// BaseBranch names the branch new and recycled worktrees are cut from.
 	// Empty (the default) infers it from the repository. When set, an
 	// unresolvable branch fails the acquisition instead of falling back.
@@ -50,6 +53,49 @@ type Config struct {
 	// TREEHOUSE_UNIQUE_LEAF environment variable.
 	UniqueLeaf bool  `toml:"unique_leaf,omitempty"`
 	Hooks      Hooks `toml:"hooks,omitempty"`
+}
+
+// MaxTreesOrigin names the layer an effective max_trees came from.
+type MaxTreesOrigin string
+
+const (
+	// MaxTreesDefault is the built-in default; no config file set max_trees.
+	MaxTreesDefault MaxTreesOrigin = "default"
+	// MaxTreesRepo is max_trees in the repo-level treehouse.toml.
+	MaxTreesRepo MaxTreesOrigin = "repo"
+	// MaxTreesUser is max_trees in the user-level config.toml.
+	MaxTreesUser MaxTreesOrigin = "user"
+)
+
+// MaxTreesSource is where the effective max_trees was read from. File is the
+// config file for the repo and user origins and empty for the default.
+type MaxTreesSource struct {
+	Origin MaxTreesOrigin
+	File   string
+}
+
+// Describe renders the source for humans, e.g. "repo config /r/treehouse.toml".
+func (s MaxTreesSource) Describe() string {
+	switch s.Origin {
+	case MaxTreesRepo:
+		return "repo config " + s.File
+	case MaxTreesUser:
+		return "user config " + s.File
+	default:
+		return "built-in default"
+	}
+}
+
+// RaiseAdvice says where to edit max_trees. A built-in default points at the
+// repo-level file, the setting Load honors first; an existing repo config
+// without max_trees shadows user-level max_trees, so the repo file is also the
+// right place there.
+func (s MaxTreesSource) RaiseAdvice(repoRoot string) string {
+	file := s.File
+	if s.Origin == MaxTreesDefault || file == "" {
+		file = filepath.Join(repoRoot, "treehouse.toml")
+	}
+	return "set max_trees to a higher value in " + file
 }
 
 type Hooks struct {
@@ -96,7 +142,8 @@ func ResolveAPFSSharing(flag string, cfg Config) (bool, error) {
 
 func DefaultConfig() Config {
 	return Config{
-		MaxTrees: 16,
+		MaxTrees:       16,
+		MaxTreesSource: MaxTreesSource{Origin: MaxTreesDefault},
 	}
 }
 
@@ -164,6 +211,9 @@ func Load(repoRoot string) (Config, error) {
 		if err != nil {
 			return cfg, err
 		}
+		if md.IsDefined("max_trees") {
+			cfg.MaxTreesSource = MaxTreesSource{Origin: MaxTreesRepo, File: repoPath}
+		}
 		// Repo-level hooks are discarded so that a command run in an
 		// untrusted clone cannot execute checked-in shell. Say so, once,
 		// instead of dropping them silently.
@@ -208,8 +258,12 @@ func loadUser() (Config, bool, error) {
 		return cfg, false, nil
 	}
 	if _, err := os.Stat(userPath); err == nil {
-		if _, err := toml.DecodeFile(userPath, &cfg); err != nil {
+		md, err := toml.DecodeFile(userPath, &cfg)
+		if err != nil {
 			return cfg, false, err
+		}
+		if md.IsDefined("max_trees") {
+			cfg.MaxTreesSource = MaxTreesSource{Origin: MaxTreesUser, File: userPath}
 		}
 		return cfg, true, nil
 	}

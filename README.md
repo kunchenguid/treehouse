@@ -554,6 +554,8 @@ The repo-level config takes precedence for repo-safe settings.
 `treehouse prune --all` can run without a repository, so it uses only the user-level config and does not read per-repo `treehouse.toml` files while sweeping.
 If no config is found, the default pool size is 16.
 
+`treehouse status` prints a `pool  N/MAX worktrees  (max_trees from <source>)` line above the table: `N` counts every slot listed below, `MAX` is the effective `max_trees`, and the source is the repo-level `treehouse.toml`, the user-level `config.toml`, or the built-in default. There is no flag or environment override for `max_trees`. At `N = MAX` the line adds how to raise the limit, and a `treehouse get` that cannot reuse a slot fails with the same source and advice after its usual message. `status --json` is unchanged.
+
 ### Base branch
 
 By default Treehouse infers the branch worktrees are cut from: `origin/HEAD`, then the checked-out branch, then `init.defaultBranch`.

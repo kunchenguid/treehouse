@@ -166,6 +166,20 @@ type acquireOptions struct {
 // Acquire reserves a clean worktree from the pool with a short-lived owner
 // reservation (the calling process). It is the backing call for the interactive
 // `treehouse get` subshell.
+// ErrPoolFull matches (errors.Is) every acquisition that failed only because
+// the pool holds max_trees worktrees and none is reusable. Callers use it to
+// add configuration-source advice the pool package cannot know.
+var ErrPoolFull = errors.New("pool is full")
+
+type poolFullError struct{ msg string }
+
+func (e *poolFullError) Error() string        { return e.msg }
+func (e *poolFullError) Is(target error) bool { return target == ErrPoolFull }
+
+func poolFullf(format string, args ...any) error {
+	return &poolFullError{msg: fmt.Sprintf(format, args...)}
+}
+
 func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (string, error) {
 	return AcquireWithOptions(repoRoot, poolDir, poolSize, postCreate, AcquireOptions{})
 }
@@ -674,19 +688,19 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		// No available worktree — create new if pool allows
 		if len(state.Worktrees) >= poolSize {
 			if len(lockErrors) > 0 {
-				return fmt.Errorf("all %d worktrees are in use, dirty, or locked (max_trees = %d): %s. Run 'treehouse status' to see details", len(state.Worktrees), poolSize, strings.Join(lockErrors, "; "))
+				return poolFullf("all %d worktrees are in use, dirty, or locked (max_trees = %d): %s. Run 'treehouse status' to see details", len(state.Worktrees), poolSize, strings.Join(lockErrors, "; "))
 			}
 			if otherFlavor > 0 {
-				return fmt.Errorf("all %d worktrees are in use, dirty, or hold the other backend's worktrees (%d %s-flavored; the repository selects %s). Run 'treehouse status' to see details, destroy old-flavor worktrees to migrate the pool, or increase max_trees in treehouse.toml", len(state.Worktrees), otherFlavor, map[string]string{"git": "jj", "jj": "git"}[wantFlavor], wantFlavor)
+				return poolFullf("all %d worktrees are in use, dirty, or hold the other backend's worktrees (%d %s-flavored; the repository selects %s). Run 'treehouse status' to see details, destroy old-flavor worktrees to migrate the pool, or increase max_trees in treehouse.toml", len(state.Worktrees), otherFlavor, map[string]string{"git": "jj", "jj": "git"}[wantFlavor], wantFlavor)
 			}
 			if otherClone > 0 || unverifiedClone > 0 {
 				msg := fmt.Sprintf("all %d worktrees are in use, dirty, or not provably this clone's (%d belong to another clone; %d whose clone identity cannot be verified; max_trees = %d). A worktree is reused only by the clone it belongs to", len(state.Worktrees), otherClone, unverifiedClone, poolSize)
 				if identityErr != nil {
 					msg += fmt.Sprintf(", and this repository's clone identity cannot be verified: %v", identityErr)
 				}
-				return fmt.Errorf("%s. Run 'treehouse status' to see details, or increase max_trees in treehouse.toml", msg)
+				return poolFullf("%s. Run 'treehouse status' to see details, or increase max_trees in treehouse.toml", msg)
 			}
-			return fmt.Errorf("all %d worktrees are in use or dirty (max_trees = %d). Run 'treehouse status' to see details, or increase max_trees in treehouse.toml", len(state.Worktrees), poolSize)
+			return poolFullf("all %d worktrees are in use or dirty (max_trees = %d). Run 'treehouse status' to see details, or increase max_trees in treehouse.toml", len(state.Worktrees), poolSize)
 		}
 
 		if opts.worktreePath != "" {
