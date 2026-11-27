@@ -6,6 +6,9 @@ import (
 	"testing"
 )
 
+// TestLoadRecordsMaxTreesSource checks Load's precedence (repo file, else
+// user file, else default) and that the raise advice names the file Load
+// already reads, so following it cannot shadow other user settings.
 func TestLoadRecordsMaxTreesSource(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -23,51 +26,39 @@ func TestLoadRecordsMaxTreesSource(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	check := func(name string, wantMax int, want MaxTreesSource) {
+	check := func(name string, wantMax int, wantOrigin MaxTreesOrigin, wantDescribe, wantAdviceFile string) {
 		t.Helper()
 		cfg, err := Load(repo)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if cfg.MaxTrees != wantMax || cfg.MaxTreesSource != want {
-			t.Fatalf("%s: got %d from %+v, want %d from %+v", name, cfg.MaxTrees, cfg.MaxTreesSource, wantMax, want)
+		src := cfg.MaxTreesSource
+		if cfg.MaxTrees != wantMax || src.Origin != wantOrigin {
+			t.Fatalf("%s: got %d from %+v, want %d from %s", name, cfg.MaxTrees, src, wantMax, wantOrigin)
+		}
+		if got := src.Describe(); got != wantDescribe {
+			t.Fatalf("%s: Describe() = %q, want %q", name, got, wantDescribe)
+		}
+		if got, want := src.RaiseAdvice(repo), "set max_trees to a higher value in "+wantAdviceFile; got != want {
+			t.Fatalf("%s: RaiseAdvice() = %q, want %q", name, got, want)
 		}
 	}
 
-	check("no files", 16, MaxTreesSource{Origin: MaxTreesDefault})
+	check("no files", 16, MaxTreesDefault, "built-in default", repoPath)
 
 	write(userPath, "max_trees = 5\n")
-	check("user only", 5, MaxTreesSource{Origin: MaxTreesUser, File: userPath})
+	check("user only", 5, MaxTreesUser, "user config "+userPath, userPath)
 
+	// Creating a repo file here would shadow root, so the advice must
+	// name the user file instead.
 	write(userPath, "root = \"x\"\n")
-	check("user file without key", 16, MaxTreesSource{Origin: MaxTreesDefault})
+	check("user file without key", 16, MaxTreesDefault, "built-in default", userPath)
 
 	write(userPath, "max_trees = 5\n")
 	write(repoPath, "max_trees = 3\n")
-	check("repo wins", 3, MaxTreesSource{Origin: MaxTreesRepo, File: repoPath})
+	check("repo wins", 3, MaxTreesRepo, "repo config "+repoPath, repoPath)
 
 	// Existing behavior kept: a repo file without the key shadows user config.
 	write(repoPath, "base_branch = \"main\"\n")
-	check("repo file without key", 16, MaxTreesSource{Origin: MaxTreesDefault})
-}
-
-func TestRaiseAdviceNamesFileToEdit(t *testing.T) {
-	repo := t.TempDir()
-	repoFile := filepath.Join(repo, "treehouse.toml")
-	userFile := filepath.Join(t.TempDir(), "config.toml")
-
-	cases := []struct {
-		name string
-		src  MaxTreesSource
-		want string
-	}{
-		{"default points at repo file Load honors first", MaxTreesSource{Origin: MaxTreesDefault}, repoFile},
-		{"repo origin names its file", MaxTreesSource{Origin: MaxTreesRepo, File: repoFile}, repoFile},
-		{"user origin names its file", MaxTreesSource{Origin: MaxTreesUser, File: userFile}, userFile},
-	}
-	for _, c := range cases {
-		if got, want := c.src.RaiseAdvice(repo), "set max_trees to a higher value in "+c.want; got != want {
-			t.Errorf("%s: got %q, want %q", c.name, got, want)
-		}
-	}
+	check("repo file without key", 16, MaxTreesDefault, "built-in default", repoPath)
 }

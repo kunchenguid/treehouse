@@ -68,7 +68,8 @@ const (
 )
 
 // MaxTreesSource is where the effective max_trees was read from. File is the
-// config file for the repo and user origins and empty for the default.
+// config file Load used as its config layer; for the default origin it is
+// empty only when no config file exists.
 type MaxTreesSource struct {
 	Origin MaxTreesOrigin
 	File   string
@@ -86,13 +87,12 @@ func (s MaxTreesSource) Describe() string {
 	}
 }
 
-// RaiseAdvice says where to edit max_trees. A built-in default points at the
-// repo-level file, the setting Load honors first; an existing repo config
-// without max_trees shadows user-level max_trees, so the repo file is also the
-// right place there.
+// RaiseAdvice says where to edit max_trees: the config file Load already
+// uses, so the edit cannot shadow other settings. With no config file at all,
+// it names the repo-level file.
 func (s MaxTreesSource) RaiseAdvice(repoRoot string) string {
 	file := s.File
-	if s.Origin == MaxTreesDefault || file == "" {
+	if file == "" {
 		file = filepath.Join(repoRoot, "treehouse.toml")
 	}
 	return "set max_trees to a higher value in " + file
@@ -211,8 +211,9 @@ func Load(repoRoot string) (Config, error) {
 		if err != nil {
 			return cfg, err
 		}
+		cfg.MaxTreesSource = MaxTreesSource{Origin: MaxTreesDefault, File: repoPath}
 		if md.IsDefined("max_trees") {
-			cfg.MaxTreesSource = MaxTreesSource{Origin: MaxTreesRepo, File: repoPath}
+			cfg.MaxTreesSource.Origin = MaxTreesRepo
 		}
 		// Repo-level hooks are discarded so that a command run in an
 		// untrusted clone cannot execute checked-in shell. Say so, once,
@@ -262,8 +263,9 @@ func loadUser() (Config, bool, error) {
 		if err != nil {
 			return cfg, false, err
 		}
+		cfg.MaxTreesSource = MaxTreesSource{Origin: MaxTreesDefault, File: userPath}
 		if md.IsDefined("max_trees") {
-			cfg.MaxTreesSource = MaxTreesSource{Origin: MaxTreesUser, File: userPath}
+			cfg.MaxTreesSource.Origin = MaxTreesUser
 		}
 		return cfg, true, nil
 	}
