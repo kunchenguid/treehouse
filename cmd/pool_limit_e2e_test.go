@@ -94,13 +94,10 @@ func TestStatusShowsPoolLimitAndSource(t *testing.T) {
 	}
 }
 
-// TestPoolFullAdviceNamesRepoFileWhenDefault covers a pool capped by the
-// built-in default: the advice must still name a concrete file to edit.
-func TestPoolFullAdviceNamesRepoFileWhenDefault(t *testing.T) {
+// TestStatusReportsDefaultWhenRepoConfigLacksMaxTrees covers a repo config
+// without max_trees: it keeps the built-in default, and status must say so.
+func TestStatusReportsDefaultWhenRepoConfigLacksMaxTrees(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
-	// An existing repo config without max_trees keeps the default (and shadows
-	// user max_trees, as before); fill it by lowering via the user config only
-	// when absent, so exercise the default through a 1-slot cap elsewhere.
 	if err := os.WriteFile(filepath.Join(repoDir, "treehouse.toml"), []byte("# no max_trees\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

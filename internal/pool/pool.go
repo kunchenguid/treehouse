@@ -163,9 +163,6 @@ type acquireOptions struct {
 	hookStderr io.Writer
 }
 
-// Acquire reserves a clean worktree from the pool with a short-lived owner
-// reservation (the calling process). It is the backing call for the interactive
-// `treehouse get` subshell.
 // ErrPoolFull matches (errors.Is) every acquisition that failed only because
 // the pool holds max_trees worktrees and none is reusable. Callers use it to
 // add configuration-source advice the pool package cannot know.
@@ -180,6 +177,9 @@ func poolFullf(format string, args ...any) error {
 	return &poolFullError{msg: fmt.Sprintf(format, args...)}
 }
 
+// Acquire reserves a clean worktree from the pool with a short-lived owner
+// reservation (the calling process). It is the backing call for the interactive
+// `treehouse get` subshell.
 func Acquire(repoRoot, poolDir string, poolSize int, postCreate []string) (string, error) {
 	return AcquireWithOptions(repoRoot, poolDir, poolSize, postCreate, AcquireOptions{})
 }
