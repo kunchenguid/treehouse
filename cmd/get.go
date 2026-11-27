@@ -174,7 +174,7 @@ func getRunE(cmd *cobra.Command, args []string) error {
 
 	wtPath, err := pool.AcquireWithOptions(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate, acquireOpts)
 	if err != nil {
-		return err
+		return withMaxTreesAdvice(err, repoRoot, cfg)
 	}
 
 	fmt.Fprintf(os.Stderr, "🌳 Entered worktree at %s. Type 'exit' to return.\n", ui.PrettyPath(wtPath))
@@ -303,7 +303,7 @@ func getLeaseRunE(repoRoot, poolDir string, cfg config.Config, options pool.Acqu
 
 	lease, err := pool.AcquireLeaseInfoWithOptions(repoRoot, poolDir, cfg.MaxTrees, cfg.Hooks.PostCreate, holder, options)
 	if err != nil {
-		return err
+		return withMaxTreesAdvice(err, repoRoot, cfg)
 	}
 
 	fmt.Fprintf(os.Stderr, "🌳 Leased worktree at %s. Run 'treehouse return %s' to release it.\n",
@@ -353,4 +353,15 @@ func killLingeringProcesses(wtPath string) error {
 		return fmt.Errorf("worktree still has live processes after termination: %s", strings.Join(names, ", "))
 	}
 	return nil
+}
+
+// withMaxTreesAdvice appends where the effective max_trees came from and how to
+// raise it to a pool-full acquisition error. Any other error passes through
+// untouched, and the allocator's own message stays first and unchanged.
+func withMaxTreesAdvice(err error, repoRoot string, cfg config.Config) error {
+	if !errors.Is(err, pool.ErrPoolFull) {
+		return err
+	}
+	return fmt.Errorf("%w\nmax_trees = %d comes from the %s; to allow more worktrees, %s",
+		err, cfg.MaxTrees, cfg.MaxTreesSource.Describe(), cfg.MaxTreesSource.RaiseAdvice(repoRoot))
 }

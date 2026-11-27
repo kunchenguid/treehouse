@@ -76,6 +76,7 @@ var statusCmd = &cobra.Command{
 		magenta := color.New(color.FgMagenta).SprintFunc()
 
 		fmt.Fprintln(os.Stdout, baseBranchLine(repoRoot, cfg, yellow))
+		fmt.Fprintln(os.Stdout, poolLimitLine(repoRoot, cfg, len(worktrees), yellow))
 
 		if len(worktrees) == 0 {
 			fmt.Fprintln(os.Stderr, "🌳 No worktrees in pool.")
@@ -177,6 +178,17 @@ func baseBranchLine(repoRoot string, cfg config.Config, warn func(a ...interface
 		return prefix + cfg.BaseBranch + warn("  (configured, but cannot be resolved — 'treehouse get' will fail)")
 	}
 	return prefix + cfg.BaseBranch + "  (configured)"
+}
+
+// poolLimitLine reports how many worktrees the pool holds against the
+// effective max_trees, and which layer supplied that maximum. A full pool also
+// says how to raise it. Human output only; status --json stays a bare array.
+func poolLimitLine(repoRoot string, cfg config.Config, count int, warn func(a ...interface{}) string) string {
+	line := fmt.Sprintf("pool  %d/%d worktrees  (max_trees from %s)", count, cfg.MaxTrees, cfg.MaxTreesSource.Describe())
+	if count >= cfg.MaxTrees {
+		line += warn(fmt.Sprintf("\n      full: 'treehouse get' cannot create another worktree unless one is reusable; %s", cfg.MaxTreesSource.RaiseAdvice(repoRoot)))
+	}
+	return line
 }
 
 func writeStatusJSON(worktrees []pool.WorktreeStatus) error {
